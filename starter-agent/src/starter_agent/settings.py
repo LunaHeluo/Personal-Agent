@@ -189,8 +189,12 @@ class JobDescriptionToolConfig(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("User agent must not be blank")
-        if any(ord(character) < 32 or ord(character) == 127 for character in normalized):
-            raise ValueError("User agent must not contain ASCII control characters")
+        has_non_printable_or_non_ascii = any(
+            not 32 <= ord(character) <= 126
+            for character in normalized
+        )
+        if has_non_printable_or_non_ascii:
+            raise ValueError("User agent must contain printable ASCII characters only")
         return normalized
 
 

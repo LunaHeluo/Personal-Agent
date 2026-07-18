@@ -51,6 +51,9 @@ def test_job_description_config_rejects_out_of_range_budgets(
         "Starter\rAgent",
         "Starter\x00Agent",
         "Starter\x1fAgent",
+        "招聘助手/1.0",
+        "Agenté/1.0",
+        "Agent🤖/1.0",
         "x" * 201,
     ],
 )
