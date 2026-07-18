@@ -79,7 +79,6 @@ tools:
   enabled:
     - get_current_time
     - search_jobs_serpapi
-    - search_job_description
     - read_resume
     - list_resume_versions
     - save_resume

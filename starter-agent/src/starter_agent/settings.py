@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from starter_agent.domain.errors import ConfigurationError
@@ -180,6 +180,18 @@ class JobDescriptionToolConfig(BaseModel):
         max_length=200,
     )
     respect_robots: bool = True
+
+    @field_validator("user_agent", mode="before")
+    @classmethod
+    def normalize_user_agent(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("User agent must not be blank")
+        if any(ord(character) < 32 or ord(character) == 127 for character in normalized):
+            raise ValueError("User agent must not contain ASCII control characters")
+        return normalized
 
 
 class ToolsConfig(BaseModel):
