@@ -233,7 +233,7 @@ src/starter_agent/
 tests/               单元测试与集成测试
 ```
 
-## 交作业前检查
+## 交前检查
 
 ```bash
 uv run agent doctor
