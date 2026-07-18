@@ -37,8 +37,8 @@ providers:
   openai:
     type: openai_compatible
     models:
-      - openai/gpt-5.5
-      - openai/gpt-5.6-terra
+      - gpt-5.5
+      - gpt-5.6-terra
     base_url: https://api.openai.com/v1
     api_key_env: OPENAI_API_KEY
   deepseek:
@@ -49,10 +49,6 @@ providers:
     type: openai_compatible
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
     api_key_env: DASHSCOPE_API_KEY
-  local:
-    type: openai_compatible
-    base_url: http://localhost:11434/v1
-    api_key_env: OLLAMA_API_KEY
 
 runtime:
   max_model_calls: 4
@@ -83,6 +79,7 @@ tools:
   enabled:
     - get_current_time
     - search_jobs_serpapi
+    - search_job_description
     - read_resume
     - list_resume_versions
     - save_resume
@@ -135,6 +132,12 @@ tools:
         api_key_env: SERPAPI_API_KEY
       backup:
         api_key_env: SERPAPI_API_KEY_BACKUP
+  job_description:
+    fetch_timeout_seconds: 10
+    max_response_bytes: 1000000
+    max_redirects: 3
+    user_agent: StarterAgentJobDescription/0.1
+    respect_robots: true
   resume:
     root: examples/job-hunt-agent/job-hunt-agent/data
 

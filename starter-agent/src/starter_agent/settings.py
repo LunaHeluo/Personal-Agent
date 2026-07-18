@@ -166,12 +166,31 @@ class EmailToolConfig(BaseModel):
         return self
 
 
+class JobDescriptionToolConfig(BaseModel):
+    fetch_timeout_seconds: float = Field(default=10, gt=0, le=30)
+    max_response_bytes: int = Field(
+        default=1_000_000,
+        ge=10_000,
+        le=5_000_000,
+    )
+    max_redirects: int = Field(default=3, ge=0, le=5)
+    user_agent: str = Field(
+        default="StarterAgentJobDescription/0.1",
+        min_length=1,
+        max_length=200,
+    )
+    respect_robots: bool = True
+
+
 class ToolsConfig(BaseModel):
     enabled: list[str] = Field(default_factory=lambda: ["get_current_time"])
     allow_risk_levels: list[str] = Field(default_factory=lambda: ["read"])
     serpapi: SerpApiToolConfig = Field(default_factory=SerpApiToolConfig)
     resume: ResumeToolConfig = Field(default_factory=ResumeToolConfig)
     email: EmailToolConfig = Field(default_factory=EmailToolConfig)
+    job_description: JobDescriptionToolConfig = Field(
+        default_factory=JobDescriptionToolConfig
+    )
 
 
 class AgentSettings(BaseModel):
