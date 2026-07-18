@@ -55,6 +55,9 @@ def html_response(text: str = "<h1>AI PM</h1>") -> httpx.Response:
         "http://[::1]/job",
         "http://[fe80::1]/job",
         "http://169.254.169.254/latest/meta-data",
+        "http://168.63.129.16/machine/?comp=goalstate",
+        "http://100.100.100.200/latest/meta-data",
+        "http://[fd00:ec2::254]/latest/meta-data",
         "https://metadata.google.internal/computeMetadata/v1/",
         "https://user:pass@example.com/job",
         "https://example.com:8443/job",
@@ -151,6 +154,30 @@ async def test_rejects_private_or_mixed_dns_answers() -> None:
     assert exc.value.code == "unsafe_url"
 
 
+async def test_rejects_azure_platform_ip_from_dns_answer() -> None:
+    requests: list[httpx.Request] = []
+
+    async def azure_resolver(host: str) -> list[ipaddress._BaseAddress]:
+        return [ipaddress.ip_address("168.63.129.16")]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return html_response()
+
+    async with make_client(handler) as client:
+        fetcher = SafeWebFetcher(
+            client=client,
+            resolver=azure_resolver,
+            robots_checker=allow_robots,
+        )
+
+        with pytest.raises(FetchFailure) as exc:
+            await fetcher.fetch("https://jobs.example/job")
+
+    assert exc.value.code == "unsafe_url"
+    assert requests == []
+
+
 async def test_empty_dns_answer_fails_closed() -> None:
     async def empty_resolver(host: str) -> list[ipaddress._BaseAddress]:
         return []
@@ -174,6 +201,34 @@ async def test_redirect_to_private_ip_is_rejected_before_second_request() -> Non
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         return httpx.Response(302, headers={"location": "http://10.0.0.8/job"})
+
+    async with make_client(handler) as client:
+        fetcher = SafeWebFetcher(
+            client=client,
+            resolver=public_resolver,
+            robots_checker=allow_robots,
+        )
+
+        with pytest.raises(FetchFailure) as exc:
+            await fetcher.fetch("https://example.com/job")
+
+    assert exc.value.code == "unsafe_url"
+    assert len(requests) == 1
+
+
+async def test_redirect_to_azure_platform_ip_is_rejected() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            302,
+            headers={
+                "location": (
+                    "http://168.63.129.16/machine/?comp=goalstate"
+                )
+            },
+        )
 
     async with make_client(handler) as client:
         fetcher = SafeWebFetcher(
@@ -437,6 +492,33 @@ async def test_stops_stream_when_response_exceeds_budget() -> None:
 
     assert exc.value.code == "response_too_large"
     assert stream.yielded == 2
+
+
+async def test_maps_invalid_compressed_stream_to_stable_failure() -> None:
+    stream = CountingStream([b"this is not a gzip stream"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "text/html",
+                "content-encoding": "gzip",
+            },
+            stream=stream,
+        )
+
+    async with make_client(handler) as client:
+        fetcher = SafeWebFetcher(
+            client=client,
+            resolver=public_resolver,
+            robots_checker=allow_robots,
+        )
+
+        with pytest.raises(FetchFailure) as exc:
+            await fetcher.fetch("https://example.com/job")
+
+    assert exc.value.code == "fetch_failed"
+    assert exc.value.retryable is True
 
 
 async def test_rejects_declared_oversized_response_before_streaming() -> None:

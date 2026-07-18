@@ -39,13 +39,26 @@ _SENSITIVE_QUERY_KEYS = {
     "token",
     "x-amz-signature",
 }
-_METADATA_HOSTS = {
+_CLOUD_METADATA_HOSTS = {
     "instance-data",
+    "instance-data.ec2.internal",
     "metadata",
     "metadata.aws.internal",
     "metadata.azure.internal",
     "metadata.google.internal",
 }
+_CLOUD_PLATFORM_ENDPOINT_ADDRESSES = frozenset(
+    {
+        # AWS, GCP, Azure, and Oracle instance metadata (IPv4).
+        ipaddress.ip_address("169.254.169.254"),
+        # Azure platform virtual IP / WireServer.
+        ipaddress.ip_address("168.63.129.16"),
+        # Alibaba Cloud instance metadata.
+        ipaddress.ip_address("100.100.100.200"),
+        # AWS IMDS IPv6 endpoint.
+        ipaddress.ip_address("fd00:ec2::254"),
+    }
+)
 _LOCAL_SUFFIXES = (
     ".home",
     ".internal",
@@ -274,6 +287,12 @@ class SafeWebFetcher:
                     "读取岗位页面超时",
                     retryable=True,
                 ) from exc
+            except httpx.DecodingError as exc:
+                raise FetchFailure(
+                    "fetch_failed",
+                    "岗位页面响应无法安全解码",
+                    retryable=True,
+                ) from exc
             except httpx.TransportError as exc:
                 raise FetchFailure(
                     "fetch_failed",
@@ -399,7 +418,7 @@ class SafeWebFetcher:
     def _validate_dns_name(hostname: str) -> None:
         if (
             hostname == "localhost"
-            or hostname in _METADATA_HOSTS
+            or hostname in _CLOUD_METADATA_HOSTS
             or any(hostname.endswith(suffix) for suffix in _LOCAL_SUFFIXES)
             or "." not in hostname
         ):
@@ -427,7 +446,8 @@ class SafeWebFetcher:
     @staticmethod
     def _is_public_address(address: IPAddress) -> bool:
         return (
-            address.is_global
+            address not in _CLOUD_PLATFORM_ENDPOINT_ADDRESSES
+            and address.is_global
             and not address.is_private
             and not address.is_loopback
             and not address.is_link_local
