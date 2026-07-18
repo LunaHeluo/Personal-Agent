@@ -166,3 +166,104 @@ def test_empty_script_shell_is_unverified() -> None:
 
     assert result.completeness == "unverified"
     assert result.raw_text == ""
+
+
+def test_extracts_sections_when_headings_and_content_use_separate_wrappers() -> None:
+    result = JobDescriptionExtractor().extract(
+        """
+        <div><h2>Responsibilities</h2></div>
+        <div><p>Own roadmap.</p><p>Lead delivery.</p></div>
+        <section><h2>Requirements</h2></section>
+        <section><ul><li>3 years of experience.</li></ul></section>
+        """,
+        "text/html",
+    )
+
+    assert result.responsibilities == ["Own roadmap.", "Lead delivery."]
+    assert result.requirements == ["3 years of experience."]
+    assert result.completeness == "complete"
+
+
+def test_nested_heading_ends_the_previous_html_section() -> None:
+    result = JobDescriptionExtractor().extract(
+        """
+        <h2>Responsibilities</h2>
+        <div>
+          <p>Own roadmap.</p>
+          <h2>Requirements</h2>
+          <p>3 years of experience.</p>
+        </div>
+        """,
+        "text/html",
+    )
+
+    assert result.responsibilities == ["Own roadmap."]
+    assert result.requirements == ["3 years of experience."]
+
+
+def test_supports_top_level_json_ld_list() -> None:
+    payload = [
+        {"@type": "Organization", "name": "Example"},
+        {
+            "@type": "JobPosting",
+            "title": "Listed role",
+            "description": "<h2>Responsibilities</h2><p>Build.</p>"
+            "<h2>Requirements</h2><p>Learn.</p>",
+        },
+    ]
+
+    result = JobDescriptionExtractor().extract(
+        '<script type="application/ld+json">'
+        + json.dumps(payload)
+        + "</script>",
+        "text/html",
+    )
+
+    assert result.title == "Listed role"
+    assert result.extraction_method == "json_ld"
+
+
+def test_deep_json_ld_graph_falls_back_without_recursion_error() -> None:
+    depth = 1_100
+    payload = '{"@graph":' * depth + "{}" + "}" * depth
+    html = (
+        '<script type="application/ld+json">'
+        + payload
+        + "</script><h1>AI PM</h1>"
+    )
+
+    result = JobDescriptionExtractor().extract(html, "text/html")
+
+    assert result.title == "AI PM"
+    assert result.extraction_method == "html"
+    assert result.completeness == "unverified"
+
+
+def test_normalizes_common_json_ld_metadata_value_shapes() -> None:
+    payload = {
+        "@type": "JobPosting",
+        "employmentType": ["FULL_TIME", "CONTRACTOR"],
+        "jobLocation": {
+            "address": {
+                "addressLocality": "Sydney",
+                "addressCountry": {"@type": "Country", "name": "AU"},
+            }
+        },
+        "baseSalary": {
+            "currency": "AUD",
+            "value": {"value": 120000, "unitText": "YEAR"},
+        },
+        "description": "<h2>Responsibilities</h2><p>Build.</p>"
+        "<h2>Requirements</h2><p>Learn.</p>",
+    }
+
+    result = JobDescriptionExtractor().extract(
+        '<script type="application/ld+json">'
+        + json.dumps(payload)
+        + "</script>",
+        "text/html",
+    )
+
+    assert result.employment_type == "FULL_TIME, CONTRACTOR"
+    assert result.location == "Sydney, AU"
+    assert result.salary == "AUD 120000 YEAR"

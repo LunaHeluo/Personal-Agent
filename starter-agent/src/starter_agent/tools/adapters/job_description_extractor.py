@@ -52,6 +52,9 @@ class JobDescriptionExtractor:
     _NOISE_CLASS = re.compile(r"cookie|banner|modal", re.IGNORECASE)
     _HEADING_NAME = re.compile(r"^h[1-6]$")
     _BULLET_PREFIX = re.compile(r"^(?:[-*•‣]|\d+[.)])\s*")
+    _CONTENT_BLOCK_NAMES = {"div", "section", "article", "dd", "td"}
+    _MAX_JSON_LD_NODES = 10_000
+    _MAX_JSON_LD_DEPTH = 64
 
     def extract(
         self, content: str, content_type: str
@@ -72,7 +75,7 @@ class JobDescriptionExtractor:
                 continue
             try:
                 payload = json.loads(raw_json)
-            except (TypeError, ValueError):
+            except (RecursionError, TypeError, ValueError):
                 continue
             for item in self._json_ld_items(payload):
                 item_type = item.get("@type")
@@ -85,16 +88,25 @@ class JobDescriptionExtractor:
         return None
 
     def _json_ld_items(self, payload: object) -> list[dict[str, Any]]:
-        if isinstance(payload, list):
-            return [item for value in payload for item in self._json_ld_items(value)]
-        if not isinstance(payload, dict):
-            return []
-        items = [payload]
-        graph = payload.get("@graph")
-        if isinstance(graph, list):
-            items.extend(item for value in graph for item in self._json_ld_items(value))
-        elif isinstance(graph, dict):
-            items.extend(self._json_ld_items(graph))
+        items: list[dict[str, Any]] = []
+        stack: list[tuple[object, int]] = [(payload, 0)]
+        visited = 0
+        while stack and visited < self._MAX_JSON_LD_NODES:
+            node, depth = stack.pop()
+            visited += 1
+            if depth > self._MAX_JSON_LD_DEPTH:
+                continue
+            if isinstance(node, list):
+                stack.extend((item, depth + 1) for item in reversed(node))
+                continue
+            if not isinstance(node, dict):
+                continue
+            items.append(node)
+            graph = node.get("@graph")
+            if isinstance(graph, list):
+                stack.extend((item, depth + 1) for item in reversed(graph))
+            elif isinstance(graph, dict):
+                stack.append((graph, depth + 1))
         return items
 
     def _from_json_ld(self, posting: dict[str, Any]) -> ExtractedJobDescription:
@@ -107,7 +119,7 @@ class JobDescriptionExtractor:
             title=self._string_value(posting.get("title")),
             company=self._organization_name(posting.get("hiringOrganization")),
             location=self._location_value(posting.get("jobLocation")),
-            employment_type=self._string_value(posting.get("employmentType")),
+            employment_type=self._joined_value(posting.get("employmentType")),
             salary=salary,
             raw_text=raw_text,
             completeness=self._completeness(
@@ -159,18 +171,28 @@ class JobDescriptionExtractor:
             **sections,
         )
 
-    def _split_sections_from_html(self, soup: Tag | BeautifulSoup) -> dict[str, list[str]]:
+    def _split_sections_from_html(
+        self, soup: Tag | BeautifulSoup
+    ) -> dict[str, list[str]]:
         sections = self._empty_sections()
-        for heading in soup.find_all(self._HEADING_NAME):
-            section_name = self._section_name(heading.get_text(" ", strip=True))
-            if section_name is None:
+        current_section: str | None = None
+        for node in soup.descendants:
+            if isinstance(node, Tag) and self._HEADING_NAME.match(node.name or ""):
+                current_section = self._section_name(node.get_text(" ", strip=True))
                 continue
-            values: list[str] = []
-            for sibling in heading.next_siblings:
-                if isinstance(sibling, Tag) and self._HEADING_NAME.match(sibling.name or ""):
-                    break
-                values.extend(self._items_from_node(sibling))
-            sections[section_name].extend(values)
+            if current_section is None:
+                continue
+            if isinstance(node, Tag):
+                if node.name in {"p", "li"} and not self._inside_text_item(node):
+                    sections[current_section].append(node.get_text(" ", strip=True))
+                elif (
+                    node.name in self._CONTENT_BLOCK_NAMES
+                    and not self._contains_semantic_content(node)
+                    and not self._inside_text_item(node)
+                ):
+                    sections[current_section].append(node.get_text(" ", strip=True))
+            elif isinstance(node, NavigableString) and self._is_bare_section_text(node):
+                sections[current_section].append(str(node))
         return {name: self._clean_items(values) for name, values in sections.items()}
 
     def _split_sections_from_lines(self, lines: list[str]) -> dict[str, list[str]]:
@@ -185,16 +207,25 @@ class JobDescriptionExtractor:
                 sections[current].append(line)
         return {name: self._clean_items(values) for name, values in sections.items()}
 
-    def _items_from_node(self, node: object) -> list[str]:
-        if isinstance(node, NavigableString):
-            return [str(node)]
-        if not isinstance(node, Tag):
-            return []
-        items = [item.get_text(" ", strip=True) for item in node.find_all("li")]
-        if items:
-            return items
-        text = node.get_text(" ", strip=True)
-        return [text] if text else []
+    def _contains_semantic_content(self, node: Tag) -> bool:
+        return bool(node.find(self._HEADING_NAME) or node.find(["p", "li"]))
+
+    @staticmethod
+    def _inside_text_item(node: Tag) -> bool:
+        return any(
+            isinstance(parent, Tag) and parent.name in {"p", "li"}
+            for parent in node.parents
+        )
+
+    def _is_bare_section_text(self, node: NavigableString) -> bool:
+        parent = node.parent
+        if not isinstance(parent, Tag) or parent.name not in {"body", "main", "article"}:
+            return False
+        return not any(
+            isinstance(ancestor, Tag)
+            and (self._HEADING_NAME.match(ancestor.name or "") or ancestor.name in {"p", "li"})
+            for ancestor in node.parents
+        )
 
     def _section_name(self, value: str) -> str | None:
         normalized = self._normalise_text(value).rstrip(":：").lower()
@@ -241,7 +272,18 @@ class JobDescriptionExtractor:
 
     def _organization_name(self, value: object) -> str:
         if isinstance(value, dict):
-            return self._string_value(value.get("name"))
+            return self._named_value(value)
+        return self._named_value(value)
+
+    def _joined_value(self, value: object) -> str:
+        values = value if isinstance(value, list) else [value]
+        return ", ".join(
+            self._clean_items([self._named_value(item) for item in values])
+        )
+
+    def _named_value(self, value: object) -> str:
+        if isinstance(value, dict):
+            return self._string_value(value.get("name") or value.get("value"))
         return self._string_value(value)
 
     def _location_value(self, value: object) -> str:
@@ -254,7 +296,7 @@ class JobDescriptionExtractor:
             if not isinstance(address, dict):
                 continue
             pieces = [
-                self._string_value(address.get(key))
+                self._named_value(address.get(key))
                 for key in ("addressLocality", "addressRegion", "addressCountry")
             ]
             formatted = ", ".join(piece for piece in pieces if piece)
@@ -265,13 +307,20 @@ class JobDescriptionExtractor:
     def _salary_value(self, value: object) -> str | None:
         if isinstance(value, dict):
             amount = value.get("value")
+            currency = self._named_value(value.get("currency"))
+            unit = self._named_value(value.get("unitText"))
             if isinstance(amount, dict):
                 lower = self._string_value(amount.get("minValue"))
                 upper = self._string_value(amount.get("maxValue"))
-                currency = self._string_value(value.get("currency"))
-                range_value = " - ".join(part for part in (lower, upper) if part)
-                return " ".join(part for part in (currency, range_value) if part) or None
-            return self._string_value(amount) or None
+                fixed = self._string_value(amount.get("value"))
+                amount_value = " - ".join(part for part in (lower, upper) if part)
+                amount_value = amount_value or fixed
+                unit = self._named_value(amount.get("unitText")) or unit
+                return " ".join(
+                    part for part in (currency, amount_value, unit) if part
+                ) or None
+            amount_value = self._string_value(amount)
+            return " ".join(part for part in (currency, amount_value, unit) if part) or None
         return self._string_value(value) or None
 
     @staticmethod
