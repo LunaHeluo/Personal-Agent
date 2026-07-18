@@ -97,17 +97,31 @@ class JobDescriptionExtractor:
             if depth > self._MAX_JSON_LD_DEPTH:
                 continue
             if isinstance(node, list):
-                stack.extend((item, depth + 1) for item in reversed(node))
+                self._push_json_ld_items(stack, node, depth, visited)
                 continue
             if not isinstance(node, dict):
                 continue
             items.append(node)
             graph = node.get("@graph")
             if isinstance(graph, list):
-                stack.extend((item, depth + 1) for item in reversed(graph))
+                self._push_json_ld_items(stack, graph, depth, visited)
             elif isinstance(graph, dict):
-                stack.append((graph, depth + 1))
+                if visited + len(stack) < self._MAX_JSON_LD_NODES:
+                    stack.append((graph, depth + 1))
         return items
+
+    def _push_json_ld_items(
+        self,
+        stack: list[tuple[object, int]],
+        values: list[object],
+        depth: int,
+        visited: int,
+    ) -> None:
+        remaining = self._MAX_JSON_LD_NODES - visited - len(stack)
+        if remaining > 0:
+            stack.extend(
+                (item, depth + 1) for item in reversed(values[:remaining])
+            )
 
     def _from_json_ld(self, posting: dict[str, Any]) -> ExtractedJobDescription:
         description = self._string_value(posting.get("description"))
@@ -174,25 +188,63 @@ class JobDescriptionExtractor:
     def _split_sections_from_html(
         self, soup: Tag | BeautifulSoup
     ) -> dict[str, list[str]]:
+        terminal_blocks = self._terminal_content_blocks(soup)
         sections = self._empty_sections()
         current_section: str | None = None
-        for node in soup.descendants:
-            if isinstance(node, Tag) and self._HEADING_NAME.match(node.name or ""):
-                current_section = self._section_name(node.get_text(" ", strip=True))
-                continue
-            if current_section is None:
-                continue
-            if isinstance(node, Tag):
-                if node.name in {"p", "li"} and not self._inside_text_item(node):
-                    sections[current_section].append(node.get_text(" ", strip=True))
-                elif (
-                    node.name in self._CONTENT_BLOCK_NAMES
-                    and not self._contains_semantic_content(node)
-                    and not self._inside_text_item(node)
+        item_depth = 0
+        heading_depth = 0
+        terminal_depth = 0
+        item_sections: dict[int, str | None] = {}
+        terminal_sections: dict[int, str | None] = {}
+        stack: list[tuple[object, bool]] = [(soup, False)]
+
+        while stack:
+            node, exiting = stack.pop()
+            if isinstance(node, NavigableString):
+                if (
+                    current_section is not None
+                    and item_depth == 0
+                    and heading_depth == 0
+                    and terminal_depth == 0
                 ):
-                    sections[current_section].append(node.get_text(" ", strip=True))
-            elif isinstance(node, NavigableString) and self._is_bare_section_text(node):
-                sections[current_section].append(str(node))
+                    sections[current_section].append(str(node))
+                continue
+            if not isinstance(node, Tag):
+                continue
+
+            node_id = id(node)
+            is_heading = bool(self._HEADING_NAME.match(node.name or ""))
+            is_item = node.name in {"p", "li"}
+            is_terminal = node_id in terminal_blocks
+
+            if exiting:
+                if is_heading:
+                    heading_depth -= 1
+                elif is_item:
+                    item_depth -= 1
+                    section = item_sections.pop(node_id, None)
+                    if section is not None:
+                        sections[section].append(node.get_text(" ", strip=True))
+                elif is_terminal:
+                    terminal_depth -= 1
+                    section = terminal_sections.pop(node_id, None)
+                    if section is not None:
+                        sections[section].append(node.get_text(" ", strip=True))
+                continue
+
+            stack.append((node, True))
+            stack.extend((child, False) for child in reversed(node.contents))
+            if is_heading:
+                current_section = self._section_name(node.get_text(" ", strip=True))
+                heading_depth += 1
+            elif is_item:
+                if item_depth == 0:
+                    item_sections[node_id] = current_section
+                item_depth += 1
+            elif is_terminal:
+                if terminal_depth == 0:
+                    terminal_sections[node_id] = current_section
+                terminal_depth += 1
         return {name: self._clean_items(values) for name, values in sections.items()}
 
     def _split_sections_from_lines(self, lines: list[str]) -> dict[str, list[str]]:
@@ -207,25 +259,37 @@ class JobDescriptionExtractor:
                 sections[current].append(line)
         return {name: self._clean_items(values) for name, values in sections.items()}
 
-    def _contains_semantic_content(self, node: Tag) -> bool:
-        return bool(node.find(self._HEADING_NAME) or node.find(["p", "li"]))
+    def _terminal_content_blocks(
+        self, soup: Tag | BeautifulSoup
+    ) -> set[int]:
+        """Return structural blocks whose subtree has no smaller text item."""
+        subtree_has_relevant: dict[int, bool] = {}
+        terminal_blocks: set[int] = set()
+        stack: list[tuple[object, bool]] = [(soup, False)]
 
-    @staticmethod
-    def _inside_text_item(node: Tag) -> bool:
-        return any(
-            isinstance(parent, Tag) and parent.name in {"p", "li"}
-            for parent in node.parents
-        )
+        while stack:
+            node, exiting = stack.pop()
+            if not isinstance(node, Tag):
+                continue
+            if not exiting:
+                stack.append((node, True))
+                stack.extend((child, False) for child in reversed(node.contents))
+                continue
 
-    def _is_bare_section_text(self, node: NavigableString) -> bool:
-        parent = node.parent
-        if not isinstance(parent, Tag) or parent.name not in {"body", "main", "article"}:
-            return False
-        return not any(
-            isinstance(ancestor, Tag)
-            and (self._HEADING_NAME.match(ancestor.name or "") or ancestor.name in {"p", "li"})
-            for ancestor in node.parents
-        )
+            child_has_relevant = any(
+                subtree_has_relevant.get(id(child), False)
+                for child in node.contents
+                if isinstance(child, Tag)
+            )
+            is_heading = bool(self._HEADING_NAME.match(node.name or ""))
+            is_item = node.name in {"p", "li"}
+            is_block = node.name in self._CONTENT_BLOCK_NAMES
+            if is_block and not child_has_relevant:
+                terminal_blocks.add(id(node))
+            subtree_has_relevant[id(node)] = (
+                is_heading or is_item or is_block or child_has_relevant
+            )
+        return terminal_blocks
 
     def _section_name(self, value: str) -> str | None:
         normalized = self._normalise_text(value).rstrip(":：").lower()

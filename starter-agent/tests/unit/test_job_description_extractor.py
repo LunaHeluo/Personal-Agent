@@ -267,3 +267,71 @@ def test_normalizes_common_json_ld_metadata_value_shapes() -> None:
     assert result.employment_type == "FULL_TIME, CONTRACTOR"
     assert result.location == "Sydney, AU"
     assert result.salary == "AUD 120000 YEAR"
+
+
+def test_emits_only_leaf_text_blocks_for_nested_div_bullets() -> None:
+    result = JobDescriptionExtractor().extract(
+        """
+        <h2>Responsibilities</h2>
+        <div><div>Own roadmap.</div><div>Ship product.</div></div>
+        <h2>Requirements</h2><div>3 years of experience.</div>
+        """,
+        "text/html",
+    )
+
+    assert result.responsibilities == ["Own roadmap.", "Ship product."]
+    assert result.requirements == ["3 years of experience."]
+
+
+def test_extracts_bare_text_inside_the_heading_wrapper() -> None:
+    result = JobDescriptionExtractor().extract(
+        """
+        <section><h2>Responsibilities</h2>Own roadmap.</section>
+        <section><h2>Requirements</h2>3 years of experience.</section>
+        """,
+        "text/html",
+    )
+
+    assert result.responsibilities == ["Own roadmap."]
+    assert result.requirements == ["3 years of experience."]
+
+
+def test_keeps_rich_paragraph_and_list_item_text_as_single_items() -> None:
+    result = JobDescriptionExtractor().extract(
+        """
+        <h2>Responsibilities</h2>
+        <p>Own <strong>the AI roadmap</strong>.</p>
+        <h2>Requirements</h2>
+        <ul><li>Have <em>three years</em> of experience.</li></ul>
+        """,
+        "text/html",
+    )
+
+    assert result.responsibilities == ["Own the AI roadmap ."]
+    assert result.requirements == ["Have three years of experience."]
+
+
+def test_deep_wrappers_do_not_use_recursive_container_search(monkeypatch) -> None:
+    depth = 2_000
+    html = (
+        "<h2>Responsibilities</h2>"
+        + "<div>" * depth
+        + "<p>Own roadmap.</p>"
+        + "</div>" * depth
+        + "<h2>Requirements</h2><p>3 years of experience.</p>"
+    )
+
+    def reject_recursive_search(*_args, **_kwargs):
+        raise AssertionError("recursive container search must not be used")
+
+    monkeypatch.setattr(
+        JobDescriptionExtractor,
+        "_contains_semantic_content",
+        reject_recursive_search,
+        raising=False,
+    )
+
+    result = JobDescriptionExtractor().extract(html, "text/html")
+
+    assert result.responsibilities == ["Own roadmap."]
+    assert result.requirements == ["3 years of experience."]
