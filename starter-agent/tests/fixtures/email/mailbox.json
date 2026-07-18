@@ -1,0 +1,100 @@
+{
+  "messages": [
+    {
+      "id": "msg-hr-cn-001",
+      "thread_id": "thread-hr-cn-001",
+      "from": "recruiter@example.test",
+      "to": ["candidate@example.test"],
+      "cc": [],
+      "subject": "AI Agent 工程师职位沟通",
+      "sent_at": "2026-07-15T02:30:00Z",
+      "body_text": "你好，我们正在招聘 AI Agent 工程师。你的项目经历与岗位方向较匹配，想邀请你本周进行一次电话沟通。请回复两个方便的时间段。",
+      "flags": ["unread"],
+      "attachments": []
+    },
+    {
+      "id": "msg-interview-en-001",
+      "thread_id": "thread-interview-en-001",
+      "from": "talent@example.test",
+      "to": ["candidate@example.test"],
+      "cc": ["coordinator@example.test"],
+      "subject": "Interview invitation - AI Product Manager",
+      "sent_at": "2026-07-16T08:00:00Z",
+      "body_text": "We would like to invite you to an interview on July 20, 2026 at 10:00 Asia/Shanghai. Please confirm whether you can attend and whether you need any accessibility arrangements.",
+      "flags": ["unread", "flagged"],
+      "attachments": [
+        {
+          "filename": "interview.ics",
+          "content_type": "text/calendar",
+          "size_bytes": 1024,
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "msg-interview-en-002",
+      "thread_id": "thread-interview-en-001",
+      "from": "candidate@example.test",
+      "to": ["talent@example.test"],
+      "cc": ["coordinator@example.test"],
+      "subject": "Re: Interview invitation - AI Product Manager",
+      "sent_at": "2026-07-16T09:00:00Z",
+      "body_text": "Thank you. I am reviewing the proposed time and will confirm shortly.",
+      "flags": ["answered"],
+      "in_reply_to": "msg-interview-en-001",
+      "references": ["msg-interview-en-001"],
+      "attachments": []
+    },
+    {
+      "id": "msg-offer-001",
+      "thread_id": "thread-offer-001",
+      "from": "offers@example.test",
+      "to": ["candidate@example.test"],
+      "cc": [],
+      "subject": "Offer discussion",
+      "sent_at": "2026-07-17T01:00:00Z",
+      "body_text": "We are pleased to continue the offer discussion. Please send any questions by July 21, 2026.",
+      "flags": [],
+      "attachments": []
+    },
+    {
+      "id": "msg-noise-001",
+      "thread_id": "thread-noise-001",
+      "from": "newsletter@example.test",
+      "to": ["candidate@example.test"],
+      "cc": [],
+      "subject": "Weekly technology newsletter",
+      "sent_at": "2026-07-14T01:00:00Z",
+      "body_text": "This is a non-recruiting newsletter used as search noise.",
+      "flags": [],
+      "attachments": []
+    },
+    {
+      "id": "msg-long-001",
+      "thread_id": "thread-long-001",
+      "from": "longmail@example.test",
+      "to": ["candidate@example.test"],
+      "cc": [],
+      "subject": "Long interview preparation details",
+      "sent_at": "2026-07-13T01:00:00Z",
+      "body_text": "Interview preparation detail. ",
+      "body_repeat": 1000,
+      "flags": ["unread"],
+      "attachments": []
+    }
+  ],
+  "errors": [
+    {
+      "trigger_keyword": "__timeout__",
+      "error_code": "email_provider_timeout",
+      "display": "Mock 邮箱响应超时",
+      "retryable": true
+    },
+    {
+      "trigger_keyword": "__auth_failed__",
+      "error_code": "email_authentication_failed",
+      "display": "Mock 邮箱认证失败",
+      "retryable": false
+    }
+  ]
+}

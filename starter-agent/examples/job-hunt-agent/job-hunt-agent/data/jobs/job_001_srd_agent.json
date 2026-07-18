@@ -1,0 +1,49 @@
+{
+  "id": "job_001",
+  "title": "AI Agent研发工程师-开发者服务",
+  "company": "字节跳动",
+  "source": "字节跳动招聘官网 + 猎聘岗位页",
+  "source_urls": {
+    "bytedance": "https://jobs.bytedance.com",
+    "liepin": "https://www.liepin.com"
+  },
+  "source_notes": [
+    "字节跳动招聘官网公开摘要显示：深圳、正式、研发-后端、职位ID A127336。",
+    "猎聘公开列表摘要显示：AI Agent研发工程师-开发者服务，30-60k·15薪，字节跳动相关岗位；"
+  ],
+  "location": "深圳",
+  "job_type": "正式",
+  "category": "研发-后端",
+  "position_id": "A127336",
+  "salary_reference": "30-60k·15薪",
+  "responsibilities": [
+    "围绕下一代研发平台，参与从需求、编码、测试到上线的全流程 Agent 应用开发。",
+    "参与大模型应用开发全流程，包括模型接入、Prompt/上下文设计、工具调用、链路调试与效果迭代。",
+    "推动 AI 技术在研发提效、代码生成、测试、上线等开发者服务场景落地。",
+    "与产品、算法、平台或工程团队协作，持续优化 Agent 的可靠性、可观测性和用户体验。"
+  ],
+  "requirements": [
+    "本科及以上学历，计算机或相关专业。",
+    "熟悉至少一门编程语言，具备后端研发或工程化开发基础。",
+    "理解大模型应用开发流程，了解 Prompt、上下文组织、Tool Calling 或 Agent workflow。",
+    "能够围绕真实研发流程拆解问题，编写可维护代码、测试与文档。",
+    "重视事实准确性、安全边界、用户确认和线上可靠性。"
+  ],
+  "nice_to_have": [
+    "有 IDE 插件、代码助手、AI Coding、研发平台或开发者工具经验。",
+    "有 RAG、MCP、自动化工作流、评测体系或可观测性经验。",
+    "能维护项目文档、验收用例，并根据运行日志定位和改进问题。"
+  ],
+  "classroom_use": {
+    "fit_focus": [
+      "IDE 插件代码助手从 0 到 1 构建经历可对齐研发平台 Agent 场景。",
+      "文档问答、workflow assistance、prompt templates、evaluation notes 可对齐大模型应用全流程。",
+      "Python API 与单元测试经历可对齐后端研发和工程可靠性要求。"
+    ],
+    "risk_warnings": [
+      "不要把课堂或实习经历夸大成主导生产级研发平台。",
+      "不要编造线上指标、服务用户数或完整产品 ownership。",
+      "如果没有真实工具调用、RAG、MCP 经验，只能写了解或参与相关设计，不写熟练/主导。"
+    ]
+  }
+}

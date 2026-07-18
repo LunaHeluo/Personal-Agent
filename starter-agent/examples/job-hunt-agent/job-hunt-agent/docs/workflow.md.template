@@ -1,0 +1,14 @@
+# Workflow Template
+
+> 空模板。第 2 课用 acceptance cases 反推填写。
+
+## Workflow: job_hunt_apply
+
+1. Validate Input [D]
+2. Gather Context [D/A]
+3. Draft / Decide [A]
+4. Human Confirm [H]
+5. Commit or Stop [D/H]
+
+## Acceptance Mapping
+

@@ -1,0 +1,2217 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <title>Starter Agent</title>
+  <style>
+    :root {
+      --bg: #f7f5f0;
+      --panel: #ffffff;
+      --text: #1f2328;
+      --muted: #667085;
+      --line: #d9dee7;
+      --accent: #0f766e;
+      --accent-dark: #0b5f59;
+      --warn: #b42318;
+      --soft: #eef6f5;
+      --assistant: #ffffff;
+      --user: #20312f;
+      --radius: 8px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    button,
+    input,
+    select,
+    textarea {
+      font: inherit;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
+      border-radius: var(--radius);
+      cursor: pointer;
+      min-height: 36px;
+      padding: 0 12px;
+    }
+
+    button:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent-dark);
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 300px minmax(0, 1fr);
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-height: 0;
+      min-width: 0;
+      overflow: hidden;
+      border-right: 1px solid var(--line);
+      background: #fbfaf7;
+    }
+
+    .sidebar-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .sidebar-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .brand {
+      min-width: 0;
+    }
+
+    .brand-title {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.3;
+    }
+
+    .brand-subtitle {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .session-list {
+      flex: 1 1 0;
+      height: 0;
+      max-height: 100%;
+      min-height: 0;
+      overflow-y: scroll;
+      overflow-x: hidden;
+      padding: 8px;
+      scrollbar-width: auto;
+      scrollbar-color: #73817b #e8ece9;
+      scrollbar-gutter: stable;
+      overscroll-behavior: contain;
+      touch-action: pan-y;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .session-list::-webkit-scrollbar {
+      width: 11px;
+    }
+
+    .session-list::-webkit-scrollbar-track {
+      border-left: 1px solid #d9dfdb;
+      background: #e8ece9;
+    }
+
+    .session-list::-webkit-scrollbar-thumb {
+      border-radius: 999px;
+      border: 2px solid #e8ece9;
+      background: #73817b;
+    }
+
+    .sidebar-clear-row {
+      flex: 0 0 auto;
+      display: flex;
+      justify-content: flex-end;
+      padding: 5px 10px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfaf7;
+    }
+
+    .clear-all-sessions {
+      width: auto;
+      min-height: 28px;
+      padding: 0 9px;
+      border-radius: 7px;
+      font-size: 12px;
+      color: #b42318;
+      border-color: #e6aaa5;
+      background: #fff7f6;
+    }
+
+    .clear-all-sessions:hover {
+      background: #feeceb;
+    }
+
+    .sidebar-settings-button {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      justify-content: center;
+    }
+
+    .settings-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: rgba(31, 35, 40, 0.35);
+    }
+
+    .settings-overlay[hidden] {
+      display: none;
+    }
+
+    .settings-dialog {
+      width: min(760px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      box-shadow: 0 18px 48px rgba(31, 35, 40, 0.18);
+      overflow: hidden;
+    }
+
+    .settings-dialog-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .settings-dialog-header h2 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .settings-close {
+      width: 34px;
+      min-height: 34px;
+      padding: 0;
+      font-size: 20px;
+    }
+
+    .settings-dialog-body {
+      padding: 18px;
+    }
+
+    .setting-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fbfaf7;
+    }
+
+    .setting-title {
+      font-weight: 650;
+      line-height: 1.4;
+    }
+
+    .setting-description {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .memory-settings {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--line);
+    }
+
+    .memory-settings h3 {
+      margin: 0 0 6px;
+      font-size: 16px;
+    }
+
+    .memory-form {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .memory-form .wide {
+      grid-column: 1 / -1;
+    }
+
+    .memory-form textarea {
+      min-height: 72px;
+      resize: vertical;
+    }
+
+    .memory-form-actions,
+    .memory-item-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .memory-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+      max-height: 280px;
+      overflow: auto;
+    }
+
+    .memory-item {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: #fff;
+    }
+
+    .memory-item.disabled,
+    .memory-item.expired {
+      opacity: 0.65;
+    }
+
+    .memory-item-title {
+      font-weight: 650;
+    }
+
+    .memory-item-value {
+      margin: 6px 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .memory-item-meta {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .continuation-action {
+      margin-top: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #fff;
+      background: #1f6f43;
+      border-color: #1f6f43;
+    }
+
+    .email-approval-card {
+      margin-top: 12px;
+      padding: 14px;
+      border: 1px solid #a4d4cf;
+      border-radius: 10px;
+      background: #f7fffd;
+      white-space: normal;
+    }
+
+    .email-approval-card h3 {
+      margin: 0 0 10px;
+      font-size: 16px;
+    }
+
+    .email-preview-grid {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 6px 10px;
+      font-size: 13px;
+    }
+
+    .email-preview-label {
+      color: var(--muted);
+      font-weight: 650;
+    }
+
+    .email-preview-body {
+      margin-top: 10px;
+      padding: 10px;
+      max-height: 260px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .email-approval-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .email-confirm-send {
+      color: #fff;
+      border-color: var(--accent);
+      background: var(--accent);
+    }
+
+    .email-send-result {
+      margin-top: 10px;
+      padding: 9px;
+      border-radius: 8px;
+      background: #eef2f6;
+      font-size: 13px;
+      white-space: pre-wrap;
+    }
+
+    .email-send-result.success {
+      color: #15803d;
+      background: #f0fdf4;
+    }
+
+    .email-send-result.unknown,
+    .email-send-result.error {
+      color: #b42318;
+      background: #fef2f2;
+    }
+
+    .switch {
+      position: relative;
+      flex: 0 0 auto;
+      width: 46px;
+      height: 26px;
+      margin-top: 2px;
+    }
+
+    .switch input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+    }
+
+    .switch-slider {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: #c5cad3;
+      transition: background 160ms ease;
+      cursor: pointer;
+    }
+
+    .switch-slider::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow: 0 1px 3px rgba(31, 35, 40, 0.28);
+      transition: transform 160ms ease;
+    }
+
+    .switch input:checked + .switch-slider {
+      background: var(--accent);
+    }
+
+    .switch input:checked + .switch-slider::after {
+      transform: translateX(20px);
+    }
+
+    .switch input:focus-visible + .switch-slider {
+      outline: 3px solid rgba(15, 118, 110, 0.25);
+      outline-offset: 2px;
+    }
+
+    .session-empty,
+    .small-note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      padding: 10px;
+    }
+
+    .session-item {
+      width: 100%;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: start;
+      margin-bottom: 6px;
+      padding: 10px;
+      text-align: left;
+      border-color: transparent;
+      background: transparent;
+      cursor: pointer;
+      touch-action: pan-y;
+    }
+
+    .session-item.active {
+      background: var(--soft);
+      border-color: #a4d4cf;
+    }
+
+    .session-title,
+    .session-last {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .session-title {
+      font-weight: 650;
+      font-size: 13px;
+    }
+
+    .session-last {
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .delete-session {
+      width: 26px;
+      min-height: 26px;
+      padding: 0;
+      border-radius: 7px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+
+    .delete-session:hover:not(:disabled) {
+      color: var(--warn);
+      border-color: #f2b8b5;
+    }
+
+    .main {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-width: 0;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.86);
+    }
+
+    .topbar h1 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.25;
+    }
+
+    .status {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .token-budget {
+      display: inline-flex;
+      align-items: center;
+      margin-top: 6px;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: var(--panel);
+      font-size: 12px;
+      line-height: 1.2;
+    }
+
+    .token-budget.warning {
+      color: #9a6700;
+      border-color: #d8b45b;
+      background: #fff8df;
+    }
+
+    .token-budget.exceeded {
+      color: var(--warn);
+      border-color: #f2b8b5;
+      background: #fff1f0;
+    }
+
+    .settings {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .field {
+      display: grid;
+      gap: 4px;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1;
+    }
+
+    .field input,
+    .field select {
+      width: 180px;
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      color: var(--text);
+      padding: 0 9px;
+    }
+
+    .messages {
+      min-height: 0;
+      overflow-y: auto;
+      padding: 22px 18px 28px;
+    }
+
+    .message-row {
+      display: flex;
+      margin: 0 auto 14px;
+      max-width: 920px;
+    }
+
+    .message-row.user {
+      justify-content: flex-end;
+    }
+
+    .message-row.assistant,
+    .message-row.tool,
+    .message-row.error {
+      justify-content: flex-start;
+    }
+
+    .bubble {
+      max-width: min(720px, 88%);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 11px 13px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      line-height: 1.55;
+      font-size: 15px;
+      background: var(--assistant);
+      box-shadow: 0 1px 0 rgba(16, 24, 40, 0.03);
+    }
+
+    .message-row.user .bubble {
+      background: var(--user);
+      border-color: var(--user);
+      color: #ffffff;
+    }
+
+    .message-row.error .bubble {
+      border-color: #f1aaa5;
+      background: #fff4f2;
+      color: var(--warn);
+    }
+
+    .message-row.tool .bubble {
+      background: #f4f6f8;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .tool-status {
+      margin: 6px 0;
+      padding: 7px 9px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 9px;
+      border: 1px solid #bfdbfe;
+      border-radius: var(--radius);
+      background: #eff6ff;
+      color: #1d4ed8;
+      font-size: 13px;
+    }
+
+    .tool-governance-metrics {
+      flex-basis: 100%;
+      margin-left: 23px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .tool-activities {
+      margin-bottom: 8px;
+    }
+
+    .assistant-inline-error {
+      margin-top: 8px;
+      padding: 7px 9px;
+      border-radius: 8px;
+      background: #fef2f2;
+      color: #b91c1c;
+      font-size: 13px;
+      white-space: pre-wrap;
+    }
+
+    .tool-status.success {
+      border-color: #bbf7d0;
+      background: #f0fdf4;
+      color: #15803d;
+    }
+
+    .tool-status.error {
+      border-color: #fecaca;
+      background: #fef2f2;
+      color: #b91c1c;
+    }
+
+    .tool-spinner {
+      width: 14px;
+      height: 14px;
+      flex: 0 0 auto;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: tool-spin 0.75s linear infinite;
+    }
+
+    .tool-status.success .tool-spinner,
+    .tool-status.error .tool-spinner {
+      border: 0;
+      width: auto;
+      height: auto;
+      animation: none;
+    }
+
+    @keyframes tool-spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .meta {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .composer-wrap {
+      border-top: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.9);
+      padding: 12px 18px 16px;
+    }
+
+    .tool-menu {
+      max-width: 920px;
+      margin: 0 auto 8px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+      overflow: hidden;
+    }
+
+    .tool-menu[hidden] {
+      display: none;
+    }
+
+    .tool-option {
+      width: 100%;
+      display: grid;
+      grid-template-columns: minmax(180px, auto) 1fr auto;
+      gap: 12px;
+      padding: 10px 12px;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      border-radius: 0;
+      text-align: left;
+      background: var(--panel);
+    }
+
+    .tool-option:last-child {
+      border-bottom: 0;
+    }
+
+    .tool-option:hover,
+    .tool-option.active {
+      background: #f3f7ff;
+    }
+
+    .tool-name {
+      color: var(--accent-dark);
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-weight: 700;
+    }
+
+    .tool-description,
+    .tool-risk {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .composer {
+      max-width: 920px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 8px;
+      align-items: end;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 48px;
+      max-height: 160px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 12px;
+      background: var(--panel);
+      color: var(--text);
+      line-height: 1.45;
+    }
+
+    .send {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+      min-width: 72px;
+    }
+
+    .send:hover:not(:disabled) {
+      background: var(--accent-dark);
+      border-color: var(--accent-dark);
+      color: #ffffff;
+    }
+
+    .composer-note {
+      max-width: 920px;
+      margin: 8px auto 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media (max-width: 800px) {
+      .app {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(240px, 42dvh) minmax(0, 1fr);
+      }
+
+      .sidebar {
+        height: 100%;
+        max-height: none;
+        min-height: 0;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .session-list {
+        display: block;
+        overflow-x: hidden;
+        overflow-y: scroll;
+      }
+
+      .session-item {
+        min-width: 0;
+      }
+
+      .main {
+        height: 100%;
+      }
+
+      .topbar {
+        grid-template-columns: 1fr;
+      }
+
+      .settings {
+        justify-content: stretch;
+      }
+
+      .field,
+      .field input,
+      .field select {
+        width: 100%;
+      }
+
+      .composer {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <h2 class="brand-title">Starter Agent</h2>
+          <p class="brand-subtitle">本地会话</p>
+        </div>
+        <div class="sidebar-header-actions">
+          <button id="settingsButton" class="sidebar-settings-button" type="button" title="设置">
+            <span aria-hidden="true">⚙</span>
+            <span>设置</span>
+          </button>
+          <button id="newSessionButton" type="button" title="新建会话">新建</button>
+        </div>
+      </div>
+      <div class="sidebar-clear-row">
+        <button id="clearAllSessionsButton" class="clear-all-sessions" type="button">
+          清除全部
+        </button>
+      </div>
+      <div id="sessionList" class="session-list">
+        <div class="session-empty">正在加载会话...</div>
+      </div>
+    </aside>
+
+    <section class="main">
+      <header class="topbar">
+        <div>
+          <h1>求职 Agent 对话</h1>
+          <div id="status" class="status">准备连接本地 API</div>
+          <div id="tokenBudget" class="token-budget">本会话 tokens: 0 / 128k</div>
+        </div>
+        <div class="settings">
+          <div class="field">
+            <label for="apiBase">API</label>
+            <input id="apiBase" value="http://127.0.0.1:8000">
+          </div>
+          <div class="field">
+            <label for="providerSelect">Provider</label>
+            <select id="providerSelect">
+              <option value="">使用后端默认</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="modelSelect">Model</label>
+            <select id="modelSelect">
+              <option value="">使用后端默认</option>
+            </select>
+          </div>
+        </div>
+      </header>
+
+      <div id="messages" class="messages" aria-live="polite"></div>
+
+      <footer class="composer-wrap">
+        <div id="toolMenu" class="tool-menu" hidden></div>
+        <form id="composer" class="composer">
+          <textarea id="messageInput" placeholder="输入消息，Enter 发送" rows="2"></textarea>
+          <button id="clearButton" type="button">清空</button>
+          <button id="sendButton" class="send" type="submit">发送</button>
+        </form>
+        <div class="composer-note">Shift + Enter 换行</div>
+      </footer>
+    </section>
+  </main>
+
+  <div id="settingsOverlay" class="settings-overlay" hidden>
+    <section class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="settings-dialog-header">
+        <h2 id="settingsTitle">设置</h2>
+        <button id="settingsCloseButton" class="settings-close" type="button" aria-label="关闭设置">×</button>
+      </div>
+      <div class="settings-dialog-body">
+        <div class="setting-row">
+          <div>
+            <div class="setting-title">工具治理</div>
+            <div class="setting-description">
+              开启后，工具结果会执行 Token 预算检查、超限裁剪、完整性标记和来源溯源。关闭后工具仍可调用，但结果不经过治理。
+            </div>
+          </div>
+          <label class="switch" title="工具治理">
+            <input id="toolGovernanceToggle" type="checkbox" role="switch" checked>
+            <span class="switch-slider" aria-hidden="true"></span>
+          </label>
+        </div>
+        <section class="memory-settings" aria-labelledby="memorySettingsTitle">
+          <h3 id="memorySettingsTitle">长期记忆</h3>
+          <div class="setting-description">
+            只保存你明确确认的跨会话资料、偏好、约束、已核验技能或投递状态。网页、JD、邮件和工具原文不能直接写入。
+          </div>
+          <form id="memoryForm" class="memory-form">
+            <label>
+              记忆名称
+              <input id="memoryKey" maxlength="120" required placeholder="例如：目标城市">
+            </label>
+            <label>
+              类型
+              <select id="memoryCategory">
+                <option value="profile">个人资料</option>
+                <option value="preference" selected>偏好</option>
+                <option value="constraint">约束</option>
+                <option value="verified_skill">已核验技能</option>
+                <option value="application_state">投递状态</option>
+              </select>
+            </label>
+            <label class="wide">
+              内容
+              <textarea id="memoryValue" maxlength="2000" required placeholder="输入需要跨会话保留的事实"></textarea>
+            </label>
+            <label>
+              过期时间（可选）
+              <input id="memoryExpiresAt" type="date">
+            </label>
+            <label>
+              敏感级别
+              <select id="memorySensitivity">
+                <option value="normal">普通</option>
+                <option value="personal" selected>个人</option>
+                <option value="sensitive">敏感</option>
+              </select>
+            </label>
+            <div class="memory-form-actions wide">
+              <button id="memorySaveButton" type="submit">新增记忆</button>
+              <button id="memoryCancelButton" type="button" hidden>取消编辑</button>
+            </div>
+          </form>
+          <div id="memoryList" class="memory-list">
+            <div class="session-empty">打开设置后加载记忆</div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const TOOL_GOVERNANCE_STORAGE_KEY = "starter-agent.tool-governance-enabled";
+    const state = {
+      sessionId: null,
+      isSending: false,
+      sessions: [],
+      sessionOffset: 0,
+      sessionLimit: 30,
+      sessionsHasMore: false,
+      sessionsLoading: false,
+      activeAssistantBubble: null,
+      systemBubble: null,
+      tools: [],
+      visibleTools: [],
+      activeToolIndex: 0,
+      toolStatusRows: new Map(),
+      sessionUsage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      maxTotalTokens: 128000,
+      toolGovernanceEnabled: localStorage.getItem(TOOL_GOVERNANCE_STORAGE_KEY) !== "false",
+      memories: [],
+      editingMemoryId: null,
+      pendingEmailDrafts: []
+    };
+
+    const apiBaseInput = document.querySelector("#apiBase");
+    const providerSelect = document.querySelector("#providerSelect");
+    const modelSelect = document.querySelector("#modelSelect");
+    const statusEl = document.querySelector("#status");
+    const tokenBudgetEl = document.querySelector("#tokenBudget");
+    const messagesEl = document.querySelector("#messages");
+    const messageInput = document.querySelector("#messageInput");
+    const sendButton = document.querySelector("#sendButton");
+    const clearButton = document.querySelector("#clearButton");
+    const newSessionButton = document.querySelector("#newSessionButton");
+    const sessionListEl = document.querySelector("#sessionList");
+    const clearAllSessionsButton = document.querySelector("#clearAllSessionsButton");
+    const composer = document.querySelector("#composer");
+    const toolMenu = document.querySelector("#toolMenu");
+    const settingsButton = document.querySelector("#settingsButton");
+    const settingsOverlay = document.querySelector("#settingsOverlay");
+    const settingsCloseButton = document.querySelector("#settingsCloseButton");
+    const toolGovernanceToggle = document.querySelector("#toolGovernanceToggle");
+    const memoryForm = document.querySelector("#memoryForm");
+    const memoryKey = document.querySelector("#memoryKey");
+    const memoryValue = document.querySelector("#memoryValue");
+    const memoryCategory = document.querySelector("#memoryCategory");
+    const memoryExpiresAt = document.querySelector("#memoryExpiresAt");
+    const memorySensitivity = document.querySelector("#memorySensitivity");
+    const memorySaveButton = document.querySelector("#memorySaveButton");
+    const memoryCancelButton = document.querySelector("#memoryCancelButton");
+    const memoryList = document.querySelector("#memoryList");
+
+    function apiBase() {
+      return apiBaseInput.value.replace(/\/+$/, "");
+    }
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    async function openSettings() {
+      toolGovernanceToggle.checked = state.toolGovernanceEnabled;
+      settingsOverlay.hidden = false;
+      settingsCloseButton.focus();
+      await loadMemories();
+    }
+
+    function closeSettings() {
+      settingsOverlay.hidden = true;
+      settingsButton.focus();
+    }
+
+    function memoryCategoryLabel(category) {
+      return ({
+        profile: "个人资料",
+        preference: "偏好",
+        constraint: "约束",
+        verified_skill: "已核验技能",
+        application_state: "投递状态"
+      })[category] || category;
+    }
+
+    function memorySourceLabel(sourceType) {
+      return ({
+        user_confirmed: "用户确认",
+        local_file: "本地文件核验",
+        conversation_inferred: "后台自动提取"
+      })[sourceType] || sourceType;
+    }
+
+    function memoryExpiryValue(value) {
+      return value ? String(value).slice(0, 10) : "";
+    }
+
+    function resetMemoryForm() {
+      state.editingMemoryId = null;
+      memoryForm.reset();
+      memoryCategory.value = "preference";
+      memorySensitivity.value = "personal";
+      memorySaveButton.textContent = "新增记忆";
+      memoryCancelButton.hidden = true;
+    }
+
+    function renderMemories() {
+      memoryList.replaceChildren();
+      if (!state.memories.length) {
+        const empty = document.createElement("div");
+        empty.className = "session-empty";
+        empty.textContent = "暂无长期记忆";
+        memoryList.appendChild(empty);
+        return;
+      }
+      for (const memory of state.memories) {
+        const item = document.createElement("article");
+        item.className = `memory-item ${memory.status}`;
+        const title = document.createElement("div");
+        title.className = "memory-item-title";
+        title.textContent = memory.key;
+        const value = document.createElement("div");
+        value.className = "memory-item-value";
+        value.textContent = memory.value;
+        const meta = document.createElement("div");
+        meta.className = "memory-item-meta";
+        meta.textContent = `${memoryCategoryLabel(memory.category)} · ${memory.status} · 来源=${memorySourceLabel(memory.source_type)} · 置信度=${memory.confidence} · 过期=${memoryExpiryValue(memory.expires_at) || "无"}`;
+        const actions = document.createElement("div");
+        actions.className = "memory-item-actions";
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.textContent = "修改";
+        edit.addEventListener("click", () => editMemory(memory));
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.textContent = memory.status === "active" ? "停用" : "启用";
+        toggle.disabled = memory.status === "expired";
+        toggle.addEventListener("click", () => toggleMemory(memory));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "删除";
+        remove.addEventListener("click", () => deleteMemory(memory));
+        actions.append(edit, toggle, remove);
+        item.append(title, value, meta, actions);
+        memoryList.appendChild(item);
+      }
+    }
+
+    async function loadMemories() {
+      memoryList.innerHTML = '<div class="session-empty">正在加载长期记忆...</div>';
+      try {
+        const response = await fetch(`${apiBase()}/v1/memories`);
+        if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+        const data = await response.json();
+        state.memories = data.memories || [];
+        renderMemories();
+      } catch (error) {
+        memoryList.innerHTML = '<div class="session-empty">长期记忆加载失败</div>';
+        setStatus(`长期记忆加载失败：${error.message}`);
+      }
+    }
+
+    function editMemory(memory) {
+      state.editingMemoryId = memory.id;
+      memoryKey.value = memory.key;
+      memoryValue.value = memory.value;
+      memoryCategory.value = memory.category;
+      memoryExpiresAt.value = memoryExpiryValue(memory.expires_at);
+      memorySensitivity.value = memory.sensitivity;
+      memorySaveButton.textContent = "保存修改";
+      memoryCancelButton.hidden = false;
+      memoryKey.focus();
+    }
+
+    function memoryPayload(status = "active") {
+      const expiry = memoryExpiresAt.value
+        ? new Date(`${memoryExpiresAt.value}T23:59:59`).toISOString()
+        : null;
+      return {
+        key: memoryKey.value.trim(),
+        value: memoryValue.value.trim(),
+        category: memoryCategory.value,
+        expires_at: expiry,
+        sensitivity: memorySensitivity.value,
+        status,
+        source_type: "user_confirmed",
+        confirmed: true
+      };
+    }
+
+    async function saveMemory(event) {
+      event.preventDefault();
+      const current = state.memories.find(item => item.id === state.editingMemoryId);
+      const payload = memoryPayload(current?.status === "disabled" ? "disabled" : "active");
+      if (!payload.key || !payload.value) return;
+      if (!window.confirm("确认将这条信息作为跨会话长期记忆保存吗？")) return;
+      const editing = Boolean(state.editingMemoryId);
+      const url = editing
+        ? `${apiBase()}/v1/memories/${state.editingMemoryId}`
+        : `${apiBase()}/v1/memories`;
+      if (!editing) delete payload.status;
+      try {
+        const response = await fetch(url, {
+          method: editing ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+        resetMemoryForm();
+        await loadMemories();
+        setStatus(editing ? "长期记忆已修改" : "长期记忆已创建");
+      } catch (error) {
+        setStatus(`长期记忆保存失败：${error.message}`);
+      }
+    }
+
+    async function toggleMemory(memory) {
+      const payload = {
+        key: memory.key,
+        value: memory.value,
+        category: memory.category,
+        expires_at: memory.expires_at,
+        sensitivity: memory.sensitivity,
+        status: memory.status === "active" ? "disabled" : "active",
+        confirmed: true
+      };
+      const response = await fetch(`${apiBase()}/v1/memories/${memory.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        setStatus(`更新记忆状态失败：${response.status}`);
+        return;
+      }
+      await loadMemories();
+    }
+
+    async function deleteMemory(memory) {
+      if (!window.confirm(`确认删除长期记忆“${memory.key}”吗？删除后不会继续注入 Context。`)) return;
+      const response = await fetch(`${apiBase()}/v1/memories/${memory.id}`, { method: "DELETE" });
+      if (!response.ok) {
+        setStatus(`删除长期记忆失败：${response.status}`);
+        return;
+      }
+      if (state.editingMemoryId === memory.id) resetMemoryForm();
+      await loadMemories();
+      setStatus("长期记忆已删除");
+    }
+
+    function formatTokenCount(value) {
+      return new Intl.NumberFormat("zh-CN").format(Number(value) || 0);
+    }
+
+    function updateTokenBudget(usage = {}, maximum = 128000, budgetStatus = "normal") {
+      state.sessionUsage = usage;
+      state.maxTotalTokens = maximum || 128000;
+      const total = Number(usage.total_tokens) || 0;
+      const label = budgetStatus === "exceeded"
+        ? " · 已超出预算"
+        : budgetStatus === "warning" ? " · 接近预算" : "";
+      tokenBudgetEl.textContent = `本会话 tokens: ${formatTokenCount(total)} / ${formatTokenCount(state.maxTotalTokens)}${label}`;
+      tokenBudgetEl.className = `token-budget ${budgetStatus === "normal" ? "" : budgetStatus}`.trim();
+    }
+
+    function setSending(value) {
+      state.isSending = value;
+      messageInput.disabled = value;
+      sendButton.disabled = value;
+      clearButton.disabled = value;
+      newSessionButton.disabled = value;
+      clearAllSessionsButton.disabled = value;
+      sendButton.textContent = value ? "发送中" : "发送";
+    }
+
+    function scrollMessages() {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    function appendMessage(role, content, meta = "") {
+      const row = document.createElement("div");
+      row.className = `message-row ${role}`;
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      const contentEl = document.createElement("div");
+      contentEl.textContent = content;
+      bubble.appendChild(contentEl);
+      if (meta) {
+        const metaEl = document.createElement("div");
+        metaEl.className = "meta";
+        metaEl.textContent = meta;
+        bubble.appendChild(metaEl);
+      }
+      row.appendChild(bubble);
+      messagesEl.appendChild(row);
+      scrollMessages();
+      return { row, bubble, contentEl };
+    }
+
+    function appendError(message) {
+      const target = state.activeAssistantBubble || state.systemBubble;
+      if (!target) {
+        appendMessage("error", message);
+        return;
+      }
+      const error = document.createElement("div");
+      error.className = "assistant-inline-error";
+      error.textContent = message;
+      target.bubble.appendChild(error);
+      scrollMessages();
+    }
+
+    function toolActivityContainer() {
+      if (!state.activeAssistantBubble) return null;
+      let container = state.activeAssistantBubble.bubble.querySelector(".tool-activities");
+      if (!container) {
+        container = document.createElement("div");
+        container.className = "tool-activities";
+        state.activeAssistantBubble.bubble.insertBefore(
+          container,
+          state.activeAssistantBubble.contentEl
+        );
+      }
+      return container;
+    }
+
+    function showToolStarted(event) {
+      const row = document.createElement("div");
+      row.className = "tool-status running";
+      const icon = document.createElement("span");
+      icon.className = "tool-spinner";
+      const text = document.createElement("span");
+      text.textContent = event.display || (
+        event.name === "summarize_context"
+          ? "上下文摘要正在执行"
+          : `${event.name || "未知工具"} 工具正在执行`
+      );
+      row.append(icon, text);
+      const container = toolActivityContainer();
+      if (container) container.appendChild(row);
+      else messagesEl.appendChild(row);
+      state.toolStatusRows.set(event.call_id, { row, icon, text });
+      scrollMessages();
+    }
+
+    function toolGovernanceMetrics(event) {
+      const raw = Number(event.raw_result_tokens);
+      const context = Number(event.context_result_tokens);
+      if (!Number.isFinite(raw) || !Number.isFinite(context)) return null;
+      const rawText = raw.toLocaleString();
+      const contextText = context.toLocaleString();
+      if (event.tool_governance_enabled === false) {
+        return `工具治理已关闭 · ${rawText} tokens 原样进入上下文`;
+      }
+      if (!event.is_truncated) {
+        return `工具治理已开启 · ${rawText} tokens · 未超过阈值，未裁剪`;
+      }
+      const reduction = raw > 0
+        ? Math.max(0, (1 - context / raw) * 100)
+        : 0;
+      return `工具治理已开启 · ${rawText} → ${contextText} tokens · 减少 ${reduction.toFixed(1)}% · 已裁剪`;
+    }
+
+    function showToolCompleted(event) {
+      let item = state.toolStatusRows.get(event.call_id);
+      if (!item) {
+        showToolStarted(event);
+        item = state.toolStatusRows.get(event.call_id);
+      }
+      item.row.className = `tool-status ${event.ok ? "success" : "error"}`;
+      item.icon.textContent = event.ok ? "✓" : "×";
+      item.text.textContent = event.display || (event.ok
+        ? `已执行 ${event.name || "未知工具"} 工具`
+        : `${event.name || "未知工具"} 工具执行失败${event.error_code ? `（${event.error_code}）` : ""}`);
+      if (event.summary_id) {
+        item.row.title = `summary_id=${event.summary_id}`;
+        item.row.dataset.summaryId = event.summary_id;
+      }
+      const metricsText = toolGovernanceMetrics(event);
+      if (metricsText) {
+        const metrics = document.createElement("span");
+        metrics.className = "tool-governance-metrics";
+        metrics.textContent = metricsText;
+        if (event.raw_source_ref) {
+          metrics.title = `raw_source_ref=${event.raw_source_ref}`;
+        }
+        item.row.appendChild(metrics);
+      }
+      scrollMessages();
+    }
+
+    function appendSummaryTrace(target, trace) {
+      if (!target || !trace) return;
+      const row = document.createElement("div");
+      row.className = "tool-status success";
+      row.title = `summary_id=${trace.summary_id}`;
+      const icon = document.createElement("span");
+      icon.textContent = "✓";
+      const text = document.createElement("span");
+      text.textContent = `已执行上下文摘要 · summary前 tokens=${trace.before_tokens} · summary后 tokens=${trace.after_tokens}`;
+      row.append(icon, text);
+      target.bubble.insertBefore(row, target.contentEl);
+    }
+
+    function appendHistoricalTool(target, message) {
+      let result = {};
+      try {
+        result = JSON.parse(message.content || "{}");
+      } catch (_error) {
+        result = {};
+      }
+      let container = target.bubble.querySelector(".tool-activities");
+      if (!container) {
+        container = document.createElement("div");
+        container.className = "tool-activities";
+        target.bubble.insertBefore(container, target.contentEl);
+      }
+      const row = document.createElement("div");
+      const ok = result.ok !== false;
+      row.className = `tool-status ${ok ? "success" : "error"}`;
+      const icon = document.createElement("span");
+      icon.textContent = ok ? "✓" : "×";
+      const text = document.createElement("span");
+      text.textContent = result.display || (ok
+        ? `已执行 ${message.name || "未知工具"} 工具`
+        : `${message.name || "未知工具"} 工具执行失败${result.error_code ? `（${result.error_code}）` : ""}`);
+      row.append(icon, text);
+      container.appendChild(row);
+    }
+
+    function clearConversation() {
+      state.sessionId = null;
+      state.activeAssistantBubble = null;
+      state.systemBubble = null;
+      state.toolStatusRows.clear();
+      messagesEl.replaceChildren();
+      updateTokenBudget();
+      setStatus("新会话");
+      renderSessions();
+      messageInput.focus();
+    }
+
+    function payloadFor(message) {
+      const command = parseSlashCommand(message);
+      const payload = { message: command ? command.message : message };
+      if (command) payload.tool = command.tool;
+      if (state.sessionId) payload.session_id = state.sessionId;
+      if (providerSelect.value) payload.provider = providerSelect.value;
+      if (modelSelect.value) payload.model = modelSelect.value;
+      payload.tool_governance_enabled = state.toolGovernanceEnabled;
+      return payload;
+    }
+
+    function parseSlashCommand(message) {
+      const match = message.match(/^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/);
+      if (!match) return null;
+      const tool = state.tools.find((item) => item.name === match[1]);
+      if (!tool) return null;
+      return { tool: tool.name, message: (match[2] || "").trim() };
+    }
+
+    function selectTool(tool) {
+      messageInput.value = `/${tool.name} `;
+      hideToolMenu();
+      messageInput.focus();
+    }
+
+    function hideToolMenu() {
+      toolMenu.hidden = true;
+      state.visibleTools = [];
+      state.activeToolIndex = 0;
+    }
+
+    function renderToolMenu() {
+      const match = messageInput.value.match(/^\/([^\s]*)$/);
+      if (!match) {
+        hideToolMenu();
+        return;
+      }
+      const keyword = match[1].toLowerCase();
+      state.visibleTools = state.tools.filter((tool) =>
+        tool.name.toLowerCase().includes(keyword)
+      );
+      state.activeToolIndex = Math.min(
+        state.activeToolIndex,
+        Math.max(0, state.visibleTools.length - 1)
+      );
+      toolMenu.replaceChildren();
+      for (const [index, tool] of state.visibleTools.entries()) {
+        const option = document.createElement("button");
+        option.type = "button";
+        option.className = `tool-option${index === state.activeToolIndex ? " active" : ""}`;
+        const name = document.createElement("span");
+        name.className = "tool-name";
+        name.textContent = `/${tool.name}`;
+        const description = document.createElement("span");
+        description.className = "tool-description";
+        description.textContent = tool.description;
+        const risk = document.createElement("span");
+        risk.className = "tool-risk";
+        risk.textContent = tool.risk_level;
+        option.append(name, description, risk);
+        option.addEventListener("click", () => selectTool(tool));
+        toolMenu.appendChild(option);
+      }
+      toolMenu.hidden = state.visibleTools.length === 0;
+    }
+
+    async function loadTools() {
+      try {
+        const response = await fetch(`${apiBase()}/v1/tools`);
+        if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+        const data = await response.json();
+        state.tools = data.tools || [];
+      } catch (error) {
+        state.tools = [];
+        hideToolMenu();
+        appendError(`读取工具列表失败：${error.message}`);
+      }
+    }
+
+    function renderModels(providers, defaultProvider, defaultModel) {
+      const selectedProvider = providerSelect.value || defaultProvider;
+      const provider = providers.find((item) => item.name === selectedProvider);
+      const models = provider?.models || [];
+      modelSelect.replaceChildren();
+      if (models.length === 0) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "该 Provider 暂未配置可用模型";
+        modelSelect.appendChild(option);
+      }
+      for (const model of models) {
+        const option = document.createElement("option");
+        option.value = model;
+        option.textContent = model === defaultModel ? `${model}（默认）` : model;
+        modelSelect.appendChild(option);
+      }
+      modelSelect.disabled = models.length === 0;
+      if (models.includes(defaultModel)) modelSelect.value = defaultModel;
+    }
+
+    async function loadProviders() {
+      try {
+        const response = await fetch(`${apiBase()}/v1/providers`);
+        if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+        const data = await response.json();
+        providerSelect.replaceChildren();
+        const defaultOption = document.createElement("option");
+        defaultOption.value = "";
+        defaultOption.textContent = `使用后端默认 (${data.default_provider})`;
+        providerSelect.appendChild(defaultOption);
+        for (const provider of data.providers) {
+          const option = document.createElement("option");
+          option.value = provider.name;
+          option.textContent = provider.has_api_key
+            ? `${provider.name} · ${provider.type}`
+            : `${provider.name} · 缺少 Key`;
+          providerSelect.appendChild(option);
+        }
+        renderModels(data.providers, data.default_provider, data.default_model);
+        providerSelect.onchange = () => {
+          renderModels(data.providers, data.default_provider, data.default_model);
+        };
+        setStatus("已连接本地 API");
+      } catch (error) {
+        setStatus("无法读取 provider");
+        appendError(`读取 provider 失败：${error.message}`);
+      }
+    }
+
+    function sessionLabel(session) {
+      return session.title || session.last_message || "未命名会话";
+    }
+
+    function createSessionItem(session) {
+        const item = document.createElement("div");
+        item.className = `session-item${session.id === state.sessionId ? " active" : ""}`;
+        item.setAttribute("role", "button");
+        item.tabIndex = 0;
+
+        const text = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "session-title";
+        title.textContent = sessionLabel(session);
+        const last = document.createElement("div");
+        last.className = "session-last";
+        last.textContent = `${session.message_count} 条 · ${session.last_message || "无摘要"}`;
+        text.append(title, last);
+
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "delete-session";
+        del.title = "删除会话";
+        del.textContent = "×";
+        del.addEventListener("click", async (event) => {
+          event.stopPropagation();
+          await deleteSession(session.id);
+        });
+
+        item.append(text, del);
+        item.addEventListener("click", () => switchSession(session.id));
+        item.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            switchSession(session.id);
+          }
+        });
+        return item;
+    }
+
+    function renderSessions() {
+      sessionListEl.replaceChildren();
+      if (!state.sessions.length) {
+        const empty = document.createElement("div");
+        empty.className = "session-empty";
+        empty.textContent = "暂无历史会话";
+        sessionListEl.appendChild(empty);
+        return;
+      }
+
+      for (const session of state.sessions) {
+        sessionListEl.appendChild(createSessionItem(session));
+      }
+    }
+
+    async function loadSessions(reset = true) {
+      if (state.sessionsLoading) return;
+      if (!reset && !state.sessionsHasMore) return;
+      state.sessionsLoading = true;
+      const offset = reset ? 0 : state.sessionOffset;
+      try {
+        const response = await fetch(
+          `${apiBase()}/v1/sessions?limit=${state.sessionLimit}&offset=${offset}`
+        );
+        if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+        const data = await response.json();
+        const incoming = data.sessions || [];
+        if (reset) {
+          state.sessions = incoming;
+          renderSessions();
+        } else {
+          const existing = new Set(state.sessions.map(item => item.id));
+          const additions = incoming.filter(item => !existing.has(item.id));
+          state.sessions.push(...additions);
+          for (const session of additions) {
+            sessionListEl.appendChild(createSessionItem(session));
+          }
+        }
+        state.sessionOffset = offset + incoming.length;
+        state.sessionsHasMore = Boolean(data.has_more);
+      } catch (error) {
+        if (reset) {
+          sessionListEl.innerHTML = "";
+          const note = document.createElement("div");
+          note.className = "session-empty";
+          note.textContent = "会话加载失败";
+          sessionListEl.appendChild(note);
+        }
+        setStatus(`会话加载失败：${error.message}`);
+      } finally {
+        state.sessionsLoading = false;
+      }
+    }
+
+    async function clearAllSessions() {
+      if (state.isSending) return;
+      const ok = window.confirm(
+        "确认清除全部对话吗？这会删除所有会话、消息、摘要和会话 Token 记录，但不会删除长期记忆和简历文件。"
+      );
+      if (!ok) return;
+      clearAllSessionsButton.disabled = true;
+      try {
+        const response = await fetch(`${apiBase()}/v1/sessions`, {
+          method: "DELETE"
+        });
+        if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+        const data = await response.json();
+        state.sessions = [];
+        state.sessionOffset = 0;
+        state.sessionsHasMore = false;
+        state.sessionId = null;
+        state.systemBubble = null;
+        state.activeAssistantBubble = null;
+        messagesEl.replaceChildren();
+        updateTokenBudget();
+        renderSessions();
+        state.systemBubble = appendMessage(
+          "assistant",
+          "全部对话已清除。长期记忆和简历文件仍然保留。"
+        );
+        setStatus(`已清除 ${data.deleted_sessions || 0} 个会话`);
+      } catch (error) {
+        appendError(`清除全部对话失败：${error.message}`);
+        setStatus("清除全部对话失败");
+      } finally {
+        clearAllSessionsButton.disabled = false;
+      }
+    }
+
+    async function switchSession(id) {
+      if (state.isSending) return;
+      try {
+        setStatus("正在加载历史会话");
+        const response = await fetch(`${apiBase()}/v1/sessions/${id}/messages`);
+        if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+        const data = await response.json();
+        state.sessionId = data.session_id;
+        updateTokenBudget(
+          data.session_usage,
+          data.max_total_tokens,
+          data.token_budget_status
+        );
+        state.systemBubble = null;
+        messagesEl.replaceChildren();
+        let lastAssistant = null;
+        const turnAssistants = new Map();
+        for (const message of data.messages) {
+          if (message.role === "user") {
+            if (message.content) appendMessage("user", message.content);
+            continue;
+          }
+          if (message.role === "assistant") {
+            if (!message.content) continue;
+            let rendered = turnAssistants.get(message.turn_id);
+            if (rendered && !rendered.contentEl.textContent) {
+              rendered.contentEl.textContent = message.content;
+            } else {
+              rendered = appendMessage("assistant", message.content);
+              turnAssistants.set(message.turn_id, rendered);
+            }
+            lastAssistant = rendered;
+            continue;
+          }
+          if (message.role === "tool") {
+            let rendered = turnAssistants.get(message.turn_id);
+            if (!rendered) {
+              rendered = appendMessage("assistant", "");
+              turnAssistants.set(message.turn_id, rendered);
+            }
+            appendHistoricalTool(rendered, message);
+            lastAssistant = rendered;
+          }
+        }
+        appendSummaryTrace(lastAssistant, data.latest_summary_trace);
+        setStatus("已切换历史会话");
+        renderSessions();
+      } catch (error) {
+        appendError(`加载历史会话失败：${error.message}`);
+      }
+    }
+
+    async function deleteSession(id) {
+      if (state.isSending) return;
+      const ok = window.confirm("确认删除这个会话及其历史消息吗？");
+      if (!ok) return;
+      try {
+        const response = await fetch(`${apiBase()}/v1/sessions/${id}`, {
+          method: "DELETE"
+        });
+        if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+        if (state.sessionId === id) {
+          messagesEl.replaceChildren();
+          state.sessionId = null;
+          state.systemBubble = null;
+          updateTokenBudget();
+        }
+        await loadSessions();
+        setStatus("会话已删除");
+      } catch (error) {
+        appendError(`删除会话失败：${error.message}`);
+      }
+    }
+
+    function updateAssistantMeta(result) {
+      if (!state.activeAssistantBubble) return;
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const usage = result.usage || {};
+      const prompt = usage.prompt_tokens ?? usage.input_tokens;
+      const completion = usage.completion_tokens ?? usage.output_tokens;
+      const total = usage.total_tokens ?? (
+        Number.isFinite(prompt) && Number.isFinite(completion)
+          ? prompt + completion
+          : undefined
+      );
+      let tokenText = "tokens=unknown";
+      if (result.provider === "mock" && Object.keys(usage).length === 0) {
+        tokenText = "tokens=mock";
+      } else if ([prompt, completion, total].every(Number.isFinite)) {
+        tokenText = `tokens=${prompt}/${completion}/${total}`;
+      }
+      const governanceText = result.tool_governance_enabled === false
+        ? "governance=off"
+        : "governance=on";
+      meta.textContent = `${result.provider} / ${result.model} · tools=${result.tool_calls} · ${tokenText} · ${governanceText}`;
+      state.activeAssistantBubble.bubble.appendChild(meta);
+      if (result.summary_trace) {
+        const traceMeta = document.createElement("div");
+        traceMeta.className = "meta";
+        traceMeta.textContent = `context summary=${result.summary_trace.summary_id} · ${result.summary_trace.before_tokens}→${result.summary_trace.after_tokens} tokens`;
+        state.activeAssistantBubble.bubble.appendChild(traceMeta);
+      }
+    }
+
+    function appendContinuationAction(result) {
+      const continuation = result.continuation;
+      if (!state.activeAssistantBubble || !continuation) return;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "continuation-action";
+      button.textContent = `继续生成（已完成 ${continuation.model_calls} 次模型调用 / ${continuation.tool_calls} 次工具调用）`;
+      button.addEventListener("click", async () => {
+        if (state.isSending) return;
+        button.disabled = true;
+        button.textContent = "正在继续...";
+        await sendMessage(continuation.next_message);
+      });
+      state.activeAssistantBubble.bubble.appendChild(button);
+    }
+
+    function emailApiError(payload, status) {
+      const detail = payload?.detail || payload || {};
+      return detail.display
+        || detail.message
+        || detail.error_code
+        || detail.code
+        || `请求失败：${status}`;
+    }
+
+    async function emailApiRequest(url, options = {}) {
+      const response = await fetch(url, options);
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch (_error) {
+        payload = {};
+      }
+      if (!response.ok) {
+        throw new Error(emailApiError(payload, response.status));
+      }
+      return payload;
+    }
+
+    function addEmailPreviewField(grid, label, value) {
+      if (!value) return;
+      const labelEl = document.createElement("div");
+      labelEl.className = "email-preview-label";
+      labelEl.textContent = label;
+      const valueEl = document.createElement("div");
+      valueEl.textContent = Array.isArray(value) ? value.join(", ") : String(value);
+      grid.append(labelEl, valueEl);
+    }
+
+    function queueEmailApproval(event) {
+      const draftId = event.metadata?.draft_id;
+      if (
+        event.name !== "email_create_draft"
+        || !event.ok
+        || !draftId
+        || !state.activeAssistantBubble
+      ) return;
+      state.pendingEmailDrafts.push({
+        draftId,
+        target: state.activeAssistantBubble
+      });
+    }
+
+    async function cancelEmailApproval(approval, card, buttons, resultEl) {
+      buttons.forEach(button => { button.disabled = true; });
+      try {
+        await emailApiRequest(
+          `${apiBase()}/v1/email/approvals/${approval.approval_id}/revoke`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              session_id: state.sessionId,
+              confirmed: false
+            })
+          }
+        );
+        resultEl.className = "email-send-result";
+        resultEl.textContent = "已取消发送，邮件仍保留为本地草稿。";
+        card.dataset.status = "cancelled";
+      } catch (error) {
+        resultEl.className = "email-send-result error";
+        resultEl.textContent = `取消失败：${error.message}`;
+        buttons.forEach(button => { button.disabled = false; });
+      }
+    }
+
+    async function confirmAndSendEmail(approval, card, buttons, resultEl) {
+      const confirmed = window.confirm(
+        "请再次核对收件人、主题、正文和附件。确认通过 SMTP 发送这封邮件吗？"
+      );
+      if (!confirmed) return;
+      buttons.forEach(button => { button.disabled = true; });
+      resultEl.className = "email-send-result";
+      resultEl.textContent = "正在确认审批并调用 email_send…";
+      try {
+        await emailApiRequest(
+          `${apiBase()}/v1/email/approval-challenges/${approval.approval_id}/confirm`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              session_id: state.sessionId,
+              confirmed: true
+            })
+          }
+        );
+        const result = await emailApiRequest(
+          `${apiBase()}/v1/email/approvals/${approval.approval_id}/send`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              session_id: state.sessionId,
+              idempotency_key: `email-ui-send-${crypto.randomUUID()}`
+            })
+          }
+        );
+        const receipt = result.data || {};
+        if (receipt.status === "sent" && receipt.external_delivery === true) {
+          resultEl.className = "email-send-result success";
+          resultEl.textContent = [
+            "✓ 已执行 email_send 工具",
+            "邮件已成功发送",
+            receipt.sent_at ? `发送时间：${receipt.sent_at}` : "",
+            receipt.message_ref ? `邮件 ID：${receipt.message_ref}` : ""
+          ].filter(Boolean).join("\n");
+          card.dataset.status = "sent";
+        } else if (receipt.status === "unknown") {
+          resultEl.className = "email-send-result unknown";
+          resultEl.textContent = [
+            "已执行 email_send 工具",
+            "发送结果待核验，请勿重复发送"
+          ].join("\n");
+          card.dataset.status = "unknown";
+        } else {
+          resultEl.className = "email-send-result";
+          resultEl.textContent = result.display || "发送流程已完成，但未产生真实 SMTP 成功回执。";
+          card.dataset.status = receipt.status || "completed";
+        }
+      } catch (error) {
+        resultEl.className = "email-send-result error";
+        resultEl.textContent = `email_send 执行失败：${error.message}`;
+        card.dataset.status = "error";
+      }
+    }
+
+    function renderEmailApprovalCard(approval, target) {
+      const card = document.createElement("section");
+      card.className = "email-approval-card";
+      card.dataset.approvalId = approval.approval_id;
+      card.dataset.status = approval.status;
+
+      const title = document.createElement("h3");
+      title.textContent = "邮件发送前确认";
+      const grid = document.createElement("div");
+      grid.className = "email-preview-grid";
+      addEmailPreviewField(grid, "收件人", approval.to);
+      addEmailPreviewField(grid, "抄送", approval.cc);
+      addEmailPreviewField(grid, "密送", approval.bcc);
+      addEmailPreviewField(grid, "主题", approval.subject);
+      addEmailPreviewField(
+        grid,
+        "附件指纹",
+        approval.attachment_sha256s?.length
+          ? approval.attachment_sha256s
+          : "无"
+      );
+      addEmailPreviewField(grid, "确认有效期", approval.expires_at);
+
+      const body = document.createElement("div");
+      body.className = "email-preview-body";
+      body.textContent = approval.body_text;
+
+      const actions = document.createElement("div");
+      actions.className = "email-approval-actions";
+      const confirmButton = document.createElement("button");
+      confirmButton.type = "button";
+      confirmButton.className = "email-confirm-send";
+      confirmButton.textContent = "确认并发送";
+      const cancelButton = document.createElement("button");
+      cancelButton.type = "button";
+      cancelButton.textContent = "取消";
+      const buttons = [confirmButton, cancelButton];
+
+      const resultEl = document.createElement("div");
+      resultEl.className = "email-send-result";
+      resultEl.textContent = "邮件尚未发送。确认操作只对当前预览内容有效。";
+
+      confirmButton.addEventListener("click", () => {
+        confirmAndSendEmail(approval, card, buttons, resultEl);
+      });
+      cancelButton.addEventListener("click", () => {
+        cancelEmailApproval(approval, card, buttons, resultEl);
+      });
+      actions.append(confirmButton, cancelButton);
+      card.append(title, grid, body, actions, resultEl);
+      target.bubble.appendChild(card);
+      scrollMessages();
+    }
+
+    async function flushEmailApprovalQueue() {
+      if (!state.sessionId || state.pendingEmailDrafts.length === 0) return;
+      const pending = state.pendingEmailDrafts.splice(0);
+      for (const item of pending) {
+        try {
+          const approval = await emailApiRequest(
+            `${apiBase()}/v1/email/drafts/${item.draftId}/approval-challenges`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                session_id: state.sessionId
+              })
+            }
+          );
+          renderEmailApprovalCard(approval, item.target);
+        } catch (error) {
+          const resultEl = document.createElement("div");
+          resultEl.className = "email-send-result error";
+          resultEl.textContent = `无法创建发送确认：${error.message}`;
+          item.target.bubble.appendChild(resultEl);
+        }
+      }
+      scrollMessages();
+    }
+
+    function applyStreamEvent(event) {
+      if (event.type === "tool_started") {
+        showToolStarted(event);
+        return;
+      }
+      if (event.type === "tool_completed") {
+        showToolCompleted(event);
+        queueEmailApproval(event);
+        return;
+      }
+      if (event.type === "delta") {
+        state.activeAssistantBubble.contentEl.textContent += event.content || "";
+        scrollMessages();
+        return;
+      }
+      if (event.type === "done") {
+        state.sessionId = event.result.session_id;
+        void flushEmailApprovalQueue();
+        if (
+          event.result.content &&
+          !state.activeAssistantBubble.contentEl.textContent.trim()
+        ) {
+          state.activeAssistantBubble.contentEl.textContent = event.result.content;
+        }
+        updateAssistantMeta(event.result);
+        if (event.result.finish_reason === "continuation_required") {
+          appendContinuationAction(event.result);
+        }
+        updateTokenBudget(
+          event.result.session_usage,
+          event.result.max_total_tokens,
+          event.result.token_budget_status
+        );
+        setStatus(
+          event.result.finish_reason === "continuation_required"
+            ? "本轮达到模型调用上限，可继续生成"
+            : "回复完成"
+        );
+        loadSessions();
+        return;
+      }
+      if (event.type === "error") {
+        const error = event.error || {};
+        const message = error.message || "请求处理失败";
+        const suggestion = error.suggestion ? `\n${error.suggestion}` : "";
+        appendError(`${message}${suggestion}`);
+        setStatus("后端返回错误");
+      }
+    }
+
+    async function readStream(response) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+        for (const part of parts) {
+          const lines = part.split("\n");
+          for (const line of lines) {
+            if (!line.startsWith("data:")) continue;
+            const raw = line.slice(5).trim();
+            if (!raw) continue;
+            applyStreamEvent(JSON.parse(raw));
+          }
+        }
+      }
+    }
+
+    async function sendMessage(message) {
+      appendMessage("user", message);
+      state.activeAssistantBubble = appendMessage("assistant", "");
+      setSending(true);
+      setStatus("正在生成回复");
+      try {
+        const response = await fetch(`${apiBase()}/v1/chat/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payloadFor(message))
+        });
+        if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+        if (!response.body) throw new Error("浏览器未返回响应流");
+        await readStream(response);
+      } catch (error) {
+        appendError(`请求失败：${error.message}。请检查 uv run agent serve 是否已启动。`);
+        setStatus("请求失败");
+      } finally {
+        setSending(false);
+        state.activeAssistantBubble = null;
+        messageInput.focus();
+      }
+    }
+
+    composer.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (state.isSending) return;
+      const message = messageInput.value.trim();
+      if (!message) return;
+      const command = parseSlashCommand(message);
+      if (command && !command.message) {
+        appendError("选择工具后，请继续输入要交给工具处理的内容");
+        return;
+      }
+      messageInput.value = "";
+      hideToolMenu();
+      await sendMessage(message);
+    });
+
+    messageInput.addEventListener("input", renderToolMenu);
+    messageInput.addEventListener("keydown", (event) => {
+      if (!toolMenu.hidden && state.visibleTools.length) {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          const direction = event.key === "ArrowDown" ? 1 : -1;
+          state.activeToolIndex = (
+            state.activeToolIndex + direction + state.visibleTools.length
+          ) % state.visibleTools.length;
+          renderToolMenu();
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          selectTool(state.visibleTools[state.activeToolIndex]);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          hideToolMenu();
+          return;
+        }
+      }
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        composer.requestSubmit();
+      }
+    });
+
+    clearButton.addEventListener("click", clearConversation);
+    newSessionButton.addEventListener("click", clearConversation);
+    clearAllSessionsButton.addEventListener("click", clearAllSessions);
+    sessionListEl.addEventListener("scroll", () => {
+      const remaining = sessionListEl.scrollHeight
+        - sessionListEl.scrollTop
+        - sessionListEl.clientHeight;
+      if (remaining < 120) loadSessions(false);
+    });
+    settingsButton.addEventListener("click", openSettings);
+    settingsCloseButton.addEventListener("click", closeSettings);
+    settingsOverlay.addEventListener("click", (event) => {
+      if (event.target === settingsOverlay) closeSettings();
+    });
+    toolGovernanceToggle.addEventListener("change", () => {
+      state.toolGovernanceEnabled = toolGovernanceToggle.checked;
+      localStorage.setItem(
+        TOOL_GOVERNANCE_STORAGE_KEY,
+        String(state.toolGovernanceEnabled)
+      );
+      setStatus(state.toolGovernanceEnabled ? "工具治理已开启" : "工具治理已关闭");
+    });
+    memoryForm.addEventListener("submit", saveMemory);
+    memoryCancelButton.addEventListener("click", resetMemoryForm);
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !settingsOverlay.hidden) closeSettings();
+    });
+    apiBaseInput.addEventListener("change", async () => {
+      clearConversation();
+      await loadProviders();
+      await loadTools();
+      await loadSessions();
+    });
+
+    async function boot() {
+      messagesEl.replaceChildren();
+      toolGovernanceToggle.checked = state.toolGovernanceEnabled;
+      state.systemBubble = appendMessage("assistant", "你好，我是求职 Agent。你可以发来 JD 和简历目标，我会先做匹配分析和修改建议。");
+      await loadProviders();
+      await loadTools();
+      await loadSessions();
+      messageInput.focus();
+    }
+
+    boot();
+  </script>
+</body>
+</html>

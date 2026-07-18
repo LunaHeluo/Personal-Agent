@@ -1,0 +1,16 @@
+# Acceptance cases template. Keep examples short; students must write their own cases.
+
+- id: core-001
+  input:
+    job_id: job_001
+    resume_path: examples/job-hunt-agent/data/resume_base.md
+  expected:
+    must_include:
+      - 匹配分析
+      - 定制建议
+      - JD 来源
+    must_not:
+      - 自动投递
+      - 夸大经历
+    requires_approval: true
+
