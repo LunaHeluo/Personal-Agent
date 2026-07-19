@@ -141,6 +141,10 @@ class SQLiteKnowledgeStore:
             database_url = f"sqlite:///{database_path}"
         self.engine = create_engine(database_url)
         KnowledgeBaseSql.metadata.create_all(self.engine)
+        from starter_agent.knowledge.index import SQLiteFtsIndex
+
+        self.index = SQLiteFtsIndex(self.engine)
+        self.index.ensure_available()
 
     @staticmethod
     def _scope_filters(scope: KnowledgeScope) -> tuple[object, object]:
@@ -515,6 +519,8 @@ class SQLiteKnowledgeStore:
             job.progress_total = len(chunks)
             job.started_at = job.started_at or now
             job.finished_at = now
+            db.flush()
+            self.index.rebuild(db.connection())
 
     def fail_ingestion(
         self,
@@ -574,3 +580,82 @@ class SQLiteKnowledgeStore:
                 )
             )
         return [self._chunk(row) for row in rows]
+
+    def get_chunks_by_ids(
+        self,
+        scope: KnowledgeScope,
+        knowledge_base_id: UUID,
+        chunk_ids: list[UUID],
+    ) -> dict[UUID, tuple[KnowledgeChunk, str]]:
+        if not chunk_ids:
+            return {}
+        with Session(self.engine) as db:
+            rows = db.execute(
+                select(KnowledgeChunkRow, KnowledgeDocumentRow.document_type)
+                .join(
+                    KnowledgeDocumentRow,
+                    KnowledgeDocumentRow.id == KnowledgeChunkRow.document_id,
+                )
+                .where(
+                    *self._scope_filters(scope),
+                    KnowledgeChunkRow.knowledge_base_id == str(knowledge_base_id),
+                    KnowledgeDocumentRow.active_version_id
+                    == KnowledgeChunkRow.version_id,
+                    KnowledgeChunkRow.id.in_([str(value) for value in chunk_ids]),
+                )
+            ).all()
+        return {
+            UUID(row[0].id): (self._chunk(row[0]), row[1]) for row in rows
+        }
+
+    def search_short_terms(
+        self,
+        scope: KnowledgeScope,
+        knowledge_base_id: UUID,
+        terms: list[str],
+        *,
+        limit: int,
+        document_ids: list[UUID] | None = None,
+        document_types: list[str] | None = None,
+        filenames: list[str] | None = None,
+        versions: list[int] | None = None,
+    ) -> list[tuple[KnowledgeChunk, str]]:
+        if not terms:
+            return []
+        query = (
+            select(KnowledgeChunkRow, KnowledgeDocumentRow.document_type)
+            .join(
+                KnowledgeDocumentRow,
+                KnowledgeDocumentRow.id == KnowledgeChunkRow.document_id,
+            )
+            .where(
+                *self._scope_filters(scope),
+                KnowledgeChunkRow.knowledge_base_id == str(knowledge_base_id),
+                KnowledgeDocumentRow.active_version_id
+                == KnowledgeChunkRow.version_id,
+                *[
+                    func.instr(KnowledgeChunkRow.search_text, term) > 0
+                    for term in terms
+                ],
+            )
+        )
+        if document_ids:
+            query = query.where(
+                KnowledgeChunkRow.document_id.in_(
+                    [str(value) for value in document_ids]
+                )
+            )
+        if document_types:
+            query = query.where(
+                KnowledgeDocumentRow.document_type.in_(document_types)
+            )
+        if filenames:
+            query = query.where(KnowledgeChunkRow.filename.in_(filenames))
+        if versions:
+            query = query.where(KnowledgeChunkRow.version.in_(versions))
+        query = query.order_by(
+            KnowledgeChunkRow.document_id, KnowledgeChunkRow.ordinal
+        ).limit(min(limit, 100))
+        with Session(self.engine) as db:
+            rows = db.execute(query).all()
+        return [(self._chunk(row[0]), row[1]) for row in rows]

@@ -59,6 +59,21 @@ _MESSAGES: dict[str, tuple[str, str, int]] = {
         "请检查 Markdown 结构后重试",
         422,
     ),
+    "fts5_unavailable": (
+        "当前 SQLite 不支持 FTS5 全文检索",
+        "请使用启用了 FTS5 的 SQLite 版本",
+        503,
+    ),
+    "fts5_trigram_unavailable": (
+        "当前 SQLite 不支持 FTS5 trigram 分词",
+        "请升级 SQLite 后重试",
+        503,
+    ),
+    "knowledge_query_invalid": (
+        "知识库问题不能为空",
+        "请输入需要从资料中查找的问题",
+        400,
+    ),
 }
 
 

@@ -133,3 +133,20 @@ class KnowledgeChunk(BaseModel):
             f"{self.filename}@v{self.version}"
             f"#L{self.start_line}-L{self.end_line}"
         )
+
+
+class RetrievalMatch(BaseModel):
+    chunk_id: UUID
+    document_id: UUID
+    document_type: str
+    filename: str
+    version: int
+    page: int | None = None
+    section_path: list[str] = Field(default_factory=list)
+    start_line: int
+    end_line: int
+    preview: str
+    source_ref: str
+    bm25_score: float | None = None
+    matched_terms: list[str] = Field(default_factory=list)
+    rank: int

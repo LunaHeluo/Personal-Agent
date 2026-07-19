@@ -11,7 +11,9 @@ from starter_agent.knowledge.models import (
     KnowledgeScope,
     UploadBundle,
     KnowledgeChunk,
+    RetrievalMatch,
 )
+from starter_agent.knowledge.retrieval import KnowledgeRetriever
 from starter_agent.knowledge.security import validate_markdown_upload
 from starter_agent.knowledge.store import SQLiteKnowledgeStore
 from starter_agent.settings import AgentSettings
@@ -39,6 +41,7 @@ class KnowledgeApplicationService:
             target_chars=settings.knowledge.chunk_target_chars,
             overlap_chars=settings.knowledge.chunk_overlap_chars,
         )
+        self.retriever = KnowledgeRetriever(store)
 
     def list_knowledge_bases(self) -> list[KnowledgeBase]:
         return self.store.list_knowledge_bases(self.scope)
@@ -114,4 +117,29 @@ class KnowledgeApplicationService:
             document_id,
             after_ordinal=after_ordinal,
             limit=limit,
+        )
+
+    def retrieve(
+        self,
+        knowledge_base_id: UUID,
+        question: str,
+        *,
+        top_k: int | None = None,
+        document_ids: list[UUID] | None = None,
+        document_types: list[str] | None = None,
+        filenames: list[str] | None = None,
+        versions: list[int] | None = None,
+    ) -> list[RetrievalMatch]:
+        return self.retriever.retrieve(
+            self.scope,
+            knowledge_base_id,
+            question,
+            top_k=min(
+                top_k or self.settings.knowledge.retrieval_top_k,
+                50,
+            ),
+            document_ids=document_ids,
+            document_types=document_types,
+            filenames=filenames,
+            versions=versions,
         )

@@ -146,6 +146,15 @@ class EmailApprovalSendRequest(BaseModel):
     idempotency_key: str = Field(min_length=16, max_length=200)
 
 
+class KnowledgeRetrieveRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=10_000)
+    top_k: int = Field(default=6, ge=1, le=50)
+    document_ids: list[UUID] | None = None
+    document_types: list[str] | None = None
+    filenames: list[str] | None = None
+    versions: list[int] | None = None
+
+
 def _email_approval_service() -> EmailApprovalService:
     manager = create_application().runtime.tools.email_manager
     if manager is None:
@@ -388,6 +397,30 @@ def create_api() -> FastAPI:
             "next_after_ordinal": (
                 chunks[-1].ordinal if len(chunks) == limit else None
             ),
+        }
+
+    @api.post("/v1/knowledge-bases/{knowledge_base_id}/retrieve")
+    async def retrieve_knowledge(
+        knowledge_base_id: UUID,
+        request: KnowledgeRetrieveRequest,
+    ) -> dict[str, object]:
+        try:
+            matches = create_knowledge_service().retrieve(
+                knowledge_base_id,
+                request.question,
+                top_k=request.top_k,
+                document_ids=request.document_ids,
+                document_types=request.document_types,
+                filenames=request.filenames,
+                versions=request.versions,
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return {
+            "status": "ok" if matches else "no_evidence",
+            "matches": [
+                item.model_dump(mode="json") for item in matches
+            ],
         }
 
     @api.get(
