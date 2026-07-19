@@ -49,6 +49,16 @@ _MESSAGES: dict[str, tuple[str, str, int]] = {
         "请删除不再需要的文档后重试",
         409,
     ),
+    "document_no_indexable_content": (
+        "文档没有可建立索引的正文内容",
+        "请补充正文段落、列表、表格或代码内容后重试",
+        422,
+    ),
+    "document_ingestion_failed": (
+        "文档解析或切分失败",
+        "请检查 Markdown 结构后重试",
+        422,
+    ),
 }
 
 

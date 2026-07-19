@@ -42,6 +42,9 @@ class KnowledgeDocument(BaseModel):
     document_type: str
     active_version_id: UUID | None = None
     status: DocumentStatus
+    version: int | None = None
+    content_sha256: str | None = None
+    chunk_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -82,3 +85,51 @@ class UploadBundle(BaseModel):
     document: KnowledgeDocument
     version: DocumentVersion
     job: IngestionJob
+
+
+class ParsedBlock(BaseModel):
+    kind: Literal["paragraph", "list", "table", "quote", "code"]
+    text: str
+    search_text: str
+    section_path: list[str] = Field(default_factory=list)
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+
+
+class ParsedDocument(BaseModel):
+    normalized_source: str
+    blocks: list[ParsedBlock] = Field(default_factory=list)
+
+
+class SourceLocation(BaseModel):
+    page: int | None = None
+    section_path: list[str] = Field(default_factory=list)
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+
+
+class KnowledgeChunk(BaseModel):
+    id: UUID
+    document_id: UUID
+    version_id: UUID
+    knowledge_base_id: UUID
+    user_id: str
+    project_id: str
+    version: int
+    filename: str
+    page: int | None = None
+    section_path: list[str] = Field(default_factory=list)
+    start_line: int
+    end_line: int
+    ordinal: int
+    text: str
+    search_text: str
+    content_sha256: str
+    created_at: datetime
+
+    @property
+    def source_ref(self) -> str:
+        return (
+            f"{self.filename}@v{self.version}"
+            f"#L{self.start_line}-L{self.end_line}"
+        )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -13,6 +14,7 @@ from starter_agent.knowledge.models import (
     IngestionJob,
     KnowledgeBase,
     KnowledgeDocument,
+    KnowledgeChunk,
     KnowledgeScope,
     UploadBundle,
 )
@@ -102,6 +104,32 @@ class IngestionJobRow(KnowledgeBaseSql):
     )
 
 
+class KnowledgeChunkRow(KnowledgeBaseSql):
+    __tablename__ = "knowledge_chunks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_documents.id"), index=True
+    )
+    version_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_document_versions.id"), index=True
+    )
+    knowledge_base_id: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(120), index=True)
+    project_id: Mapped[str] = mapped_column(String(120), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    filename: Mapped[str] = mapped_column(String(255))
+    page: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    section_path: Mapped[str] = mapped_column(Text)
+    start_line: Mapped[int] = mapped_column(Integer)
+    end_line: Mapped[int] = mapped_column(Integer)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    text: Mapped[str] = mapped_column(Text)
+    search_text: Mapped[str] = mapped_column(Text)
+    content_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class SQLiteKnowledgeStore:
     def __init__(self, database_url: str, project_root: Path):
         if database_url.startswith("sqlite:///"):
@@ -133,7 +161,10 @@ class SQLiteKnowledgeStore:
         )
 
     @staticmethod
-    def _document(row: KnowledgeDocumentRow) -> KnowledgeDocument:
+    def _document(
+        row: KnowledgeDocumentRow,
+        version: DocumentVersionRow | None = None,
+    ) -> KnowledgeDocument:
         return KnowledgeDocument(
             id=UUID(row.id),
             knowledge_base_id=UUID(row.knowledge_base_id),
@@ -145,6 +176,9 @@ class SQLiteKnowledgeStore:
                 UUID(row.active_version_id) if row.active_version_id else None
             ),
             status=row.status,  # type: ignore[arg-type]
+            version=version.version if version else None,
+            content_sha256=version.content_sha256 if version else None,
+            chunk_count=version.chunk_count if version else 0,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
@@ -183,6 +217,28 @@ class SQLiteKnowledgeStore:
             created_at=row.created_at,
             started_at=row.started_at,
             finished_at=row.finished_at,
+        )
+
+    @staticmethod
+    def _chunk(row: KnowledgeChunkRow) -> KnowledgeChunk:
+        return KnowledgeChunk(
+            id=UUID(row.id),
+            document_id=UUID(row.document_id),
+            version_id=UUID(row.version_id),
+            knowledge_base_id=UUID(row.knowledge_base_id),
+            user_id=row.user_id,
+            project_id=row.project_id,
+            version=row.version,
+            filename=row.filename,
+            page=row.page,
+            section_path=json.loads(row.section_path),
+            start_line=row.start_line,
+            end_line=row.end_line,
+            ordinal=row.ordinal,
+            text=row.text,
+            search_text=row.search_text,
+            content_sha256=row.content_sha256,
+            created_at=row.created_at,
         )
 
     def ensure_knowledge_base(
@@ -342,7 +398,22 @@ class SQLiteKnowledgeStore:
                     .order_by(KnowledgeDocumentRow.created_at)
                 )
             )
-        return [self._document(row) for row in rows]
+            versions = {
+                row.active_version_id: db.get(
+                    DocumentVersionRow, row.active_version_id
+                )
+                for row in rows
+                if row.active_version_id
+            }
+            return [
+                self._document(
+                    row,
+                    versions.get(row.active_version_id)
+                    if row.active_version_id
+                    else None,
+                )
+                for row in rows
+            ]
 
     def get_document(
         self,
@@ -359,7 +430,12 @@ class SQLiteKnowledgeStore:
                     KnowledgeDocumentRow.id == str(document_id),
                 )
             )
-        return self._document(row) if row else None
+            version = (
+                db.get(DocumentVersionRow, row.active_version_id)
+                if row and row.active_version_id
+                else None
+            )
+        return self._document(row, version) if row else None
 
     def get_job(
         self,
@@ -377,3 +453,124 @@ class SQLiteKnowledgeStore:
                 )
             )
         return self._job(row) if row else None
+
+    def complete_chunking(
+        self,
+        scope: KnowledgeScope,
+        upload: UploadBundle,
+        chunks: list[KnowledgeChunk],
+    ) -> None:
+        now = datetime.now(UTC)
+        with Session(self.engine) as db, db.begin():
+            document = db.scalar(
+                select(KnowledgeDocumentRow).where(
+                    *self._scope_filters(scope),
+                    KnowledgeDocumentRow.id == str(upload.document.id),
+                    KnowledgeDocumentRow.knowledge_base_id
+                    == str(upload.document.knowledge_base_id),
+                )
+            )
+            version = db.get(DocumentVersionRow, str(upload.version.id))
+            job = db.get(IngestionJobRow, str(upload.job.id))
+            if document is None or version is None or job is None:
+                raise KnowledgeError("document_not_found")
+            db.query(KnowledgeChunkRow).filter(
+                KnowledgeChunkRow.version_id == str(upload.version.id)
+            ).delete()
+            db.add_all(
+                [
+                    KnowledgeChunkRow(
+                        id=str(item.id),
+                        document_id=str(item.document_id),
+                        version_id=str(item.version_id),
+                        knowledge_base_id=str(item.knowledge_base_id),
+                        user_id=item.user_id,
+                        project_id=item.project_id,
+                        version=item.version,
+                        filename=item.filename,
+                        page=item.page,
+                        section_path=json.dumps(
+                            item.section_path, ensure_ascii=False
+                        ),
+                        start_line=item.start_line,
+                        end_line=item.end_line,
+                        ordinal=item.ordinal,
+                        text=item.text,
+                        search_text=item.search_text,
+                        content_sha256=item.content_sha256,
+                        created_at=item.created_at,
+                    )
+                    for item in chunks
+                ]
+            )
+            version.status = "indexed"
+            version.chunk_count = len(chunks)
+            version.indexed_at = now
+            document.active_version_id = version.id
+            document.status = "indexed"
+            document.updated_at = now
+            job.status = "succeeded"
+            job.stage = "metadata"
+            job.progress_current = len(chunks)
+            job.progress_total = len(chunks)
+            job.started_at = job.started_at or now
+            job.finished_at = now
+
+    def fail_ingestion(
+        self,
+        scope: KnowledgeScope,
+        upload: UploadBundle,
+        *,
+        error_code: str,
+        stage: str,
+    ) -> None:
+        now = datetime.now(UTC)
+        with Session(self.engine) as db, db.begin():
+            document = db.scalar(
+                select(KnowledgeDocumentRow).where(
+                    *self._scope_filters(scope),
+                    KnowledgeDocumentRow.id == str(upload.document.id),
+                )
+            )
+            version = db.get(DocumentVersionRow, str(upload.version.id))
+            job = db.get(IngestionJobRow, str(upload.job.id))
+            if document and version and job:
+                document.status = "failed"
+                version.status = "failed"
+                version.error_code = error_code
+                job.status = "failed"
+                job.stage = stage
+                job.error_code = error_code
+                job.finished_at = now
+
+    def list_chunks(
+        self,
+        scope: KnowledgeScope,
+        knowledge_base_id: UUID,
+        document_id: UUID,
+        *,
+        after_ordinal: int,
+        limit: int,
+    ) -> list[KnowledgeChunk]:
+        with Session(self.engine) as db:
+            rows = list(
+                db.scalars(
+                    select(KnowledgeChunkRow)
+                    .join(
+                        KnowledgeDocumentRow,
+                        KnowledgeDocumentRow.id == KnowledgeChunkRow.document_id,
+                    )
+                    .where(
+                        *self._scope_filters(scope),
+                        KnowledgeChunkRow.knowledge_base_id
+                        == str(knowledge_base_id),
+                        KnowledgeChunkRow.document_id == str(document_id),
+                        KnowledgeDocumentRow.active_version_id
+                        == KnowledgeChunkRow.version_id,
+                        KnowledgeChunkRow.ordinal > after_ordinal,
+                    )
+                    .order_by(KnowledgeChunkRow.ordinal)
+                    .limit(limit)
+                )
+            )
+        return [self._chunk(row) for row in rows]

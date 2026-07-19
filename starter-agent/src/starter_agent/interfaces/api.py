@@ -356,6 +356,41 @@ def create_api() -> FastAPI:
         return document.model_dump(mode="json")
 
     @api.get(
+        "/v1/knowledge-bases/{knowledge_base_id}/documents/{document_id}/chunks"
+    )
+    async def list_knowledge_chunks(
+        knowledge_base_id: UUID,
+        document_id: UUID,
+        after_ordinal: int = Query(default=-1, ge=-1),
+        limit: int = Query(default=20, ge=1, le=100),
+    ) -> dict[str, object]:
+        try:
+            chunks = create_knowledge_service().list_chunks(
+                knowledge_base_id,
+                document_id,
+                after_ordinal=after_ordinal,
+                limit=limit,
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return {
+            "chunks": [
+                {
+                    **item.model_dump(
+                        mode="json",
+                        exclude={"text", "search_text"},
+                    ),
+                    "source_ref": item.source_ref,
+                    "preview": item.text[:400],
+                }
+                for item in chunks
+            ],
+            "next_after_ordinal": (
+                chunks[-1].ordinal if len(chunks) == limit else None
+            ),
+        }
+
+    @api.get(
         "/v1/knowledge-bases/{knowledge_base_id}/ingestion-jobs/{job_id}"
     )
     async def get_knowledge_ingestion_job(

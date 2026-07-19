@@ -4,6 +4,8 @@ import pytest
 
 from starter_agent.knowledge.errors import KnowledgeError
 from starter_agent.knowledge.models import KnowledgeScope
+from starter_agent.knowledge.chunker import KnowledgeChunker
+from starter_agent.knowledge.parser import MarkdownParser
 from starter_agent.knowledge.store import SQLiteKnowledgeStore
 
 
@@ -55,3 +57,36 @@ def test_store_rejects_duplicate_content_in_same_scope(tmp_path) -> None:
         store.create_upload(scope, **values)
 
     assert error.value.code == "duplicate_document_content"
+
+
+def test_store_persists_and_pages_chunks(tmp_path) -> None:
+    scope = KnowledgeScope(user_id="user-a", project_id="project-a")
+    knowledge_base_id = uuid4()
+    store = SQLiteKnowledgeStore("sqlite:///knowledge.db", tmp_path)
+    store.ensure_knowledge_base(scope, knowledge_base_id=knowledge_base_id, name="KB")
+    upload = store.create_upload(
+        scope,
+        knowledge_base_id=knowledge_base_id,
+        filename="resume.md",
+        document_type="resume",
+        source_text="# Resume\n\nSafe profile.",
+        content_sha256="b" * 64,
+    )
+    chunks = KnowledgeChunker().chunk(
+        parsed=MarkdownParser().parse(upload.version.source_text),
+        scope=scope,
+        knowledge_base_id=knowledge_base_id,
+        document_id=upload.document.id,
+        version_id=upload.version.id,
+        version=1,
+        filename="resume.md",
+    )
+
+    store.complete_chunking(scope, upload, chunks)
+    saved = store.list_chunks(
+        scope, knowledge_base_id, upload.document.id, after_ordinal=-1, limit=10
+    )
+
+    assert len(saved) == 1
+    assert saved[0].text == "Safe profile."
+    assert store.get_document(scope, knowledge_base_id, upload.document.id).chunk_count == 1

@@ -49,14 +49,30 @@ def test_upload_lists_and_reads_knowledge_document() -> None:
             f"/v1/knowledge-bases/{knowledge_base_id}/ingestion-jobs/"
             f"{body['job_id']}"
         )
+        chunks = client.get(
+            f"/v1/knowledge-bases/{knowledge_base_id}/documents/"
+            f"{body['document_id']}/chunks"
+        )
 
     assert body["status"] == "queued"
     assert body["stage"] == "upload"
     assert len(body["content_sha256"]) == 64
     assert listed.status_code == 200
-    assert listed.json()["documents"][0]["filename"] == "resume_demo.md"
+    listed_document = next(
+        item
+        for item in listed.json()["documents"]
+        if item["id"] == body["document_id"]
+    )
+    assert listed_document["filename"] == "resume_demo.md"
+    assert listed_document["chunk_count"] >= 1
     assert document.status_code == 200
     assert job.status_code == 200
+    assert job.json()["status"] == "succeeded"
+    assert document.json()["status"] == "indexed"
+    assert document.json()["chunk_count"] >= 1
+    assert chunks.status_code == 200
+    assert chunks.json()["chunks"][0]["source_ref"].endswith("#L2-L2")
+    assert len(chunks.json()["chunks"][0]["preview"]) <= 400
 
 
 def test_upload_api_exposes_safe_validation_error() -> None:

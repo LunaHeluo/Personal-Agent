@@ -3,12 +3,14 @@ from __future__ import annotations
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from starter_agent.knowledge.errors import KnowledgeError
+from starter_agent.knowledge.ingestion import KnowledgeIngestionPipeline
 from starter_agent.knowledge.models import (
     IngestionJob,
     KnowledgeBase,
     KnowledgeDocument,
     KnowledgeScope,
     UploadBundle,
+    KnowledgeChunk,
 )
 from starter_agent.knowledge.security import validate_markdown_upload
 from starter_agent.knowledge.store import SQLiteKnowledgeStore
@@ -31,6 +33,11 @@ class KnowledgeApplicationService:
             self.scope,
             knowledge_base_id=self.default_knowledge_base_id,
             name="求职知识库",
+        )
+        self.ingestion = KnowledgeIngestionPipeline(
+            store,
+            target_chars=settings.knowledge.chunk_target_chars,
+            overlap_chars=settings.knowledge.chunk_overlap_chars,
         )
 
     def list_knowledge_bases(self) -> list[KnowledgeBase]:
@@ -57,7 +64,7 @@ class KnowledgeApplicationService:
             >= self.settings.knowledge.max_documents
         ):
             raise KnowledgeError("knowledge_capacity_exceeded")
-        return self.store.create_upload(
+        upload = self.store.create_upload(
             self.scope,
             knowledge_base_id=knowledge_base_id,
             filename=validated.filename,
@@ -65,6 +72,8 @@ class KnowledgeApplicationService:
             source_text=validated.text,
             content_sha256=validated.content_sha256,
         )
+        self.ingestion.run(self.scope, upload)
+        return upload
 
     def list_documents(self, knowledge_base_id: UUID) -> list[KnowledgeDocument]:
         return self.store.list_documents(self.scope, knowledge_base_id)
@@ -86,3 +95,23 @@ class KnowledgeApplicationService:
         if job is None:
             raise KnowledgeError("document_not_found")
         return job
+
+    def list_chunks(
+        self,
+        knowledge_base_id: UUID,
+        document_id: UUID,
+        *,
+        after_ordinal: int,
+        limit: int,
+    ) -> list[KnowledgeChunk]:
+        if self.store.get_document(
+            self.scope, knowledge_base_id, document_id
+        ) is None:
+            raise KnowledgeError("document_not_found")
+        return self.store.list_chunks(
+            self.scope,
+            knowledge_base_id,
+            document_id,
+            after_ordinal=after_ordinal,
+            limit=limit,
+        )
