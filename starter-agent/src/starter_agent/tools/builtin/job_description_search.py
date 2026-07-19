@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
@@ -15,6 +16,9 @@ from starter_agent.tools.adapters.safe_web_fetcher import (
     SafeWebFetcher,
 )
 from starter_agent.tools.base import Tool, ToolContext
+
+
+_MATCH_TOKEN = re.compile(r"[\w]+(?:[+#]+(?=\s|$))?")
 
 
 class SearchJobDescriptionTool(Tool):
@@ -153,20 +157,35 @@ class SearchJobDescriptionTool(Tool):
 
     @staticmethod
     def _contains_match(expected: str, actual: str) -> bool:
-        expected_normalized = SearchJobDescriptionTool._normalise_match(expected)
-        actual_normalized = SearchJobDescriptionTool._normalise_match(actual)
+        expected_tokens = SearchJobDescriptionTool._match_tokens(expected)
+        actual_tokens = SearchJobDescriptionTool._match_tokens(actual)
         return bool(
-            expected_normalized
-            and actual_normalized
+            expected_tokens
+            and actual_tokens
             and (
-                expected_normalized in actual_normalized
-                or actual_normalized in expected_normalized
+                SearchJobDescriptionTool._contains_token_sequence(
+                    expected_tokens, actual_tokens
+                )
+                or SearchJobDescriptionTool._contains_token_sequence(
+                    actual_tokens, expected_tokens
+                )
             )
         )
 
     @staticmethod
-    def _normalise_match(value: str) -> str:
-        return re.sub(r"\s+", " ", value).strip().casefold()
+    def _match_tokens(value: str) -> list[str]:
+        normalized = unicodedata.normalize("NFKC", value).casefold()
+        return _MATCH_TOKEN.findall(normalized)
+
+    @staticmethod
+    def _contains_token_sequence(
+        candidate: list[str], target: list[str]
+    ) -> bool:
+        size = len(candidate)
+        return any(
+            target[index : index + size] == candidate
+            for index in range(len(target) - size + 1)
+        )
 
     @classmethod
     def _invalid_arguments(cls) -> ToolResult:

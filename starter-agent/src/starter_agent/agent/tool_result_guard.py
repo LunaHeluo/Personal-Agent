@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from starter_agent.agent.token_counter import TokenCounter
 
 
+_SAFE_CLASSIFICATION_METADATA = frozenset({"is_untrusted_external_content"})
+
+
 @dataclass(frozen=True)
 class GuardedToolResult:
     content: str
@@ -63,6 +66,7 @@ class ToolResultGuard:
                 "data": {"partial_content": content[:keep_chars]},
                 "display": "工具结果超过 Context 预算，已保留部分内容",
                 "metadata": {
+                    **_safe_classification_metadata(original),
                     "is_truncated": True,
                     "original_count": original_count,
                     "returned_count": None,
@@ -113,10 +117,7 @@ class ToolResultGuard:
             target = _list_at(candidate, location)
             del target[returned_count:]
             if isinstance(candidate, dict):
-                metadata = candidate.setdefault("metadata", {})
-                if not isinstance(metadata, dict):
-                    metadata = {}
-                    candidate["metadata"] = metadata
+                metadata = _safe_classification_metadata(original)
                 metadata.update(
                     {
                         "is_truncated": True,
@@ -131,6 +132,7 @@ class ToolResultGuard:
                         "max_result_tokens": self.max_result_tokens,
                     }
                 )
+                candidate["metadata"] = metadata
             serialized = json.dumps(
                 candidate, ensure_ascii=False, separators=(",", ":")
             )
@@ -168,6 +170,21 @@ def _result_count(value: object) -> int | None:
             if isinstance(candidate, list):
                 return len(candidate)
     return None
+
+
+def _safe_classification_metadata(value: object) -> dict[str, bool]:
+    """Keep only trusted, boolean classification labels across truncation."""
+
+    if not isinstance(value, dict):
+        return {}
+    metadata = value.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    return {
+        key: True
+        for key in _SAFE_CLASSIFICATION_METADATA
+        if metadata.get(key) is True
+    }
 
 
 def _list_location(value: object) -> tuple[str, str | None] | None:

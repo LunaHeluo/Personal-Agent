@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -99,7 +100,9 @@ async def test_returns_traceable_complete_job() -> None:
     assert result.data["source_url"] == "https://example.com/job"
     assert result.data["final_url"] == "https://example.com/job"
     assert result.data["content_sha256"] == "a" * 64
-    assert result.data["retrieved_at"]
+    retrieved_at = datetime.fromisoformat(result.data["retrieved_at"])
+    assert retrieved_at.tzinfo is not None
+    assert retrieved_at.utcoffset() == timedelta(0)
     assert result.metadata == {
         "source_ref": "tool:search_jobs_serpapi:turn:call",
         "fetch_status": "fetched",
@@ -131,16 +134,34 @@ async def test_rejects_invalid_arguments(arguments: dict[str, object]) -> None:
     assert fetcher.requested_urls == []
 
 
-async def test_maps_fetch_failure_without_losing_retryability() -> None:
+@pytest.mark.parametrize(
+    ("code", "retryable"),
+    [
+        ("unsafe_url", False),
+        ("robots_blocked", False),
+        ("authentication_required", False),
+        ("access_blocked", False),
+        ("job_not_found", False),
+        ("rate_limited", True),
+        ("fetch_timeout", True),
+        ("unsupported_content_type", False),
+        ("response_too_large", False),
+        ("fetch_failed", True),
+    ],
+)
+async def test_maps_all_stable_fetch_failures_without_losing_retryability(
+    code: str,
+    retryable: bool,
+) -> None:
     tool, _, _ = make_tool(
-        fetched=FetchFailure("rate_limited", "Source rate limited", retryable=True)
+        fetched=FetchFailure(code, "Source unavailable", retryable=retryable)
     )
 
     result = await tool.execute({"url": "https://example.com/job"}, context())
 
     assert not result.ok
-    assert result.error_code == "rate_limited"
-    assert result.retryable is True
+    assert result.error_code == code
+    assert result.retryable is retryable
     assert result.metadata == {
         "source_ref": "",
         "fetch_status": "failed",
@@ -195,3 +216,40 @@ async def test_rejects_description_without_core_sections() -> None:
 
     assert not result.ok
     assert result.error_code == "incomplete_job_description"
+
+
+@pytest.mark.parametrize(
+    ("expected", "actual", "matches"),
+    [
+        ("AI", "Paid Social Manager", False),
+        ("AB", "Grab Holdings", False),
+        ("Example Inc", "Example, Inc.", True),
+        ("C++ Developer", "C Developer", False),
+        ("AI Product Manager", "Senior AI Product Manager", True),
+        ("Senior AI Product Manager", "AI Product Manager", True),
+        (
+            "\uff25\uff58\uff41\uff4d\uff50\uff4c\uff45 \uff29\uff4e\uff43",
+            "example, inc.",
+            True,
+        ),
+    ],
+)
+def test_matcher_uses_unicode_normalized_token_boundaries(
+    expected: str,
+    actual: str,
+    matches: bool,
+) -> None:
+    assert SearchJobDescriptionTool._contains_match(expected, actual) is matches
+
+
+async def test_unexpected_extractor_exception_is_not_mislabeled_as_fetch_failure() -> None:
+    class RaisingExtractor:
+        def extract(self, content: str, content_type: str) -> ExtractedJobDescription:
+            raise RuntimeError("parser defect")
+
+    tool = SearchJobDescriptionTool(  # type: ignore[arg-type]
+        FakeFetcher(page()), RaisingExtractor()
+    )
+
+    with pytest.raises(RuntimeError, match="parser defect"):
+        await tool.execute({"url": "https://example.com/job"}, context())
