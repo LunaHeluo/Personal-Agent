@@ -4,6 +4,8 @@ from starter_agent.agent.context import ContextBuilder
 from starter_agent.agent.runtime import AgentRuntime
 from starter_agent.application import ApplicationService
 from starter_agent.infrastructure.session_store import SQLiteSessionStore
+from starter_agent.knowledge.service import KnowledgeApplicationService
+from starter_agent.knowledge.store import SQLiteKnowledgeStore
 from starter_agent.observability.logging import configure_logging
 from starter_agent.providers.registry import ProviderRegistry
 from starter_agent.settings import AgentSettings, load_settings
@@ -36,3 +38,10 @@ def create_application() -> ApplicationService:
         runtime=runtime,
         context=context,
     )
+
+
+@lru_cache
+def create_knowledge_service() -> KnowledgeApplicationService:
+    settings = get_settings()
+    store = SQLiteKnowledgeStore(settings.app.database_url, settings.project_root)
+    return KnowledgeApplicationService(settings, store)

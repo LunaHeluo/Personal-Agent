@@ -50,6 +50,19 @@ runtime:
   tool_timeout_seconds: 35
   max_tool_result_chars: 8000
 
+knowledge:
+  enabled: true
+  default_user_id: local-user
+  default_project_id: default-project
+  max_upload_bytes: 2097152
+  max_documents: 100
+  allowed_extensions:
+    - .md
+    - .markdown
+  chunk_target_chars: 1200
+  chunk_overlap_chars: 150
+  retrieval_top_k: 6
+
 tools:
   enabled:
     - get_current_time

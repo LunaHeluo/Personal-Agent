@@ -7,12 +7,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from starter_agent.bootstrap import create_application, get_settings
+from starter_agent.bootstrap import (
+    create_application,
+    create_knowledge_service,
+    get_settings,
+)
 from starter_agent.domain.errors import AgentError
 from starter_agent.domain.models import (
     ChatResult,
@@ -25,6 +29,7 @@ from starter_agent.domain.models import (
     ToolResult,
 )
 from starter_agent.observability.logging import get_logger
+from starter_agent.knowledge.errors import KnowledgeError
 from starter_agent.tools.email.approval import EmailApprovalService
 from starter_agent.tools.email.errors import EmailError
 from starter_agent.tools.email.models import ApprovalChallengeView, SendApproval
@@ -158,6 +163,13 @@ def _email_http_error(error: EmailError) -> HTTPException:
     return HTTPException(status_code=400, detail=error.public_payload())
 
 
+def _knowledge_http_error(error: KnowledgeError) -> HTTPException:
+    return HTTPException(
+        status_code=error.http_status,
+        detail=error.to_public_dict(),
+    )
+
+
 MEMORY_TTL_DAYS: dict[str, int] = {
     "profile": 365,
     "preference": 180,
@@ -273,6 +285,90 @@ def create_api() -> FastAPI:
                 for tool in registry.list()
             ]
         )
+
+    @api.get("/v1/knowledge-bases")
+    async def list_knowledge_bases() -> dict[str, object]:
+        bases = create_knowledge_service().list_knowledge_bases()
+        return {
+            "knowledge_bases": [
+                item.model_dump(mode="json") for item in bases
+            ]
+        }
+
+    @api.post(
+        "/v1/knowledge-bases/{knowledge_base_id}/documents",
+        status_code=202,
+    )
+    async def upload_knowledge_document(
+        knowledge_base_id: UUID,
+        file: UploadFile = File(...),
+        document_type: str = Form("other"),
+        confirmed_authorized: bool = Form(False),
+    ) -> dict[str, object]:
+        try:
+            content = await file.read(
+                get_settings().knowledge.max_upload_bytes + 1
+            )
+            result = create_knowledge_service().upload(
+                knowledge_base_id=knowledge_base_id,
+                filename=file.filename or "",
+                content=content,
+                document_type=document_type,
+                confirmed_authorized=confirmed_authorized,
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return {
+            "document_id": str(result.document.id),
+            "version_id": str(result.version.id),
+            "job_id": str(result.job.id),
+            "status": result.job.status,
+            "stage": result.job.stage,
+            "content_sha256": result.version.content_sha256,
+        }
+
+    @api.get("/v1/knowledge-bases/{knowledge_base_id}/documents")
+    async def list_knowledge_documents(
+        knowledge_base_id: UUID,
+    ) -> dict[str, object]:
+        documents = create_knowledge_service().list_documents(
+            knowledge_base_id
+        )
+        return {
+            "documents": [
+                item.model_dump(mode="json") for item in documents
+            ]
+        }
+
+    @api.get(
+        "/v1/knowledge-bases/{knowledge_base_id}/documents/{document_id}"
+    )
+    async def get_knowledge_document(
+        knowledge_base_id: UUID,
+        document_id: UUID,
+    ) -> dict[str, object]:
+        try:
+            document = create_knowledge_service().get_document(
+                knowledge_base_id, document_id
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return document.model_dump(mode="json")
+
+    @api.get(
+        "/v1/knowledge-bases/{knowledge_base_id}/ingestion-jobs/{job_id}"
+    )
+    async def get_knowledge_ingestion_job(
+        knowledge_base_id: UUID,
+        job_id: UUID,
+    ) -> dict[str, object]:
+        try:
+            job = create_knowledge_service().get_job(
+                knowledge_base_id, job_id
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return job.model_dump(mode="json")
 
     @api.post(
         "/v1/email/drafts/{draft_id}/approval-challenges",
