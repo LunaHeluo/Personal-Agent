@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import hashlib
 import ipaddress
 import re
 import socket
+import unicodedata
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -14,6 +16,7 @@ from urllib.parse import (
     urljoin,
     urlsplit,
     urlunsplit,
+    unquote_plus,
 )
 from urllib.robotparser import RobotFileParser
 
@@ -24,21 +27,77 @@ if TYPE_CHECKING:
 
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
-Resolver = Callable[[str], Awaitable[list[ipaddress._BaseAddress]]]
+Resolver = Callable[[str], Awaitable[list[IPAddress]]]
 RobotsChecker = Callable[[str, str], Awaitable[bool]]
 
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
-_SENSITIVE_QUERY_KEYS = {
-    "access_token",
-    "api_key",
-    "apikey",
-    "auth",
-    "authorization",
-    "key",
+_SENSITIVE_QUERY_KEY_PARTS = (
+    "credential",
+    "password",
+    "passwd",
+    "secret",
     "signature",
     "token",
-    "x-amz-signature",
-}
+)
+_SENSITIVE_QUERY_KEY_FAMILIES = (
+    "accesskey",
+    "apikey",
+    "subscriptionkey",
+)
+_SENSITIVE_QUERY_KEYS = frozenset(
+    {
+        "apikey",
+        "auth",
+        "authentication",
+        "authorization",
+        "code",
+        "googleaccessid",
+        "key",
+        "pwd",
+        "se",
+        "sig",
+        "sip",
+        "skoid",
+        "sks",
+        "skt",
+        "sktid",
+        "skv",
+        "sp",
+        "spr",
+        "sr",
+        "srt",
+        "ss",
+        "st",
+        "sv",
+        "xamzalgorithm",
+        "xamzdate",
+        "xamzexpires",
+        "xamzsignedheaders",
+        "xgoogalgorithm",
+        "xgoogdate",
+        "xgoogexpires",
+        "xgoogsignedheaders",
+    }
+)
+_SAFE_QUERY_FIELD_LIMIT = 256
+_CHARSET_PARAMETER = re.compile(
+    r"(?:^|;)\s*charset\s*=\s*[\"']?\s*([a-zA-Z0-9._:+-]+)",
+    re.IGNORECASE,
+)
+_HTML_META_CHARSET = re.compile(
+    rb"<meta\b[^>]{0,1024}\bcharset\s*=\s*[\"']?\s*"
+    rb"([a-zA-Z0-9._:+-]+)",
+    re.IGNORECASE,
+)
+_CHARSET_SNIFF_BYTES = 8_192
+_BOM_ENCODINGS: tuple[tuple[bytes, str], ...] = (
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+)
+_SUPPORTED_IDENTITY_ENCODINGS = {"", "identity"}
 _CLOUD_METADATA_HOSTS = {
     "instance-data",
     "instance-data.ec2.internal",
@@ -131,22 +190,48 @@ def sanitize_public_url(url: str) -> str:
     """Remove fragments and query values that commonly carry credentials."""
 
     try:
+        if not isinstance(url, str) or _has_forbidden_url_codepoint(url):
+            return ""
         parsed = urlsplit(url)
+        raw_fields = re.split(r"[&;]", parsed.query)
+        if len(raw_fields) > _SAFE_QUERY_FIELD_LIMIT:
+            raw_fields = []
+        safe_pairs: list[tuple[str, str]] = []
+        for field in raw_fields:
+            if not field:
+                continue
+            pairs = parse_qsl(
+                field,
+                keep_blank_values=True,
+                max_num_fields=2,
+            )
+            for key, value in pairs:
+                if not _is_sensitive_query_key(key):
+                    safe_pairs.append((key, value))
         safe_query = urlencode(
-            [
-                (key, value)
-                for key, value in parse_qsl(
-                    parsed.query,
-                    keep_blank_values=True,
-                )
-                if key.casefold() not in _SENSITIVE_QUERY_KEYS
-            ],
+            safe_pairs,
             doseq=True,
         )
+        hostname = parsed.hostname
+        if not hostname:
+            return ""
+        canonical_host = hostname.encode("idna").decode("ascii").casefold()
+        try:
+            address = ipaddress.ip_address(canonical_host)
+        except ValueError:
+            netloc = canonical_host
+        else:
+            netloc = (
+                f"[{canonical_host}]"
+                if isinstance(address, ipaddress.IPv6Address)
+                else canonical_host
+            )
+        if parsed.port is not None:
+            netloc = f"{netloc}:{parsed.port}"
         return urlunsplit(
             (
                 parsed.scheme,
-                parsed.netloc,
+                netloc,
                 parsed.path,
                 safe_query,
                 "",
@@ -158,7 +243,30 @@ def sanitize_public_url(url: str) -> str:
         return ""
 
 
-async def default_resolver(host: str) -> list[ipaddress._BaseAddress]:
+def _is_sensitive_query_key(key: str) -> bool:
+    decoded = key
+    for _ in range(2):
+        decoded = unquote_plus(decoded)
+    normalized = re.sub(r"[^a-z0-9]", "", decoded.casefold())
+    return (
+        normalized in _SENSITIVE_QUERY_KEYS
+        or normalized.startswith(("auth", "oauth"))
+        or any(part in normalized for part in _SENSITIVE_QUERY_KEY_PARTS)
+        or any(
+            family in normalized
+            for family in _SENSITIVE_QUERY_KEY_FAMILIES
+        )
+    )
+
+
+def _has_forbidden_url_codepoint(value: str) -> bool:
+    return any(
+        unicodedata.category(character) in {"Cc", "Cs"}
+        for character in value
+    )
+
+
+async def default_resolver(host: str) -> list[IPAddress]:
     """Resolve every stream-capable address without blocking the event loop."""
 
     loop = asyncio.get_running_loop()
@@ -190,6 +298,7 @@ class SafeWebFetcher:
         max_redirects: int = 3,
         user_agent: str = "StarterAgentJobDescription/0.1",
         respect_robots: bool = True,
+        require_peer_metadata: bool = False,
         _owns_client: bool = False,
     ) -> None:
         if timeout <= 0:
@@ -210,7 +319,10 @@ class SafeWebFetcher:
         self.max_redirects = max_redirects
         self.user_agent = user_agent
         self.respect_robots = respect_robots
-        self.robots_checker = robots_checker or self._default_robots_checker
+        self.robots_checker = robots_checker
+        self.require_peer_metadata = (
+            require_peer_metadata or _owns_client
+        )
         self._owns_client = _owns_client
 
     @classmethod
@@ -233,6 +345,7 @@ class SafeWebFetcher:
             max_redirects=config.max_redirects,
             user_agent=config.user_agent,
             respect_robots=config.respect_robots,
+            require_peer_metadata=True,
             _owns_client=True,
         )
 
@@ -241,70 +354,109 @@ class SafeWebFetcher:
             await self.client.aclose()
 
     async def fetch(self, url: str) -> FetchedPage:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.timeout
+        try:
+            async with asyncio.timeout(self.timeout):
+                return await self._fetch_with_deadline(url, deadline)
+        except FetchFailure:
+            raise
+        except TimeoutError as exc:
+            raise FetchFailure(
+                "fetch_timeout",
+                "读取岗位页面超时",
+                retryable=True,
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise FetchFailure(
+                "fetch_timeout",
+                "读取岗位页面超时",
+                retryable=True,
+            ) from exc
+        except (httpx.InvalidURL, UnicodeError) as exc:
+            raise self._unsafe("URL 格式无法安全编码") from exc
+        except httpx.DecodingError as exc:
+            raise FetchFailure(
+                "fetch_failed",
+                "岗位页面响应无法安全解码",
+                retryable=True,
+            ) from exc
+        except httpx.TransportError as exc:
+            raise FetchFailure(
+                "fetch_failed",
+                "暂时无法读取岗位页面",
+                retryable=True,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise FetchFailure(
+                "fetch_failed",
+                "岗位页面响应流处理失败",
+                retryable=True,
+            ) from exc
+
+    async def _fetch_with_deadline(
+        self,
+        url: str,
+        deadline: float,
+    ) -> FetchedPage:
         current = await self._validate_url(url)
         source_url = sanitize_public_url(current.url)
 
         for redirect_count in range(self.max_redirects + 1):
-            await self._enforce_robots(current)
-            try:
-                async with self._stream(current) as response:
-                    self._validate_connected_peer(response, current)
-
-                    if response.status_code in _REDIRECT_STATUSES:
-                        if redirect_count == self.max_redirects:
-                            raise FetchFailure(
-                                "fetch_failed",
-                                "页面重定向次数过多",
-                            )
-                        location = response.headers.get("location")
-                        if not location:
-                            raise FetchFailure(
-                                "fetch_failed",
-                                "页面重定向缺少目标地址",
-                            )
-                        target = urljoin(current.url, location)
-                        current = await self._validate_url(target)
-                        continue
-
-                    self._raise_for_status(response.status_code)
-                    content_type = self._content_type(response)
-                    self._enforce_content_length(response)
-                    body = await self._read_limited(response)
-                    text = self._decode_body(body, response.encoding)
-                    return FetchedPage(
-                        source_url=source_url,
-                        final_url=sanitize_public_url(current.url),
-                        status_code=response.status_code,
-                        content_type=content_type,
-                        text=text,
-                        content_sha256=hashlib.sha256(body).hexdigest(),
+            await self._enforce_robots(current, deadline)
+            async with self._stream(
+                current,
+                timeout=self._remaining_timeout(deadline),
+            ) as response:
+                self._validate_connected_peer(response, current)
+                if response.status_code in _REDIRECT_STATUSES:
+                    if redirect_count == self.max_redirects:
+                        raise FetchFailure(
+                            "fetch_failed",
+                            "页面重定向次数过多",
+                        )
+                    location = response.headers.get("location")
+                    if not location:
+                        raise FetchFailure(
+                            "fetch_failed",
+                            "页面重定向缺少目标地址",
+                        )
+                    current = await self._validate_url(
+                        urljoin(current.url, location)
                     )
-            except FetchFailure:
-                raise
-            except httpx.TimeoutException as exc:
-                raise FetchFailure(
-                    "fetch_timeout",
-                    "读取岗位页面超时",
-                    retryable=True,
-                ) from exc
-            except httpx.DecodingError as exc:
-                raise FetchFailure(
-                    "fetch_failed",
-                    "岗位页面响应无法安全解码",
-                    retryable=True,
-                ) from exc
-            except httpx.TransportError as exc:
-                raise FetchFailure(
-                    "fetch_failed",
-                    "暂时无法读取岗位页面",
-                    retryable=True,
-                ) from exc
+                    continue
+
+                self._raise_for_status(response.status_code)
+                self._enforce_content_encoding(response)
+                content_type = self._content_type(response)
+                self._enforce_content_length(response)
+                body = await self._read_limited(response)
+                text = self._decode_body(
+                    body,
+                    response.headers.get("content-type", ""),
+                    content_type,
+                )
+                return FetchedPage(
+                    source_url=source_url,
+                    final_url=sanitize_public_url(current.url),
+                    status_code=response.status_code,
+                    content_type=content_type,
+                    text=text,
+                    content_sha256=hashlib.sha256(body).hexdigest(),
+                )
 
         raise FetchFailure(
             "fetch_failed",
             "读取岗位页面失败",
             retryable=True,
         )
+
+    @staticmethod
+    def _remaining_timeout(deadline: float) -> float:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise TimeoutError
+        return remaining
 
     async def _validate_url(self, url: str) -> _ValidatedUrl:
         if not isinstance(url, str):
@@ -313,7 +465,7 @@ class SafeWebFetcher:
             not url
             or len(url) > _MAX_URL_LENGTH
             or url != url.strip()
-            or any(ord(character) < 32 for character in url)
+            or _has_forbidden_url_codepoint(url)
         ):
             raise self._unsafe("URL 格式不安全")
         # Reject even an empty fragment, rather than silently changing the
@@ -353,6 +505,8 @@ class SafeWebFetcher:
             try:
                 resolved = await self.resolver(hostname)
             except FetchFailure:
+                raise
+            except TimeoutError:
                 raise
             except (OSError, UnicodeError, ValueError) as exc:
                 raise FetchFailure(
@@ -429,7 +583,7 @@ class SafeWebFetcher:
 
     @staticmethod
     def _coerce_addresses(
-        values: Sequence[ipaddress._BaseAddress],
+        values: Sequence[IPAddress],
     ) -> tuple[IPAddress, ...]:
         addresses: list[IPAddress] = []
         seen: set[IPAddress] = set()
@@ -454,6 +608,10 @@ class SafeWebFetcher:
             and not address.is_multicast
             and not address.is_reserved
             and not address.is_unspecified
+            and not (
+                isinstance(address, ipaddress.IPv6Address)
+                and address.is_site_local
+            )
         )
 
     @staticmethod
@@ -475,10 +633,12 @@ class SafeWebFetcher:
         target: _ValidatedUrl,
         *,
         accept: str = "text/html,text/plain;q=0.9",
+        timeout: float,
     ):
         headers = {
             "User-Agent": self.user_agent,
             "Accept": accept,
+            "Accept-Encoding": "identity",
             "Host": target.host_header,
             # Avoid pooling one pinned IP connection across different host
             # names, where the original TLS SNI could otherwise be reused.
@@ -492,16 +652,32 @@ class SafeWebFetcher:
             target.pinned_url,
             headers=headers,
             follow_redirects=False,
-            timeout=self.timeout,
+            timeout=timeout,
             extensions=extensions,
         )
 
-    async def _enforce_robots(self, target: _ValidatedUrl) -> None:
+    async def _enforce_robots(
+        self,
+        target: _ValidatedUrl,
+        deadline: float,
+    ) -> None:
         if not self.respect_robots:
             return
         try:
-            allowed = await self.robots_checker(target.url, self.user_agent)
+            if self.robots_checker is None:
+                allowed = await self._default_robots_checker(
+                    target.url,
+                    self.user_agent,
+                    deadline,
+                )
+            else:
+                allowed = await self.robots_checker(
+                    target.url,
+                    self.user_agent,
+                )
         except FetchFailure:
+            raise
+        except (TimeoutError, httpx.TimeoutException):
             raise
         except (httpx.HTTPError, OSError, ValueError) as exc:
             raise FetchFailure(
@@ -518,6 +694,7 @@ class SafeWebFetcher:
         self,
         target_url: str,
         user_agent: str,
+        deadline: float,
     ) -> bool:
         parsed = urlsplit(target_url)
         robots_url = urlunsplit(
@@ -525,28 +702,54 @@ class SafeWebFetcher:
         )
         try:
             target = await self._validate_url(robots_url)
-            async with self._stream(
-                target,
-                accept="text/plain,text/html;q=0.5",
-            ) as response:
-                self._validate_connected_peer(response, target)
-                status = response.status_code
-                if status in {404, 410} or 400 <= status < 500:
-                    # RFC 9309 treats 4xx as "unavailable"; access is allowed.
-                    # Authentication and rate limiting are conservative
-                    # exceptions because they are explicit access controls.
-                    return status not in {401, 403, 429}
-                if status != 200:
-                    return False
-                media_type = response.headers.get(
-                    "content-type", ""
-                ).split(";", 1)[0].strip().casefold()
-                if media_type not in {"text/plain", "text/html"}:
-                    return False
-                self._enforce_content_length(response)
-                body = await self._read_limited(response)
-                policy = self._decode_body(body, response.encoding)
-        except (FetchFailure, httpx.HTTPError, OSError, ValueError):
+            for redirect_count in range(self.max_redirects + 1):
+                async with self._stream(
+                    target,
+                    accept="text/plain,text/html;q=0.5",
+                    timeout=self._remaining_timeout(deadline),
+                ) as response:
+                    self._validate_connected_peer(response, target)
+                    status = response.status_code
+                    if status in _REDIRECT_STATUSES:
+                        if redirect_count == self.max_redirects:
+                            return False
+                        location = response.headers.get("location")
+                        if not location:
+                            return False
+                        target = await self._validate_url(
+                            urljoin(target.url, location)
+                        )
+                        continue
+                    if status in {404, 410} or 400 <= status < 500:
+                        return status not in {401, 403, 429}
+                    if status != 200:
+                        return False
+                    self._enforce_content_encoding(response)
+                    media_type = response.headers.get(
+                        "content-type", ""
+                    ).split(";", 1)[0].strip().casefold()
+                    if media_type not in {"text/plain", "text/html"}:
+                        return False
+                    self._enforce_content_length(response)
+                    body = await self._read_limited(response)
+                    policy = self._decode_body(
+                        body,
+                        response.headers.get("content-type", ""),
+                        media_type,
+                    )
+                    robots_url = target.url
+                    break
+            else:
+                return False
+        except (TimeoutError, httpx.TimeoutException):
+            raise
+        except (
+            FetchFailure,
+            httpx.HTTPError,
+            OSError,
+            UnicodeError,
+            ValueError,
+        ):
             # When policy cannot be retrieved safely, fail closed. This tool
             # does not attempt to bypass a site's automation preference.
             return False
@@ -556,19 +759,27 @@ class SafeWebFetcher:
         parser.parse(policy.splitlines())
         return parser.can_fetch(user_agent, target_url)
 
-    @staticmethod
     def _validate_connected_peer(
+        self,
         response: httpx.Response,
         target: _ValidatedUrl,
     ) -> None:
         stream = response.extensions.get("network_stream")
         if stream is None or not hasattr(stream, "get_extra_info"):
-            # Mock transports do not expose a peer. Production uses a URL
-            # pinned to selected_address, so DNS cannot be re-resolved here.
+            if self.require_peer_metadata:
+                raise FetchFailure(
+                    "unsafe_url",
+                    "网络传输未提供可验证的对端地址",
+                )
             return
         try:
             peer = stream.get_extra_info("server_addr")
             if not peer:
+                if self.require_peer_metadata:
+                    raise FetchFailure(
+                        "unsafe_url",
+                        "网络传输未提供可验证的对端地址",
+                    )
                 return
             peer_address = ipaddress.ip_address(peer[0])
         except (AttributeError, IndexError, TypeError, ValueError) as exc:
@@ -597,6 +808,19 @@ class SafeWebFetcher:
             )
         return content_type
 
+    @staticmethod
+    def _enforce_content_encoding(response: httpx.Response) -> None:
+        raw_encoding = response.headers.get("content-encoding", "")
+        encodings = {
+            item.strip().casefold()
+            for item in raw_encoding.split(",")
+        }
+        if not encodings.issubset(_SUPPORTED_IDENTITY_ENCODINGS):
+            raise FetchFailure(
+                "fetch_failed",
+                "目标页面使用了不支持的内容压缩",
+            )
+
     def _enforce_content_length(self, response: httpx.Response) -> None:
         raw_length = response.headers.get("content-length")
         if raw_length is None:
@@ -613,7 +837,7 @@ class SafeWebFetcher:
 
     async def _read_limited(self, response: httpx.Response) -> bytes:
         body = bytearray()
-        async for chunk in response.aiter_bytes():
+        async for chunk in response.aiter_raw():
             if len(body) + len(chunk) > self.max_response_bytes:
                 raise FetchFailure(
                     "response_too_large",
@@ -623,11 +847,50 @@ class SafeWebFetcher:
         return bytes(body)
 
     @staticmethod
-    def _decode_body(body: bytes, encoding: str | None) -> str:
+    def _decode_body(
+        body: bytes,
+        content_type_header: str,
+        media_type: str,
+    ) -> str:
+        encoding = SafeWebFetcher._valid_http_charset(content_type_header)
+        if encoding is None:
+            for marker, candidate in _BOM_ENCODINGS:
+                if body.startswith(marker):
+                    encoding = candidate
+                    break
+        if encoding is None and media_type == "text/html":
+            match = _HTML_META_CHARSET.search(
+                body[:_CHARSET_SNIFF_BYTES]
+            )
+            if match is not None:
+                candidate = match.group(1).decode("ascii")
+                if SafeWebFetcher._is_text_codec(candidate):
+                    encoding = candidate
         try:
             return body.decode(encoding or "utf-8", errors="replace")
-        except LookupError:
+        except (LookupError, TypeError, ValueError):
             return body.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _valid_http_charset(content_type_header: str) -> str | None:
+        match = _CHARSET_PARAMETER.search(content_type_header)
+        if match is None:
+            return None
+        candidate = match.group(1)
+        return (
+            candidate
+            if SafeWebFetcher._is_text_codec(candidate)
+            else None
+        )
+
+    @staticmethod
+    def _is_text_codec(name: str) -> bool:
+        try:
+            codecs.lookup(name)
+            b"".decode(name)
+        except (LookupError, TypeError, ValueError):
+            return False
+        return True
 
     @staticmethod
     def _raise_for_status(status_code: int) -> None:
