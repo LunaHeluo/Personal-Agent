@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, create_engine, func, select
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, create_engine, event, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from starter_agent.knowledge.errors import KnowledgeError
@@ -130,6 +131,16 @@ class KnowledgeChunkRow(KnowledgeBaseSql):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class InvalidatedCitationRow(KnowledgeBaseSql):
+    __tablename__ = "invalidated_citations"
+
+    chunk_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    knowledge_base_id: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(120), index=True)
+    project_id: Mapped[str] = mapped_column(String(120), index=True)
+    invalidated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class SQLiteKnowledgeStore:
     def __init__(self, database_url: str, project_root: Path):
         if database_url.startswith("sqlite:///"):
@@ -140,6 +151,13 @@ class SQLiteKnowledgeStore:
             database_path.parent.mkdir(parents=True, exist_ok=True)
             database_url = f"sqlite:///{database_path}"
         self.engine = create_engine(database_url)
+        if self.engine.dialect.name == "sqlite":
+            @event.listens_for(self.engine, "connect")
+            def _configure_sqlite(dbapi_connection, _record) -> None:
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA secure_delete=ON")
+                cursor.close()
         KnowledgeBaseSql.metadata.create_all(self.engine)
         from starter_agent.knowledge.index import SQLiteFtsIndex
 
@@ -376,13 +394,80 @@ class SQLiteKnowledgeStore:
                 retryable=0,
                 created_at=now,
             )
-            db.add_all([document, version, job])
+            db.add(document)
+            db.flush()
+            db.add(version)
+            db.flush()
+            db.add(job)
             db.commit()
             db.refresh(document)
             db.refresh(version)
             db.refresh(job)
             return UploadBundle(
                 document=self._document(document),
+                version=self._version(version),
+                job=self._job(job),
+            )
+
+    def create_update(
+        self,
+        scope: KnowledgeScope,
+        *,
+        knowledge_base_id: UUID,
+        document_id: UUID,
+        expected_content_sha256: str,
+        source_text: str,
+        content_sha256: str,
+    ) -> UploadBundle:
+        now = datetime.now(UTC)
+        version_id = uuid4()
+        job_id = uuid4()
+        with Session(self.engine) as db, db.begin():
+            document = db.scalar(
+                select(KnowledgeDocumentRow).where(
+                    *self._scope_filters(scope),
+                    KnowledgeDocumentRow.knowledge_base_id == str(knowledge_base_id),
+                    KnowledgeDocumentRow.id == str(document_id),
+                )
+            )
+            if document is None or not document.active_version_id:
+                raise KnowledgeError("document_not_found")
+            active = db.get(DocumentVersionRow, document.active_version_id)
+            if active is None or active.content_sha256 != expected_content_sha256:
+                raise KnowledgeError("document_version_conflict")
+            if content_sha256 == active.content_sha256:
+                raise KnowledgeError("duplicate_document_content")
+            version = DocumentVersionRow(
+                id=str(version_id),
+                document_id=document.id,
+                knowledge_base_id=document.knowledge_base_id,
+                user_id=scope.user_id,
+                project_id=scope.project_id,
+                version=active.version + 1,
+                content_sha256=content_sha256,
+                source_text=source_text,
+                status="queued",
+                chunk_count=0,
+                created_at=now,
+            )
+            job = IngestionJobRow(
+                id=str(job_id),
+                document_id=document.id,
+                version_id=str(version_id),
+                knowledge_base_id=document.knowledge_base_id,
+                user_id=scope.user_id,
+                project_id=scope.project_id,
+                status="queued",
+                stage="upload",
+                retryable=0,
+                created_at=now,
+            )
+            db.add(version)
+            db.flush()
+            db.add(job)
+            db.flush()
+            return UploadBundle(
+                document=self._document(document, active),
                 version=self._version(version),
                 job=self._job(job),
             )
@@ -478,6 +563,28 @@ class SQLiteKnowledgeStore:
             job = db.get(IngestionJobRow, str(upload.job.id))
             if document is None or version is None or job is None:
                 raise KnowledgeError("document_not_found")
+            old_version_id = document.active_version_id
+            if old_version_id and old_version_id != version.id:
+                old_chunks = list(
+                    db.scalars(
+                        select(KnowledgeChunkRow).where(
+                            KnowledgeChunkRow.version_id == old_version_id
+                        )
+                    )
+                )
+                for old_chunk in old_chunks:
+                    db.merge(
+                        InvalidatedCitationRow(
+                            chunk_hash=sha256(old_chunk.id.encode()).hexdigest(),
+                            knowledge_base_id=document.knowledge_base_id,
+                            user_id=scope.user_id,
+                            project_id=scope.project_id,
+                            invalidated_at=now,
+                        )
+                    )
+                db.query(KnowledgeChunkRow).filter(
+                    KnowledgeChunkRow.version_id == old_version_id
+                ).delete()
             db.query(KnowledgeChunkRow).filter(
                 KnowledgeChunkRow.version_id == str(upload.version.id)
             ).delete()
@@ -521,6 +628,13 @@ class SQLiteKnowledgeStore:
             job.finished_at = now
             db.flush()
             self.index.rebuild(db.connection())
+            if old_version_id and old_version_id != version.id:
+                db.query(IngestionJobRow).filter(
+                    IngestionJobRow.version_id == old_version_id
+                ).delete()
+                db.query(DocumentVersionRow).filter(
+                    DocumentVersionRow.id == old_version_id
+                ).delete()
 
     def fail_ingestion(
         self,
@@ -659,3 +773,68 @@ class SQLiteKnowledgeStore:
         with Session(self.engine) as db:
             rows = db.execute(query).all()
         return [(self._chunk(row[0]), row[1]) for row in rows]
+
+    def citation_state(
+        self,
+        scope: KnowledgeScope,
+        knowledge_base_id: UUID,
+        chunk_id: UUID,
+    ) -> KnowledgeChunk | None:
+        chunks = self.get_chunks_by_ids(scope, knowledge_base_id, [chunk_id])
+        if chunk_id in chunks:
+            return chunks[chunk_id][0]
+        digest = sha256(str(chunk_id).encode()).hexdigest()
+        with Session(self.engine) as db:
+            invalidated = db.scalar(
+                select(InvalidatedCitationRow.chunk_hash).where(
+                    InvalidatedCitationRow.chunk_hash == digest,
+                    InvalidatedCitationRow.user_id == scope.user_id,
+                    InvalidatedCitationRow.project_id == scope.project_id,
+                    InvalidatedCitationRow.knowledge_base_id == str(knowledge_base_id),
+                )
+            )
+        if invalidated:
+            raise KnowledgeError("citation_gone")
+        return None
+
+    def delete_document(
+        self,
+        scope: KnowledgeScope,
+        knowledge_base_id: UUID,
+        document_id: UUID,
+    ) -> bool:
+        with Session(self.engine) as db, db.begin():
+            document = db.scalar(
+                select(KnowledgeDocumentRow).where(
+                    *self._scope_filters(scope),
+                    KnowledgeDocumentRow.knowledge_base_id == str(knowledge_base_id),
+                    KnowledgeDocumentRow.id == str(document_id),
+                )
+            )
+            if document is None:
+                return False
+            version_ids = list(
+                db.scalars(
+                    select(DocumentVersionRow.id).where(
+                        DocumentVersionRow.document_id == document.id
+                    )
+                )
+            )
+            db.query(KnowledgeChunkRow).filter(
+                KnowledgeChunkRow.document_id == document.id
+            ).delete()
+            db.query(IngestionJobRow).filter(
+                IngestionJobRow.document_id == document.id
+            ).delete()
+            db.query(DocumentVersionRow).filter(
+                DocumentVersionRow.id.in_(version_ids)
+            ).delete(synchronize_session=False)
+            db.query(InvalidatedCitationRow).filter(
+                InvalidatedCitationRow.user_id == scope.user_id,
+                InvalidatedCitationRow.project_id == scope.project_id,
+                InvalidatedCitationRow.knowledge_base_id == str(knowledge_base_id),
+            ).delete()
+            db.delete(document)
+            db.flush()
+            self.index.rebuild(db.connection())
+        return True

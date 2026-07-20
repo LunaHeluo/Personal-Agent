@@ -143,3 +143,48 @@ class KnowledgeApplicationService:
             filenames=filenames,
             versions=versions,
         )
+
+    def update_document(
+        self,
+        knowledge_base_id: UUID,
+        document_id: UUID,
+        *,
+        expected_content_sha256: str,
+        filename: str,
+        content: bytes,
+        confirmed_authorized: bool,
+    ) -> UploadBundle:
+        validated = validate_markdown_upload(
+            filename=filename,
+            content=content,
+            confirmed_authorized=confirmed_authorized,
+            max_bytes=self.settings.knowledge.max_upload_bytes,
+            allowed_extensions=self.settings.knowledge.allowed_extensions,
+        )
+        upload = self.store.create_update(
+            self.scope,
+            knowledge_base_id=knowledge_base_id,
+            document_id=document_id,
+            expected_content_sha256=expected_content_sha256,
+            source_text=validated.text,
+            content_sha256=validated.content_sha256,
+        )
+        self.ingestion.run(self.scope, upload)
+        return upload
+
+    def delete_document(
+        self, knowledge_base_id: UUID, document_id: UUID
+    ) -> bool:
+        return self.store.delete_document(
+            self.scope, knowledge_base_id, document_id
+        )
+
+    def resolve_citation(
+        self, knowledge_base_id: UUID, chunk_id: UUID
+    ) -> KnowledgeChunk:
+        chunk = self.store.citation_state(
+            self.scope, knowledge_base_id, chunk_id
+        )
+        if chunk is None:
+            raise KnowledgeError("document_not_found")
+        return chunk

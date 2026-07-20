@@ -74,6 +74,16 @@ _MESSAGES: dict[str, tuple[str, str, int]] = {
         "请输入需要从资料中查找的问题",
         400,
     ),
+    "document_version_conflict": (
+        "文档已被其他更新修改",
+        "请刷新文档并基于最新版本重试",
+        409,
+    ),
+    "citation_gone": (
+        "该引用对应的文档版本已失效",
+        "请重新检索并使用当前版本引用",
+        410,
+    ),
 }
 
 

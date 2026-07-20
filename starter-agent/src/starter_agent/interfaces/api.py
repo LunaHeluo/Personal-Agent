@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -421,6 +421,73 @@ def create_api() -> FastAPI:
             "matches": [
                 item.model_dump(mode="json") for item in matches
             ],
+        }
+
+    @api.put(
+        "/v1/knowledge-bases/{knowledge_base_id}/documents/{document_id}/content",
+        status_code=202,
+    )
+    async def update_knowledge_document(
+        knowledge_base_id: UUID,
+        document_id: UUID,
+        file: UploadFile = File(...),
+        confirmed_authorized: bool = Form(False),
+        if_match: str = Header(..., alias="If-Match"),
+    ) -> dict[str, object]:
+        try:
+            content = await file.read(
+                get_settings().knowledge.max_upload_bytes + 1
+            )
+            result = create_knowledge_service().update_document(
+                knowledge_base_id,
+                document_id,
+                expected_content_sha256=if_match.strip('"'),
+                filename=file.filename or "",
+                content=content,
+                confirmed_authorized=confirmed_authorized,
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return {
+            "document_id": str(result.document.id),
+            "version_id": str(result.version.id),
+            "job_id": str(result.job.id),
+            "version": result.version.version,
+            "content_sha256": result.version.content_sha256,
+            "status": "queued",
+        }
+
+    @api.delete(
+        "/v1/knowledge-bases/{knowledge_base_id}/documents/{document_id}"
+    )
+    async def delete_knowledge_document(
+        knowledge_base_id: UUID,
+        document_id: UUID,
+    ) -> dict[str, object]:
+        deleted = create_knowledge_service().delete_document(
+            knowledge_base_id, document_id
+        )
+        return {"status": "deleted", "existed": deleted}
+
+    @api.get(
+        "/v1/knowledge-bases/{knowledge_base_id}/citations/{chunk_id}"
+    )
+    async def resolve_knowledge_citation(
+        knowledge_base_id: UUID,
+        chunk_id: UUID,
+    ) -> dict[str, object]:
+        try:
+            chunk = create_knowledge_service().resolve_citation(
+                knowledge_base_id, chunk_id
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return {
+            **chunk.model_dump(
+                mode="json", exclude={"text", "search_text"}
+            ),
+            "source_ref": chunk.source_ref,
+            "quote": chunk.text[:400],
         }
 
     @api.get(
