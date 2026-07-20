@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from pydantic import BaseModel, ValidationError
 
@@ -20,6 +21,18 @@ class _GeneratedPayload(BaseModel):
     status: str
     answer: str
     claims: list[GeneratedClaim]
+
+
+_FENCED_JSON = re.compile(
+    r"\A```(?:json)?[ \t]*\r?\n(?P<body>.*)\r?\n```[ \t]*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _normalize_json_envelope(content: str) -> str:
+    stripped = content.strip()
+    match = _FENCED_JSON.fullmatch(stripped)
+    return match.group("body").strip() if match else stripped
 
 
 class RagGenerator:
@@ -55,7 +68,7 @@ class RagGenerator:
         )
         try:
             payload = _GeneratedPayload.model_validate_json(
-                response.content or ""
+                _normalize_json_envelope(response.content or "")
             )
             status = payload.status
             if status not in {"answered", "refused", "conflict"}:
