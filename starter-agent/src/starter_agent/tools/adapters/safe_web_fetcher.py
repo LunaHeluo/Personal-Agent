@@ -687,7 +687,7 @@ class SafeWebFetcher:
         if not allowed:
             raise FetchFailure(
                 "robots_blocked",
-                "目标网站不允许自动读取该页面",
+                "目标网站的 robots.txt 明确禁止自动读取该页面",
             )
 
     async def _default_robots_checker(

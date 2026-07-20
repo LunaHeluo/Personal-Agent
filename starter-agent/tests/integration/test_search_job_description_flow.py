@@ -13,8 +13,24 @@ from starter_agent.domain.models import Message, ModelResponse, ToolCall, ToolRe
 from starter_agent.infrastructure.session_store import SQLiteSessionStore
 from starter_agent.providers.base import Provider
 from starter_agent.settings import ContextConfig, RuntimeConfig, load_settings
+from starter_agent.tools.adapters.job_description_extractor import (
+    JobDescriptionExtractor,
+)
+from starter_agent.tools.adapters.safe_web_fetcher import (
+    FetchFailure,
+    FetchedPage,
+)
 from starter_agent.tools.base import Tool, ToolContext
+from starter_agent.tools.builtin.job_description_search import SearchJobDescriptionTool
 from starter_agent.tools.policy import ToolPolicy
+
+APPLE_SEARCH_URL = (
+    "https://jobs.apple.com/en-us/search?"
+    "location=china-CHNC&team=machine-learning-and-ai-SFTWR-MCHLN"
+)
+AIJOBS_JOB_URL = (
+    "https://aijobs.ai/job/strategic-sales-manager-ai-llm-1"
+)
 
 
 class _ToolRegistry:
@@ -108,6 +124,100 @@ class _SelectionProvider(Provider):
         return True, "ready"
 
 
+class _AppleListingFetcher:
+    async def fetch(self, url: str) -> FetchedPage:
+        return FetchedPage(
+            source_url=url,
+            final_url=url,
+            status_code=200,
+            content_type="text/html",
+            text=(
+                "<h1>Search Results</h1><p>7 Results</p>"
+                "<a href='/en-us/details/1/example'>"
+                "See full role description</a>"
+            ),
+            content_sha256="c" * 64,
+        )
+
+
+class _DirectUrlProvider(Provider):
+    name = "direct-url"
+
+    async def complete(
+        self,
+        messages,
+        model,
+        tools,
+        on_delta=None,
+        tool_choice=None,
+    ):
+        if messages[-1].role == "tool":
+            payload = json.loads(messages[-1].content)
+            assert payload["error_code"] == "job_listing_page"
+            return ModelResponse(
+                content="这是搜索结果页，请选择一个具体岗位链接。",
+                provider=self.name,
+                model=model,
+            )
+        return ModelResponse(
+            provider=self.name,
+            model=model,
+            tool_calls=[
+                ToolCall(
+                    id="apple-listing-1",
+                    name="search_job_description",
+                    arguments={"url": APPLE_SEARCH_URL},
+                )
+            ],
+        )
+
+    async def health(self, model: str) -> tuple[bool, str]:
+        return True, "ready"
+
+
+class _RobotsBlockedFetcher:
+    async def fetch(self, url: str) -> FetchedPage:
+        raise FetchFailure(
+            "robots_blocked",
+            "目标网站的 robots.txt 明确禁止自动读取该岗位页面",
+        )
+
+
+class _BlockedUrlProvider(Provider):
+    name = "blocked-url"
+
+    async def complete(
+        self,
+        messages,
+        model,
+        tools,
+        on_delta=None,
+        tool_choice=None,
+    ):
+        if messages[-1].role == "tool":
+            payload = json.loads(messages[-1].content)
+            assert payload["error_code"] == "robots_blocked"
+            return ModelResponse(
+                content="该网站的 robots.txt 禁止抓取此岗位，请粘贴 JD。",
+                provider=self.name,
+                model=model,
+            )
+        return ModelResponse(
+            provider=self.name,
+            model=model,
+            tool_calls=[
+                ToolCall(
+                    id="aijobs-blocked-1",
+                    name="search_job_description",
+                    arguments={"url": AIJOBS_JOB_URL},
+                )
+            ],
+        )
+
+    async def health(self, model: str) -> tuple[bool, str]:
+        return True, "ready"
+
+
 async def _search_then_select(governance_enabled: bool, selection: str = "第 2 个"):
     job_tool = _JobDescriptionTool()
     runtime = AgentRuntime(
@@ -176,6 +286,78 @@ async def test_disabling_governance_keeps_the_full_job_result() -> None:
     payload = json.loads(next(message for message in generated if message.role == "tool").content)
     assert len(payload["data"]["raw_text"]) > 10_000
     assert payload["metadata"]["is_untrusted_external_content"] is True
+
+
+async def test_apple_listing_failure_is_visible_and_chat_can_continue() -> None:
+    job_tool = SearchJobDescriptionTool(
+        _AppleListingFetcher(),  # type: ignore[arg-type]
+        JobDescriptionExtractor(),
+    )
+    runtime = AgentRuntime(
+        _ToolRegistry(job_tool),  # type: ignore[arg-type]
+        ToolPolicy(["read"]),
+        RuntimeConfig(),
+        ContextConfig(),
+    )
+    events: list[dict[str, Any]] = []
+
+    async def on_event(event: dict[str, Any]) -> None:
+        events.append(event)
+
+    result, _, calls = await runtime.run(
+        _DirectUrlProvider(),
+        "offline",
+        [Message(role="user", content=APPLE_SEARCH_URL)],
+        uuid4(),
+        uuid4(),
+        on_tool_event=on_event,
+    )
+
+    assert calls == 1
+    assert result.content == "这是搜索结果页，请选择一个具体岗位链接。"
+    completed = next(
+        event for event in events if event["type"] == "tool_completed"
+    )
+    assert completed["ok"] is False
+    assert completed["error_code"] == "job_listing_page"
+    assert completed["failure_type"] == "listing_page"
+    assert "搜索结果页" in completed["display"]
+
+
+async def test_aijobs_robots_block_is_visible_and_chat_can_continue() -> None:
+    job_tool = SearchJobDescriptionTool(
+        _RobotsBlockedFetcher(),  # type: ignore[arg-type]
+        JobDescriptionExtractor(),
+    )
+    runtime = AgentRuntime(
+        _ToolRegistry(job_tool),  # type: ignore[arg-type]
+        ToolPolicy(["read"]),
+        RuntimeConfig(),
+        ContextConfig(),
+    )
+    events: list[dict[str, Any]] = []
+
+    async def on_event(event: dict[str, Any]) -> None:
+        events.append(event)
+
+    result, _, calls = await runtime.run(
+        _BlockedUrlProvider(),
+        "offline",
+        [Message(role="user", content=AIJOBS_JOB_URL)],
+        uuid4(),
+        uuid4(),
+        on_tool_event=on_event,
+    )
+
+    assert calls == 1
+    assert "robots.txt" in result.content
+    completed = next(
+        event for event in events if event["type"] == "tool_completed"
+    )
+    assert completed["ok"] is False
+    assert completed["error_code"] == "robots_blocked"
+    assert completed["failure_type"] == "robots_blocked"
+    assert "robots.txt" in completed["display"]
 
 
 class _Providers:

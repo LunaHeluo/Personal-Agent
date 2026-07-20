@@ -68,6 +68,14 @@ class SearchJobDescriptionTool(Tool):
             return self._fetch_failure_result(exc, source_ref)
 
         extracted = self.extractor.extract(page.text, page.content_type)
+        if self._is_job_listing_page(page.final_url, page.text):
+            return self._error(
+                "job_listing_page",
+                "该链接是岗位搜索结果页，不是单个岗位 JD。"
+                "请先选择一个具体岗位，再提供“See full role description”链接。",
+                source_ref,
+                failure_type="listing_page",
+            )
         if not extracted.raw_text.strip():
             return self._error(
                 "dynamic_page_unsupported",
@@ -187,6 +195,20 @@ class SearchJobDescriptionTool(Tool):
             for index in range(len(target) - size + 1)
         )
 
+    @staticmethod
+    def _is_job_listing_page(url: str, page_text: str) -> bool:
+        try:
+            path = urlsplit(url).path.rstrip("/").casefold()
+        except ValueError:
+            return False
+        if not path.endswith("/search"):
+            return False
+        normalized_text = unicodedata.normalize("NFKC", page_text).casefold()
+        return (
+            "search results" in normalized_text
+            and "see full role description" in normalized_text
+        )
+
     @classmethod
     def _invalid_arguments(cls) -> ToolResult:
         return ToolResult(
@@ -199,23 +221,33 @@ class SearchJobDescriptionTool(Tool):
     def _fetch_failure_result(
         cls, failure: FetchFailure, source_ref: str
     ) -> ToolResult:
+        metadata = cls._metadata(source_ref, "failed")
+        metadata["failure_type"] = failure.code
         return ToolResult(
             ok=False,
             display=failure.display,
             error_code=failure.code,
             retryable=failure.retryable,
-            metadata=cls._metadata(source_ref, "failed"),
+            metadata=metadata,
         )
 
     @classmethod
     def _error(
-        cls, error_code: str, display: str, source_ref: str
+        cls,
+        error_code: str,
+        display: str,
+        source_ref: str,
+        *,
+        failure_type: str | None = None,
     ) -> ToolResult:
+        metadata = cls._metadata(source_ref, "fetched")
+        if failure_type:
+            metadata["failure_type"] = failure_type
         return ToolResult(
             ok=False,
             display=display,
             error_code=error_code,
-            metadata=cls._metadata(source_ref, "fetched"),
+            metadata=metadata,
         )
 
     @staticmethod

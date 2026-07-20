@@ -19,6 +19,9 @@ from starter_agent.tools.adapters.safe_web_fetcher import (
 
 
 PUBLIC_IPV4 = ipaddress.ip_address("93.184.216.34")
+AIJOBS_JOB_URL = (
+    "https://aijobs.ai/job/strategic-sales-manager-ai-llm-1"
+)
 
 
 class StaticStream(httpx.AsyncByteStream):
@@ -424,6 +427,36 @@ async def test_production_robots_checker_reads_policy_and_blocks_page() -> None:
             await fetcher.fetch("https://example.com/job")
 
     assert exc.value.code == "robots_blocked"
+    assert paths == ["/robots.txt"]
+
+
+async def test_aijobs_job_url_reports_explicit_robots_policy_block() -> None:
+    paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        assert request.headers["host"] == "aijobs.ai"
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/plain"},
+                stream=StaticStream(
+                    b"User-agent: *\nDisallow: /job/\n"
+                ),
+            )
+        return html_response()
+
+    async with make_client(handler) as client:
+        fetcher = SafeWebFetcher(
+            client=client,
+            resolver=public_resolver,
+        )
+
+        with pytest.raises(FetchFailure) as exc:
+            await fetcher.fetch(AIJOBS_JOB_URL)
+
+    assert exc.value.code == "robots_blocked"
+    assert "robots.txt" in exc.value.display
     assert paths == ["/robots.txt"]
 
 

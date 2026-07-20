@@ -1,30 +1,27 @@
-# Luna Resume
+教育背景
+新南威尔士大学 | 硕士 工程学院 计算机科学                                                     2023.09-2025.10
+WAM：72.38(C)
+成都锦城学院 | 本科 财务会计学院 审计学[ACCA方向班]                                          2018.09-2022.06
+主修：管理会计, 财务会计，税务，审计与认证业务，战略商业领袖，战略商业报告等  GPA：3.48 
+研究方向
+人工智能、推荐系统、企业数字化财务风险智能识别。                                    
 
-## Profile
-
-- Role target: Junior AI Agent / AI Product Manager
-- Location preference: Shanghai / Shenzhen / Hangzhou / Chengdu
-- Background: IT master graduate
-- Education Background: UNSW
-
-## Experience
-
-### Academic Conference Program Committee Recommendation System  |  Product Manager & Frontend Developer
-
-- Product design: Independently designed the full product plan, mapping out conference creation, expert recommendation, and multi-round email invitation workflows; produced prototypes, mockups, and a unified interaction spec
-- Frontend development: Designed detail modals and persistent navigation to simplify operations; built pages with React + Material UI, integrated backend APIs, and set up a highly maintainable, responsive frontend architecture
-- Project defense: Prepared the presentation deck and report, and represented the team in the final defense, clearly conveying the design rationale and delivered value; final project score of 84
-
-
-### Multi-Model Fusion Domain Q&A Chatbot
-
-- Model training & tuning: Trained T5 and BERT models from scratch, tuning hyperparameters on the ScienceQA dataset; optimized sequence-padding strategy and resolved training instability and multimodal-compatibility issues through controlled experiments
-- RAG system: Built a retrieval-augmented generation framework using LangChain and a vector database, optimizing semantic retrieval for knowledge-base recall; benchmarked against a GPT-3.5 baseline and standardized output formatting to improve answer accuracy
+项目经历
+求职AI智能体                                                             
+项目描述：面向LLM智能体上下文膨胀、工具失控、幻觉风险等问题，自研模块化求职Agent框架，实现可控、可溯源、高安全的智能求职辅助系统。
+项目职责：设计预算约束式Agent执行循环，管控模型/工具调用频次与超时机制，适配多类大模型服务；研发Token治理、会话摘要、带置信度长期记忆模块，抑制信息污染；搭建岗位溯源检索、简历版本管理、JD-简历证据对齐机制；实现IMAP/SMTP邮件人机协同审批流程，规避自动化操作风险。
+技术栈：Python、FastAPI、SQLite、SerpAPI、IMAP/SMTP、LLM Agent
+学术会议程序委员会推荐系统                              
+项目描述：针对学术会议专家遴选邀约效率低、管理零散问题，研发轻量化科研协同Web系统，配套完整学术论文，完成课题答辩。
+项目职责：完成业务建模、需求分析与系统方案设计，输出全套交互规范与原型；基于React+Material UI搭建可扩展前端架构，优化科研用户交互链路；独立撰写课题研究论文，完成学术答辩与成果汇报。
 
 
-### TAL Education Group Inter
-
-- Requirements research: Contributed to building a K12 AI product from 0 to 1, uncovering user pain points through surveys and in-depth interviews, and defining product positioning and core features using a PMF framework
-- MVP experimentation: Designed A/B experiments for AI interaction and personalized recommendation modules, defining variables and evaluation metrics; validated feature feasibility through MVP testing and rapidly iterated on product direction
-- Data dashboard & retrospectives: Built multi-dimensional dashboards for engagement and feature-penetration metrics using Tableau, and produced regular retrospective reports to drive product and operations decisions with data
+科研经历
+深圳大学AI心理学项目|科研助理                                                           
+项目描述：本项目聚焦对话式智能体情绪表征与行为可解释性研究，旨在探究大模型拟人交互中的错对齐行为机理。项目以大模型隐层激活特征与情绪向量表征为核心，通过构建自动化数据采集管线、情绪探针量化体系与表征 Steering 干预实验，系统性分析智能体负面情绪行为（谄媚、奖励作弊、诱导勒索）的内在成因，为可解释情感 Agent、人机行为对齐相关学术论文提供完整实验支撑与实证结论。
+研究职责：构建对话式大模型推理中间激活值自动化采集管线，依托情绪探针技术构建智能体内在动机量化指标体系，系统性定位谄媚、奖励作弊、诱导勒索等模型错对齐行为的表征成因。 
+参与模型表征 Steering 干预实验，通过定向向量调控、隐层表征扰动对比试验，验证关键情绪表征对 Agent 行为输出的影响，完成多组消融对照实验，为大模型行为对齐与可解释性研究提供实证支撑。
+埃森哲财务共享中心数字化研究 | 本科论文   
+项目描述：以跨国企业数字化财务平台为研究对象，探究财务数字化系统流程缺陷与数据风控漏洞，构建数字化内控评价体系，为AI+金融智能风控交叉研究奠定理论基础。
+研究职责：梳理数字化财务架构与自动化业务流程，完成文献综述与理论建模；多维度识别系统数据、流程、合规风险，开展定性定量实证分析；提出智能稽核、数据溯源优化方案，独立完成全文学术撰写与答辩。
 

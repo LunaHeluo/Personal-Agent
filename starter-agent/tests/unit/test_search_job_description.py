@@ -7,6 +7,7 @@ import pytest
 
 from starter_agent.tools.adapters.job_description_extractor import (
     ExtractedJobDescription,
+    JobDescriptionExtractor,
 )
 from starter_agent.tools.adapters.safe_web_fetcher import (
     FetchFailure,
@@ -15,6 +16,35 @@ from starter_agent.tools.adapters.safe_web_fetcher import (
 from starter_agent.tools.base import ToolContext
 from starter_agent.tools.builtin.job_description_search import (
     SearchJobDescriptionTool,
+)
+
+APPLE_SEARCH_URL = (
+    "https://jobs.apple.com/en-us/search?"
+    "location=china-CHNC&team=machine-learning-and-ai-SFTWR-MCHLN"
+)
+APPLE_SEARCH_RESULTS_HTML = """
+<html>
+  <head><title>Search Jobs - Apple</title></head>
+  <body>
+    <h1>Search Results</h1>
+    <p>7 Results</p>
+    <article>
+      <h2>Machine Learning Engineer</h2>
+      <a href="/en-us/details/200000001/machine-learning-engineer">
+        See full role description
+      </a>
+    </article>
+    <article>
+      <h2>AI/ML Product Manager</h2>
+      <a href="/en-us/details/200000002/ai-ml-product-manager">
+        See full role description
+      </a>
+    </article>
+  </body>
+</html>
+"""
+AIJOBS_JOB_URL = (
+    "https://aijobs.ai/job/strategic-sales-manager-ai-llm-1"
 )
 
 
@@ -165,8 +195,26 @@ async def test_maps_all_stable_fetch_failures_without_losing_retryability(
     assert result.metadata == {
         "source_ref": "",
         "fetch_status": "failed",
+        "failure_type": code,
         "is_untrusted_external_content": True,
     }
+
+
+async def test_aijobs_robots_block_is_exposed_with_exact_failure_reason() -> None:
+    tool, fetcher, _ = make_tool(
+        fetched=FetchFailure(
+            "robots_blocked",
+            "目标网站的 robots.txt 明确禁止自动读取该岗位页面",
+        )
+    )
+
+    result = await tool.execute({"url": AIJOBS_JOB_URL}, context())
+
+    assert fetcher.requested_urls == [AIJOBS_JOB_URL]
+    assert not result.ok
+    assert result.error_code == "robots_blocked"
+    assert result.metadata["failure_type"] == "robots_blocked"
+    assert "robots.txt" in result.display
 
 
 async def test_rejects_selected_title_that_does_not_match_fetched_job() -> None:
@@ -216,6 +264,29 @@ async def test_rejects_description_without_core_sections() -> None:
 
     assert not result.ok
     assert result.error_code == "incomplete_job_description"
+
+
+async def test_apple_search_results_url_is_reported_as_listing_not_jd() -> None:
+    fetched = FetchedPage(
+        source_url=APPLE_SEARCH_URL,
+        final_url=APPLE_SEARCH_URL,
+        status_code=200,
+        content_type="text/html",
+        text=APPLE_SEARCH_RESULTS_HTML,
+        content_sha256="b" * 64,
+    )
+    tool = SearchJobDescriptionTool(
+        FakeFetcher(fetched),  # type: ignore[arg-type]
+        JobDescriptionExtractor(),
+    )
+
+    result = await tool.execute({"url": APPLE_SEARCH_URL}, context())
+
+    assert not result.ok
+    assert result.error_code == "job_listing_page"
+    assert result.metadata["failure_type"] == "listing_page"
+    assert "搜索结果页" in result.display
+    assert "具体岗位" in result.display
 
 
 @pytest.mark.parametrize(
