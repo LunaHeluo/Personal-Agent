@@ -23,6 +23,9 @@ def test_frontend_displays_real_mock_and_budget_token_states() -> None:
     assert "未超过阈值，未裁剪" in html
     assert "减少 ${reduction.toFixed(1)}% · 已裁剪" in html
     assert 'metrics.className = "tool-governance-metrics"' in html
+    assert "search_job_description" not in html
+    assert "raw_result_tokens" in html
+    assert "context_result_tokens" in html
     assert "event.display ||" in html
     assert 'event.result.finish_reason === "continuation_required"' in html
     assert "继续生成（已完成 ${continuation.model_calls} 次模型调用" in html
