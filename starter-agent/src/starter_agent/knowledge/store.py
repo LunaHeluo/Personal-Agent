@@ -6,7 +6,19 @@ from hashlib import sha256
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, create_engine, event, func, select
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    case,
+    create_engine,
+    event,
+    func,
+    or_,
+    select,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 
@@ -829,11 +841,37 @@ class SQLiteKnowledgeStore:
         document_types: list[str] | None = None,
         filenames: list[str] | None = None,
         versions: list[int] | None = None,
-    ) -> list[tuple[KnowledgeChunk, str]]:
+    ) -> list[tuple[KnowledgeChunk, str, int]]:
         if not terms:
             return []
+        normalized_terms = list(
+            dict.fromkeys(term.casefold() for term in terms if term)
+        )
+        predicates = [
+            or_(
+                func.instr(KnowledgeChunkRow.search_text, term) > 0,
+                func.instr(KnowledgeChunkRow.section_path, term) > 0,
+                func.instr(func.lower(KnowledgeChunkRow.filename), term) > 0,
+                func.instr(
+                    func.lower(KnowledgeDocumentRow.document_type), term
+                )
+                > 0,
+            )
+            for term in normalized_terms
+        ]
+        hit_count = sum(
+            (
+                case((predicate, 1), else_=0)
+                for predicate in predicates
+            ),
+            start=0,
+        ).label("hit_count")
         query = (
-            select(KnowledgeChunkRow, KnowledgeDocumentRow.document_type)
+            select(
+                KnowledgeChunkRow,
+                KnowledgeDocumentRow.document_type,
+                hit_count,
+            )
             .join(
                 KnowledgeDocumentRow,
                 KnowledgeDocumentRow.id == KnowledgeChunkRow.document_id,
@@ -843,10 +881,7 @@ class SQLiteKnowledgeStore:
                 KnowledgeChunkRow.knowledge_base_id == str(knowledge_base_id),
                 KnowledgeDocumentRow.active_version_id
                 == KnowledgeChunkRow.version_id,
-                *[
-                    func.instr(KnowledgeChunkRow.search_text, term) > 0
-                    for term in terms
-                ],
+                or_(*predicates),
             )
         )
         if document_ids:
@@ -864,11 +899,15 @@ class SQLiteKnowledgeStore:
         if versions:
             query = query.where(KnowledgeChunkRow.version.in_(versions))
         query = query.order_by(
+            hit_count.desc(),
             KnowledgeChunkRow.document_id, KnowledgeChunkRow.ordinal
         ).limit(min(limit, 100))
         with Session(self.engine) as db:
             rows = db.execute(query).all()
-        return [(self._chunk(row[0]), row[1]) for row in rows]
+        return [
+            (self._chunk(row[0]), row[1], int(row[2]))
+            for row in rows
+        ]
 
     def citation_state(
         self,

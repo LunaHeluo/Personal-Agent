@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from pydantic import BaseModel, ValidationError
 
@@ -22,6 +23,18 @@ class _GeneratedPayload(BaseModel):
     claims: list[GeneratedClaim]
 
 
+_FENCED_JSON = re.compile(
+    r"\A```(?:json)?[ \t]*\r?\n(?P<body>.*)\r?\n```[ \t]*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _normalize_json_envelope(content: str) -> str:
+    stripped = content.strip()
+    match = _FENCED_JSON.fullmatch(stripped)
+    return match.group("body").strip() if match else stripped
+
+
 class RagGenerator:
     def __init__(self, provider: Provider, model: str) -> None:
         self.provider = provider
@@ -40,9 +53,14 @@ class RagGenerator:
             Message(
                 role="system",
                 content=(
-                    "你是受证据约束的问答器。输出 JSON："
-                    "status、answer、claims；每个 claim 包含 text、"
-                    "evidence_ids、quote。不得使用资料外事实。"
+                    "你是受证据约束的问答器。只输出一个 JSON 对象，"
+                    "不要输出解释、前言或其他自由文本。JSON 必须包含 "
+                    "status、answer、claims。status 只能是 "
+                    '"answered"、"refused"、"conflict"，不要输出 '
+                    '"success" 或其他状态。每个 claim 必须包含 text、'
+                    "evidence_ids、quote；evidence_ids 只能使用下方证据"
+                    "中给出的 ID，quote 必须是对应证据中的连续原文。"
+                    "不得使用资料外事实。"
                 ),
             ),
             Message(
@@ -55,7 +73,7 @@ class RagGenerator:
         )
         try:
             payload = _GeneratedPayload.model_validate_json(
-                response.content or ""
+                _normalize_json_envelope(response.content or "")
             )
             status = payload.status
             if status not in {"answered", "refused", "conflict"}:

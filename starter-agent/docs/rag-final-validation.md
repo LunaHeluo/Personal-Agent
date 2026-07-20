@@ -236,17 +236,16 @@ uv run agent serve
 | 项目 | 结果 | 证据 |
 |---|---|---|
 | 完整 pytest 回归 | 通过 | 用户在本机使用唯一 `--basetemp` 运行至 100%，无失败；合并到 main 后再次运行完整回归，退出码 0。 |
-| Retrieval/Generation/拒答/更新删除专项 | 通过 | `test_knowledge_retrieval_api.py`、`test_rag_generation.py`、`test_rag_refusal.py`、`test_knowledge_update_delete.py`、`test_rag_end_to_end.py` 共 6 项通过。 |
+| 映射词与自然中文 Retrieval 专项 | 通过 | 内置词表与 YAML 覆盖、查询标准化、短词 OR、原始锚点、metadata filter、简历/JD 对比覆盖共 24 项通过；“我的简历匹配哪个岗位”同时返回 `resume` 与 `job_description`，`mapping_version=builtin-v1`。 |
+| Generation/拒答/更新删除专项 | 通过 | 裸 JSON、单层 `json`/普通 code fence、严格状态枚举、引用校验、无证据拒答、旧版本与删除后不可检索均通过；自由文本和多个 fence 仍被拒绝。 |
 | `glm-4.7` Provider 健康检查 | 通过 | `zhipu responded successfully (glm-4.7)`。 |
 | 真实无证据链路 | 通过 | “资料里真实 HR 的手机号码是什么？”返回零命中、`refused/no_evidence`、零引用，Provider 未调用。 |
-| `glm-4.7` 有证据 Generation | **失败** | 模型把 JSON 包在 Markdown `json` code fence 中，当前 `_GeneratedPayload.model_validate_json()` 只接受裸 JSON，最终返回 `generation_invalid_output`。 |
+| `glm-4.7` 有证据 Generation | 通过 | 使用两份安全 fixture 提问简历与目标 JD 的匹配岗位，返回 `answered`；引用覆盖 `resume_demo.md` 与 `job_demo.md`，3 条 quote 均可在服务端 canonical Chunk 中逐字定位。 |
 
 ### 当前最终结论
 
-**不通过，必须退回修复。**
+**通过。**
 
-确定性 Retrieval、引用校验测试、拒答、更新和删除链路已经通过，但真实
-`glm-4.7` 有证据 Generation 尚不能稳定完成服务端结构化解析。修复时应保持严格
-schema 与引用校验，不能通过接受任意自由文本绕过约束。修复后至少重新执行 C2、
-C3、C6、Generation 独立测试、端到端测试和完整 pytest 回归；只有真实
-`glm-4.7` 返回可解析结果且 canonical 引用支持结论，才能改判通过。
+确定性 Retrieval、映射词管理、引用校验、拒答、更新和删除链路均已通过。真实
+`glm-4.7` 的单层 fenced JSON 可在不放宽 Schema、状态枚举、Evidence ID 和连续
+quote 校验的前提下完成解析；本次验收没有使用真实隐私资料，也没有记录 API Key。

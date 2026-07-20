@@ -288,5 +288,25 @@ Markdown。页面显示入库状态、文档版本、Chunk 数量、可定位预
 - `tests/fixtures/knowledge/resume_demo.md`
 - `tests/fixtures/knowledge/job_demo.md`
 
+检索内置求职领域的中英文映射词，例如 `简历 / resume / CV`、`岗位 / JD /
+职位描述`、`大模型 / LLM`。可在 `knowledge.query_mappings` 中用 YAML 配置项目
+公共词表：同名组会完整替换内置组，新组会追加，`disabled_groups` 会移除指定组；
+只要配置了覆盖项，就必须显式修改 `version`：
+
+```yaml
+knowledge:
+  query_mappings:
+    version: local-v1
+    groups:
+      agent_platform: [Agent 平台, 智能体平台]
+      rag: [RAG, 检索增强, 知识库, 增强检索]
+    disabled_groups: []
+```
+
+修改 YAML 后需要重启 Starter Agent 才会构建新的不可变词表。YAML 中不要放个人
+简历正文、公司内部代号、邮箱、凭据或其他敏感信息。检索响应会返回实际生效的
+`mapping_version`，便于复现词表变更；用户明确输入的专有词和数字仍是必需锚点，
+同义词扩展不会绕过文档更新或删除验证。
+
 不要上传身份证、未授权公司资料、真实 API Key、邮箱密码、授权码或其他无权处理的
 资料。完整自动化与人工验收步骤见 `docs/rag-acceptance.md`。

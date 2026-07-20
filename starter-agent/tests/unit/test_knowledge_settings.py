@@ -14,3 +14,4 @@ def test_knowledge_defaults_are_safe_and_local() -> None:
     assert settings.knowledge.chunk_target_chars == 1200
     assert settings.knowledge.chunk_overlap_chars == 150
     assert settings.knowledge.retrieval_top_k == 6
+    assert settings.knowledge.query_mappings.version == "builtin-v1"

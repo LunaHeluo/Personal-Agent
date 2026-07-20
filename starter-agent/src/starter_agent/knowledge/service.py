@@ -19,6 +19,7 @@ from starter_agent.knowledge.models import (
     RagAnswer,
 )
 from starter_agent.knowledge.retrieval import KnowledgeRetriever
+from starter_agent.knowledge.mappings import build_query_mapping_catalog
 from starter_agent.knowledge.security import validate_markdown_upload
 from starter_agent.knowledge.store import SQLiteKnowledgeStore
 from starter_agent.settings import AgentSettings
@@ -48,7 +49,10 @@ class KnowledgeApplicationService:
             overlap_chars=settings.knowledge.chunk_overlap_chars,
             max_chunks=settings.knowledge.max_chunks,
         )
-        self.retriever = KnowledgeRetriever(store)
+        self.mapping_catalog = build_query_mapping_catalog(
+            settings.knowledge.query_mappings
+        )
+        self.retriever = KnowledgeRetriever(store, self.mapping_catalog)
         self.providers = ProviderRegistry(settings)
         self.evidence_gate = EvidenceSufficiencyGate()
         self._document_locks: dict[UUID, RLock] = {}
