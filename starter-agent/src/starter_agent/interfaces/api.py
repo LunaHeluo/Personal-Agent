@@ -155,6 +155,12 @@ class KnowledgeRetrieveRequest(BaseModel):
     versions: list[int] | None = None
 
 
+class KnowledgeAnswerRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=10_000)
+    provider: str | None = None
+    model: str | None = None
+
+
 def _email_approval_service() -> EmailApprovalService:
     manager = create_application().runtime.tools.email_manager
     if manager is None:
@@ -422,6 +428,22 @@ def create_api() -> FastAPI:
                 item.model_dump(mode="json") for item in matches
             ],
         }
+
+    @api.post("/v1/knowledge-bases/{knowledge_base_id}/answer")
+    async def answer_from_knowledge(
+        knowledge_base_id: UUID,
+        request: KnowledgeAnswerRequest,
+    ) -> dict[str, object]:
+        try:
+            answer = await create_knowledge_service().answer(
+                knowledge_base_id,
+                request.question,
+                provider_name=request.provider,
+                model=request.model,
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return answer.model_dump(mode="json")
 
     @api.put(
         "/v1/knowledge-bases/{knowledge_base_id}/documents/{document_id}/content",

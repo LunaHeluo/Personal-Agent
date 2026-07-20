@@ -84,6 +84,16 @@ _MESSAGES: dict[str, tuple[str, str, int]] = {
         "请重新检索并使用当前版本引用",
         410,
     ),
+    "citation_validation_failed": (
+        "生成结果的引用未通过校验",
+        "请重新提问或检查知识库证据",
+        422,
+    ),
+    "generation_invalid_output": (
+        "模型没有返回可验证的结构化结果",
+        "请重试或更换生成模型",
+        502,
+    ),
 }
 
 

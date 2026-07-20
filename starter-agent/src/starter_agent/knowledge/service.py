@@ -4,6 +4,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 
 from starter_agent.knowledge.errors import KnowledgeError
 from starter_agent.knowledge.ingestion import KnowledgeIngestionPipeline
+from starter_agent.knowledge.generation import RagGenerator
 from starter_agent.knowledge.models import (
     IngestionJob,
     KnowledgeBase,
@@ -12,11 +13,14 @@ from starter_agent.knowledge.models import (
     UploadBundle,
     KnowledgeChunk,
     RetrievalMatch,
+    Evidence,
+    RagAnswer,
 )
 from starter_agent.knowledge.retrieval import KnowledgeRetriever
 from starter_agent.knowledge.security import validate_markdown_upload
 from starter_agent.knowledge.store import SQLiteKnowledgeStore
 from starter_agent.settings import AgentSettings
+from starter_agent.providers.registry import ProviderRegistry
 
 
 class KnowledgeApplicationService:
@@ -42,6 +46,7 @@ class KnowledgeApplicationService:
             overlap_chars=settings.knowledge.chunk_overlap_chars,
         )
         self.retriever = KnowledgeRetriever(store)
+        self.providers = ProviderRegistry(settings)
 
     def list_knowledge_bases(self) -> list[KnowledgeBase]:
         return self.store.list_knowledge_bases(self.scope)
@@ -188,3 +193,34 @@ class KnowledgeApplicationService:
         if chunk is None:
             raise KnowledgeError("document_not_found")
         return chunk
+
+    async def answer(
+        self,
+        knowledge_base_id: UUID,
+        question: str,
+        *,
+        provider_name: str | None = None,
+        model: str | None = None,
+    ) -> RagAnswer:
+        matches = self.retrieve(knowledge_base_id, question)
+        evidence = [
+            Evidence(
+                evidence_id=f"E{index}",
+                chunk_id=item.chunk_id,
+                document_id=item.document_id,
+                filename=item.filename,
+                version=item.version,
+                page=item.page,
+                section_path=item.section_path,
+                start_line=item.start_line,
+                end_line=item.end_line,
+                text=item.preview,
+            )
+            for index, item in enumerate(matches, start=1)
+        ]
+        provider_key = provider_name or self.settings.model.default_provider
+        generator = RagGenerator(
+            self.providers.get(provider_key),
+            model or self.settings.model.default_model,
+        )
+        return await generator.generate(question, evidence)

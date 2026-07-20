@@ -150,3 +150,43 @@ class RetrievalMatch(BaseModel):
     bm25_score: float | None = None
     matched_terms: list[str] = Field(default_factory=list)
     rank: int
+
+
+class Evidence(BaseModel):
+    evidence_id: str
+    chunk_id: UUID
+    document_id: UUID
+    filename: str
+    version: int
+    page: int | None = None
+    section_path: list[str] = Field(default_factory=list)
+    start_line: int
+    end_line: int
+    text: str
+
+
+class GeneratedClaim(BaseModel):
+    text: str
+    evidence_ids: list[str] = Field(min_length=1)
+    quote: str
+
+
+class Citation(BaseModel):
+    citation_id: str
+    document_id: UUID
+    filename: str
+    document_version: int
+    chunk_id: UUID
+    page: int | None = None
+    section: str | None = None
+    start_line: int
+    end_line: int
+    quote: str
+
+
+class RagAnswer(BaseModel):
+    status: Literal["answered", "refused", "conflict"]
+    answer: str
+    claims: list[GeneratedClaim] = Field(default_factory=list)
+    citations: list[Citation] = Field(default_factory=list)
+    refusal_reason: str | None = None
