@@ -27,6 +27,14 @@ def test_chinese_resume_job_question_extracts_domain_terms() -> None:
     assert {"简历", "匹配", "岗位"}.issubset(query.terms)
     assert query.comparison_intent is True
     assert query.mapping_version == "builtin-v1"
+    assert query.required_terms == []
+
+
+def test_unmapped_literal_terms_remain_required_retrieval_anchors() -> None:
+    query = normalize_query("Aurora 招聘知识库")
+
+    assert query.required_terms == ["Aurora"]
+    assert {"RAG", "知识库"}.issubset(query.terms)
 
 
 def test_yaml_catalog_expands_mixed_language_terms() -> None:

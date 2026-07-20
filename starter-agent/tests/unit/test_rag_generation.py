@@ -15,9 +15,11 @@ class StubProvider:
     def __init__(self, content: str | None = None) -> None:
         self.tools = None
         self.content = content
+        self.messages = None
 
     async def complete(self, messages, model, tools, **kwargs):
         self.tools = tools
+        self.messages = messages
         return ModelResponse(
             content=self.content or _valid_payload(),
             provider="stub",
@@ -67,6 +69,20 @@ async def test_generation_uses_no_tools_and_returns_validated_citations() -> Non
     assert provider.tools == []
     assert answer.status == "answered"
     assert answer.citations[0].chunk_id == evidence.chunk_id
+
+
+@pytest.mark.asyncio
+async def test_generation_prompt_defines_the_strict_status_contract() -> None:
+    provider = StubProvider()
+
+    await RagGenerator(provider, "test").generate(
+        "会 Python 吗？", [_evidence()]
+    )
+
+    system_prompt = provider.messages[0].content
+    assert '"answered"、"refused"、"conflict"' in system_prompt
+    assert '"success"' in system_prompt
+    assert "不要输出" in system_prompt
 
 
 @pytest.mark.asyncio

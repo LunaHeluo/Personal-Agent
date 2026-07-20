@@ -67,6 +67,11 @@ class KnowledgeRetriever:
             )
 
         candidates = self._deduplicate(candidates)
+        candidates = [
+            match
+            for match in candidates
+            if self._contains_required_terms(match, query.required_terms)
+        ]
         if self._can_apply_comparison_coverage(
             query, top_k, document_types
         ):
@@ -132,13 +137,14 @@ class KnowledgeRetriever:
         rows = self.store.search_short_terms(
             scope,
             knowledge_base_id,
-            query.short_terms,
+            query.terms,
             limit=limit,
             document_ids=document_ids,
             document_types=document_types,
             filenames=filenames,
             versions=versions,
         )
+        minimum_hits = min(2, len(query.terms))
         return [
             self._match(
                 chunk,
@@ -146,7 +152,8 @@ class KnowledgeRetriever:
                 query,
                 bm25_score=None,
             )
-            for chunk, document_type, _hit_count in rows
+            for chunk, document_type, hit_count in rows
+            if hit_count >= minimum_hits
         ]
 
     @staticmethod
@@ -199,6 +206,14 @@ class KnowledgeRetriever:
                 seen.add(match.chunk_id)
                 result.append(match)
         return result
+
+    @staticmethod
+    def _contains_required_terms(
+        match: RetrievalMatch,
+        required_terms: list[str],
+    ) -> bool:
+        matched = {term.casefold() for term in match.matched_terms}
+        return all(term.casefold() in matched for term in required_terms)
 
     @staticmethod
     def _can_apply_comparison_coverage(

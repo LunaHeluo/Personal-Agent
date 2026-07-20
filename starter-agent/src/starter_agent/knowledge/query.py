@@ -20,6 +20,7 @@ class NormalizedQuery:
     terms: list[str]
     match_expression: str | None
     short_terms: list[str]
+    required_terms: list[str]
     comparison_intent: bool = False
     mapping_version: str = "builtin-v1"
 
@@ -32,22 +33,29 @@ def normalize_query(
     if not clean:
         raise KnowledgeError("knowledge_query_invalid")
     catalog = catalog or build_query_mapping_catalog(QueryMappingConfig())
-    raw_terms = re.findall(
+    literal_terms = re.findall(
         r"(?<![A-Za-z0-9._+\-\u3400-\u9fff])"
         r"[A-Za-z0-9][A-Za-z0-9._+-]*",
         clean,
     )
-    raw_terms.extend(
+    literal_terms.extend(
         value
         for value in re.findall(r"[\u3400-\u9fff]+", clean)
         if len(value) <= 2
     )
+    raw_terms = list(literal_terms)
     raw_terms.extend(
         phrase
         for phrase in catalog.phrases
         if phrase.casefold() in clean.casefold()
     )
     raw_terms.extend(term for term in _COMPARISON_TERMS if term in clean)
+    required_terms = [
+        term
+        for term in literal_terms
+        if term.casefold() not in catalog.reverse
+        and term.casefold() not in _RESERVED
+    ]
 
     terms: list[str] = []
     seen: set[str] = set()
@@ -83,6 +91,7 @@ def normalize_query(
         terms,
         expression,
         short_terms,
+        required_terms,
         comparison_intent=comparison_intent,
         mapping_version=catalog.version,
     )

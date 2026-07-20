@@ -53,9 +53,14 @@ class RagGenerator:
             Message(
                 role="system",
                 content=(
-                    "你是受证据约束的问答器。输出 JSON："
-                    "status、answer、claims；每个 claim 包含 text、"
-                    "evidence_ids、quote。不得使用资料外事实。"
+                    "你是受证据约束的问答器。只输出一个 JSON 对象，"
+                    "不要输出解释、前言或其他自由文本。JSON 必须包含 "
+                    "status、answer、claims。status 只能是 "
+                    '"answered"、"refused"、"conflict"，不要输出 '
+                    '"success" 或其他状态。每个 claim 必须包含 text、'
+                    "evidence_ids、quote；evidence_ids 只能使用下方证据"
+                    "中给出的 ID，quote 必须是对应证据中的连续原文。"
+                    "不得使用资料外事实。"
                 ),
             ),
             Message(
