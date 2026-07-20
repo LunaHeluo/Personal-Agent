@@ -57,43 +57,80 @@ class ToolResultGuard:
         )
         if structured is not None:
             return structured
-        keep_chars = max(120, int(len(content) * self.max_result_tokens / raw_tokens))
-        keep_chars = min(keep_chars, len(content))
+        return self._trim_generic_payload(
+            original,
+            raw_tokens,
+            tool_name,
+            tool_call_id,
+            raw_source_ref,
+        )
 
-        while True:
-            envelope = {
-                "ok": original.get("ok", True) if isinstance(original, dict) else True,
-                "data": {"partial_content": content[:keep_chars]},
-                "display": "工具结果超过 Context 预算，已保留部分内容",
-                "metadata": {
-                    **_safe_classification_metadata(original),
-                    "is_truncated": True,
-                    "original_count": original_count,
-                    "returned_count": None,
-                    "omitted_count": None,
-                    "has_more": True,
-                    "raw_source_ref": raw_source_ref,
-                    "continuation_hint": "缩小查询范围或请求展开 raw_source_ref",
-                    "truncation_reason": "token_budget",
-                    "raw_result_tokens": raw_tokens,
-                    "max_result_tokens": self.max_result_tokens,
-                },
+    def _trim_generic_payload(
+        self,
+        original: object,
+        raw_tokens: int,
+        tool_name: str,
+        tool_call_id: str,
+        raw_source_ref: str,
+    ) -> GuardedToolResult:
+        """Return a bounded generic fallback without replaying source metadata."""
+
+        metadata = {
+            **_safe_classification_metadata(original),
+            "is_truncated": True,
+            "raw_source_ref": raw_source_ref,
+            "truncation_reason": "token_budget",
+            "raw_result_tokens": raw_tokens,
+            "max_result_tokens": self.max_result_tokens,
+        }
+        partial_source = _sanitized_payload_text(original)
+        ok = original.get("ok", True) if isinstance(original, dict) else True
+
+        def full_envelope(partial_content: str) -> dict[str, object]:
+            return {
+                "ok": ok,
+                "data": {"partial_content": partial_content},
+                "display": "Tool result truncated.",
+                "metadata": dict(metadata),
             }
-            guarded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
-            context_tokens = self.counter.tool_message(
-                guarded, tool_name, tool_call_id
-            ).tokens
-            if context_tokens <= self.max_result_tokens or keep_chars <= 120:
-                break
-            keep_chars = max(120, int(keep_chars * 0.8))
 
-        envelope["metadata"]["context_result_tokens"] = context_tokens
-        guarded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+        def metadata_only() -> dict[str, object]:
+            return {"ok": ok, "data": {}, "metadata": dict(metadata)}
+
+        compact_metadata = {
+            **_safe_classification_metadata(original),
+            "is_truncated": True,
+        }
+        for build, partial in (
+            (full_envelope, partial_source),
+            (lambda _partial: metadata_only(), ""),
+            (lambda _partial: {"metadata": dict(compact_metadata)}, ""),
+        ):
+            keep_chars = len(partial)
+            while True:
+                envelope = build(partial[:keep_chars])
+                guarded, context_tokens = self._serialize_with_context_tokens(
+                    envelope, tool_name, tool_call_id
+                )
+                if context_tokens <= self.max_result_tokens:
+                    return GuardedToolResult(
+                        content=guarded,
+                        raw_result_tokens=raw_tokens,
+                        context_result_tokens=context_tokens,
+                        is_truncated=True,
+                        raw_source_ref=raw_source_ref,
+                    )
+                if keep_chars == 0:
+                    break
+                keep_chars = max(0, int(keep_chars * 0.65))
+
+        # Tool-message framing alone can exceed a pathological budget. Empty
+        # content is the smallest safe fallback in that configuration.
         context_tokens = self.counter.tool_message(
-            guarded, tool_name, tool_call_id
+            "", tool_name, tool_call_id
         ).tokens
         return GuardedToolResult(
-            content=guarded,
+            content="",
             raw_result_tokens=raw_tokens,
             context_result_tokens=context_tokens,
             is_truncated=True,
@@ -133,20 +170,10 @@ class ToolResultGuard:
                     }
                 )
                 candidate["metadata"] = metadata
-            serialized = json.dumps(
-                candidate, ensure_ascii=False, separators=(",", ":")
+            serialized, context_tokens = self._serialize_with_context_tokens(
+                candidate, tool_name, tool_call_id
             )
-            context_tokens = self.counter.tool_message(
-                serialized, tool_name, tool_call_id
-            ).tokens
             if context_tokens <= self.max_result_tokens:
-                candidate["metadata"]["context_result_tokens"] = context_tokens
-                serialized = json.dumps(
-                    candidate, ensure_ascii=False, separators=(",", ":")
-                )
-                context_tokens = self.counter.tool_message(
-                    serialized, tool_name, tool_call_id
-                ).tokens
                 return GuardedToolResult(
                     content=serialized,
                     raw_result_tokens=raw_tokens,
@@ -155,6 +182,35 @@ class ToolResultGuard:
                     raw_source_ref=raw_source_ref,
                 )
         return None
+
+    def _serialize_with_context_tokens(
+        self,
+        envelope: dict[str, object],
+        tool_name: str,
+        tool_call_id: str,
+    ) -> tuple[str, int]:
+        """Serialize an envelope after recording its final token count."""
+
+        metadata = envelope.get("metadata")
+        if not isinstance(metadata, dict):
+            serialized = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+            return serialized, self.counter.tool_message(
+                serialized, tool_name, tool_call_id
+            ).tokens
+
+        for _ in range(8):
+            serialized = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+            context_tokens = self.counter.tool_message(
+                serialized, tool_name, tool_call_id
+            ).tokens
+            if metadata.get("context_result_tokens") == context_tokens:
+                return serialized, context_tokens
+            metadata["context_result_tokens"] = context_tokens
+
+        serialized = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+        return serialized, self.counter.tool_message(
+            serialized, tool_name, tool_call_id
+        ).tokens
 
 
 def _result_count(value: object) -> int | None:
@@ -185,6 +241,14 @@ def _safe_classification_metadata(value: object) -> dict[str, bool]:
         for key in _SAFE_CLASSIFICATION_METADATA
         if metadata.get(key) is True
     }
+
+
+def _sanitized_payload_text(value: object) -> str:
+    """Serialize a source result after dropping its untrusted envelope metadata."""
+
+    if isinstance(value, dict):
+        value = {key: item for key, item in value.items() if key != "metadata"}
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def _list_location(value: object) -> tuple[str, str | None] | None:
