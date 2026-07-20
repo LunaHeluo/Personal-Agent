@@ -57,10 +57,13 @@ class RagGenerator:
                     "不要输出解释、前言或其他自由文本。JSON 必须包含 "
                     "status、answer、claims。status 只能是 "
                     '"answered"、"refused"、"conflict"，不要输出 '
-                    '"success" 或其他状态。每个 claim 必须包含 text、'
-                    "evidence_ids、quote；evidence_ids 只能使用下方证据"
-                    "中给出的 ID，quote 必须是对应证据中的连续原文。"
-                    "不得使用资料外事实。"
+                    '"success" 或其他状态。每个 claim 必须包含 text 和 '
+                    '"evidence_refs"；evidence_refs 中每个引用项只对应一个 '
+                    'Evidence，并包含 "evidence_id" 与 "quote"。'
+                    "evidence_id 只能使用下方证据中给出的 ID，quote 必须是"
+                    "该 Evidence 中的非空连续原文，不得改写。多个 Evidence "
+                    "必须分别提供各自 quote。不得输出文件名、版本、行号或 "
+                    "Chunk ID，不得使用资料外事实。"
                 ),
             ),
             Message(

@@ -1,8 +1,48 @@
+import json
 from pathlib import Path
 
+import pytest
+
+from starter_agent.domain.models import ModelResponse
 from starter_agent.knowledge.service import KnowledgeApplicationService
 from starter_agent.knowledge.store import SQLiteKnowledgeStore
 from starter_agent.settings import AgentSettings
+
+
+class CrossDocumentProvider:
+    name = "cross-document"
+
+    async def complete(self, messages, model, tools, **kwargs):
+        assert tools == []
+        return ModelResponse(
+            content=json.dumps(
+                {
+                    "status": "answered",
+                    "answer": "候选人的 Agent 经历符合岗位要求。",
+                    "claims": [
+                        {
+                            "text": "候选人的 Agent 经历符合岗位要求。",
+                            "evidence_refs": [
+                                {
+                                    "evidence_id": "E1",
+                                    "quote": "负责 AI Agent 平台",
+                                },
+                                {
+                                    "evidence_id": "E2",
+                                    "quote": (
+                                        "需要大模型应用和 Agent "
+                                        "平台开发经验"
+                                    ),
+                                },
+                            ],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            provider=self.name,
+            model=model,
+        )
 
 
 def _service() -> KnowledgeApplicationService:
@@ -91,3 +131,31 @@ def test_comparison_coverage_respects_filters_and_top_k() -> None:
     assert filtered
     assert {match.document_type for match in filtered} == {"resume"}
     assert len(limited) == 1
+
+
+@pytest.mark.asyncio
+async def test_cross_document_answer_validates_each_quote_and_keeps_legacy_fields() -> None:
+    service = _service()
+    _upload_comparison_documents(service)
+    service.providers.get = lambda _name: CrossDocumentProvider()
+
+    answer = await service.answer(
+        service.default_knowledge_base_id,
+        "我的简历匹配哪个岗位",
+    )
+
+    claim = answer.claims[0].model_dump(mode="json")
+    assert answer.status == "answered"
+    assert [item.filename for item in answer.citations] == [
+        "resume.md",
+        "agent-jd.md",
+    ]
+    assert claim["evidence_ids"] == ["E1", "E2"]
+    assert claim["quote"] == "负责 AI Agent 平台"
+    assert claim["evidence_refs"] == [
+        {"evidence_id": "E1", "quote": "负责 AI Agent 平台"},
+        {
+            "evidence_id": "E2",
+            "quote": "需要大模型应用和 Agent 平台开发经验",
+        },
+    ]
