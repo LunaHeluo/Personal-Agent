@@ -6,8 +6,16 @@ from starter_agent.settings import (
     AgentSettings,
     EmailProfileConfig,
     EmailToolConfig,
+    JobDescriptionToolConfig,
 )
 from starter_agent.tools.base import Tool
+from starter_agent.tools.adapters.job_description_extractor import (
+    JobDescriptionExtractor,
+)
+from starter_agent.tools.adapters.safe_web_fetcher import SafeWebFetcher
+from starter_agent.tools.builtin.job_description_search import (
+    SearchJobDescriptionTool,
+)
 from starter_agent.tools.builtin.job_search import SearchJobsSerpApiTool
 from starter_agent.tools.builtin.resume import (
     CompareResumeTool,
@@ -49,9 +57,19 @@ class ToolRegistry:
                 settings.tools.serpapi.retry_backoff_seconds if settings else 0.5
             ),
         )
+        job_config = (
+            settings.tools.job_description
+            if settings
+            else JobDescriptionToolConfig()
+        )
+        job_description_tool = SearchJobDescriptionTool(
+            fetcher=SafeWebFetcher.from_config(job_config),
+            extractor=JobDescriptionExtractor(),
+        )
         available: dict[str, Tool] = {
             GetCurrentTimeTool.name: GetCurrentTimeTool(),
             SearchJobsSerpApiTool.name: search_tool,
+            SearchJobDescriptionTool.name: job_description_tool,
             ReadResumeTool.name: ReadResumeTool(resume_manager),
             ListResumeVersionsTool.name: ListResumeVersionsTool(resume_manager),
             SaveResumeTool.name: SaveResumeTool(resume_manager),

@@ -15,10 +15,10 @@ def test_job_description_config_has_safe_defaults() -> None:
     assert config.respect_robots is True
 
 
-def test_runtime_config_includes_job_description_settings_without_enabling_tool() -> None:
+def test_runtime_config_enables_job_description_tool() -> None:
     settings = load_settings("config/config.yaml")
 
-    assert "search_job_description" not in settings.tools.enabled
+    assert "search_job_description" in settings.tools.enabled
     assert settings.tools.job_description.max_response_bytes == 1_000_000
     ToolRegistry(settings.tools.enabled, settings=settings)
 
@@ -66,3 +66,14 @@ def test_job_description_config_trims_user_agent() -> None:
     config = JobDescriptionToolConfig(user_agent="  Starter Agent/1.0  ")
 
     assert config.user_agent == "Starter Agent/1.0"
+
+
+def test_job_description_tool_is_registered_when_enabled() -> None:
+    settings = load_settings("config/config.example.yaml")
+    settings.tools.enabled = ["search_job_description"]
+
+    registry = ToolRegistry(settings.tools.enabled, settings=settings)
+
+    tool = registry.get("search_job_description")
+    assert tool is not None
+    assert tool.risk_level == "read"
