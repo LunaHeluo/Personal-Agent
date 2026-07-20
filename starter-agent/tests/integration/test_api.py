@@ -161,6 +161,8 @@ def test_tools_endpoint_returns_enabled_tools() -> None:
     assert "get_current_time" in tools
     assert "search_jobs_serpapi" in tools
     assert tools["search_jobs_serpapi"]["risk_level"] == "read"
+    assert "search_job_description" in tools
+    assert tools["search_job_description"]["risk_level"] == "read"
     assert tools["read_resume"]["risk_level"] == "read"
     assert tools["list_resume_versions"]["risk_level"] == "read"
     assert tools["save_resume"]["risk_level"] == "write"
