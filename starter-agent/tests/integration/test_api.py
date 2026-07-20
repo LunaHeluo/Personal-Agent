@@ -141,8 +141,8 @@ def test_providers_endpoint_returns_configured_providers() -> None:
         "openai/gpt-5.6-terra",
     ]
     assert provider_models["openai"] == [
-        "openai/gpt-5.5",
-        "openai/gpt-5.6-terra",
+        "gpt-5.5",
+        "gpt-5.6-terra",
     ]
     configured_names = set(get_settings().providers)
     returned_names = {provider["name"] for provider in body["providers"]}

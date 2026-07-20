@@ -1,4 +1,6 @@
-from starter_agent.settings import AgentSettings, ProviderConfig
+from pathlib import Path
+
+from starter_agent.settings import AgentSettings, ProviderConfig, load_settings
 
 
 def test_provider_api_key_falls_back_to_project_env(tmp_path, monkeypatch) -> None:
@@ -19,3 +21,22 @@ def test_provider_api_key_falls_back_to_project_env(tmp_path, monkeypatch) -> No
     )
 
     assert settings.provider_api_key("test") == "local-secret"
+
+
+def test_official_openai_provider_uses_native_model_ids() -> None:
+    config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+
+    settings = load_settings(config_path)
+
+    assert settings.providers["openai"].models == [
+        "gpt-5.5",
+        "gpt-5.6-terra",
+    ]
+
+
+def test_unconfigured_local_provider_is_not_exposed() -> None:
+    config_path = Path(__file__).resolve().parents[2] / "config" / "config.yaml"
+
+    settings = load_settings(config_path)
+
+    assert "local" not in settings.providers
