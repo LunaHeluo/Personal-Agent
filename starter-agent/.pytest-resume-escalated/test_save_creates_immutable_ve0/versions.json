@@ -1,0 +1,13 @@
+[
+  {
+    "version_id": "03e4de0f-9241-4e58-a235-15ef19ad7242",
+    "parent_id": null,
+    "source_path": "resume.md",
+    "version_path": "versions/resume/v0001_ai-agent.md",
+    "sha256": "8184c4993ed922aadc20403d077beec4a457db4a40483697ed5af9e989b96763",
+    "created_at": "2026-07-18T15:26:45.405848+00:00",
+    "session_id": "f738f336-7936-455b-be70-e128a0fd5d9e",
+    "turn_id": "edf8f28d-5773-41be-b65e-16b609805437",
+    "label": "ai-agent"
+  }
+]
