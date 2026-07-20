@@ -1,11 +1,18 @@
 import json
+import re
+import shutil
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import pytest
+from starter_agent.agent.context import ContextBuilder
 from starter_agent.agent.runtime import AgentRuntime
+from starter_agent.application import ApplicationService
 from starter_agent.domain.models import Message, ModelResponse, ToolCall, ToolResult
+from starter_agent.infrastructure.session_store import SQLiteSessionStore
 from starter_agent.providers.base import Provider
-from starter_agent.settings import ContextConfig, RuntimeConfig
+from starter_agent.settings import ContextConfig, RuntimeConfig, load_settings
 from starter_agent.tools.base import Tool, ToolContext
 from starter_agent.tools.policy import ToolPolicy
 
@@ -70,11 +77,18 @@ class _SelectionProvider(Provider):
                 model=model,
                 tool_calls=[ToolCall(id="search-1", name="search_jobs_serpapi", arguments={"query": "AI"})],
             )
+        match = re.fullmatch(r"第\s*(\d+)\s*个", last.content)
+        if match is None:
+            return ModelResponse(
+                content="请选择第 N 个岗位。", provider=self.name, model=model
+            )
         search_result = next(
             message for message in reversed(messages)
             if message.role == "tool" and message.name == "search_jobs_serpapi"
         )
-        selected = json.loads(search_result.content)["data"]["results"][1]
+        results = json.loads(search_result.content)["data"]["results"]
+        selection_index = int(match.group(1))
+        selected = results[selection_index - 1]
         return ModelResponse(
             provider=self.name,
             model=model,
@@ -85,7 +99,7 @@ class _SelectionProvider(Provider):
                     "url": selected["url"],
                     "expected_title": selected["title"],
                     "expected_company": selected["company"],
-                    "source_ref": "search_result:2",
+                    "source_ref": f"search_result:{selection_index}",
                 },
             )],
         )
@@ -94,7 +108,7 @@ class _SelectionProvider(Provider):
         return True, "ready"
 
 
-async def _search_then_select(governance_enabled: bool):
+async def _search_then_select(governance_enabled: bool, selection: str = "第 2 个"):
     job_tool = _JobDescriptionTool()
     runtime = AgentRuntime(
         _ToolRegistry(_SearchTool(), job_tool),  # type: ignore[arg-type]
@@ -109,7 +123,7 @@ async def _search_then_select(governance_enabled: bool):
         provider, "offline", messages, session_id, first_turn
     )
     messages.extend(first_generated)
-    messages.append(Message(role="user", content="第 2 个"))
+    messages.append(Message(role="user", content=selection))
     events: list[dict[str, Any]] = []
 
     async def on_event(event: dict[str, Any]) -> None:
@@ -123,14 +137,23 @@ async def _search_then_select(governance_enabled: bool):
     return job_tool, events, generated, result, calls
 
 
-async def test_second_selection_uses_exact_previous_result_and_keeps_jd_untrusted() -> None:
-    job_tool, events, generated, result, calls = await _search_then_select(True)
+@pytest.mark.parametrize(
+    ("selection", "expected", "source_ref"),
+    [
+        ("第 1 个", ("https://jobs.example/first", "First", "Alpha"), "search_result:1"),
+        ("第 2 个", ("https://jobs.example/second", "Second", "Beta"), "search_result:2"),
+    ],
+)
+async def test_selection_text_uses_the_matching_previous_result(
+    selection: str, expected: tuple[str, str, str], source_ref: str
+) -> None:
+    job_tool, events, generated, result, calls = await _search_then_select(True, selection)
 
     assert job_tool.calls == [{
-        "url": "https://jobs.example/second",
-        "expected_title": "Second",
-        "expected_company": "Beta",
-        "source_ref": "search_result:2",
+        "url": expected[0],
+        "expected_title": expected[1],
+        "expected_company": expected[2],
+        "source_ref": source_ref,
     }]
     assert result.content == "done"
     assert calls == 1
@@ -153,3 +176,52 @@ async def test_disabling_governance_keeps_the_full_job_result() -> None:
     payload = json.loads(next(message for message in generated if message.role == "tool").content)
     assert len(payload["data"]["raw_text"]) > 10_000
     assert payload["metadata"]["is_untrusted_external_content"] is True
+
+
+class _Providers:
+    def __init__(self, provider: Provider) -> None:
+        self.provider = provider
+
+    def get(self, name: str) -> Provider:
+        return self.provider
+
+
+async def test_selected_jd_is_persisted_only_in_session_and_creates_no_job_record() -> None:
+    root = Path.cwd() / f".session-only-{uuid4()}"
+    root.mkdir()
+    try:
+        (root / "agent.md").write_text("# Test Agent", encoding="utf-8")
+        (root / "system.md").write_text("{identity}", encoding="utf-8")
+        settings = load_settings("config/config.example.yaml")
+        settings.providers["mock"].models = ["starter-mock"]
+        settings.project_root = root
+        settings.app.database_url = "sqlite:///agent.db"
+        settings.app.identity_path = "agent.md"
+        settings.memory.auto_write_enabled = False
+        job_tool = _JobDescriptionTool()
+        runtime = AgentRuntime(
+            _ToolRegistry(_SearchTool(), job_tool),  # type: ignore[arg-type]
+            ToolPolicy(["read"]),
+            RuntimeConfig(),
+            ContextConfig(per_tool_result_tokens=300, all_tool_results_tokens=300),
+        )
+        application = ApplicationService(
+            settings,
+            SQLiteSessionStore(settings.app.database_url, root),
+            _Providers(_SelectionProvider()),  # type: ignore[arg-type]
+            runtime,
+            ContextBuilder(root / "agent.md", root / "system.md"),
+        )
+
+        first = await application.chat("search", provider_name="mock")
+        second = await application.chat(
+            "第 2 个", session_id=first.session_id, provider_name="mock"
+        )
+
+        assert second.tool_calls == 1
+        assert job_tool.calls[-1]["url"] == "https://jobs.example/second"
+        stored = application.store.list_messages(first.session_id)
+        assert any(message.name == "search_job_description" for message in stored)
+        assert not (root / "data" / "jobs").exists()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
