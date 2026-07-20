@@ -150,6 +150,7 @@ class RetrievalMatch(BaseModel):
     bm25_score: float | None = None
     matched_terms: list[str] = Field(default_factory=list)
     rank: int
+    mapping_version: str = "builtin-v1"
 
 
 class Evidence(BaseModel):

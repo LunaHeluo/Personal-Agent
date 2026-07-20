@@ -32,7 +32,11 @@ def normalize_query(
     if not clean:
         raise KnowledgeError("knowledge_query_invalid")
     catalog = catalog or build_query_mapping_catalog(QueryMappingConfig())
-    raw_terms = re.findall(r"[A-Za-z0-9][A-Za-z0-9._+-]*", clean)
+    raw_terms = re.findall(
+        r"(?<![A-Za-z0-9._+\-\u3400-\u9fff])"
+        r"[A-Za-z0-9][A-Za-z0-9._+-]*",
+        clean,
+    )
     raw_terms.extend(
         value
         for value in re.findall(r"[\u3400-\u9fff]+", clean)
