@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 DocumentStatus = Literal["queued", "processing", "indexed", "failed", "deleting"]
@@ -166,10 +172,60 @@ class Evidence(BaseModel):
     text: str
 
 
+class GeneratedEvidenceRef(BaseModel):
+    evidence_id: str = Field(min_length=1)
+    quote: str = Field(min_length=1)
+
+    @field_validator("evidence_id", "quote")
+    @classmethod
+    def strip_non_empty(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("value must not be empty")
+        return stripped
+
+
 class GeneratedClaim(BaseModel):
     text: str
-    evidence_ids: list[str] = Field(min_length=1)
-    quote: str
+    evidence_refs: list[GeneratedEvidenceRef] = Field(min_length=1)
+    evidence_ids: list[str] = Field(default_factory=list)
+    quote: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_reference_input(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        has_new = "evidence_refs" in data
+        has_legacy = "evidence_ids" in data or "quote" in data
+        if has_new and has_legacy:
+            raise ValueError(
+                "new and legacy evidence formats cannot be mixed"
+            )
+        if has_new:
+            return data
+        if "evidence_ids" not in data or "quote" not in data:
+            raise ValueError("claim evidence is required")
+        evidence_ids = data.get("evidence_ids")
+        if not isinstance(evidence_ids, list):
+            raise ValueError("evidence_ids must be a list")
+        data["evidence_refs"] = [
+            {"evidence_id": evidence_id, "quote": data["quote"]}
+            for evidence_id in evidence_ids
+        ]
+        return data
+
+    @model_validator(mode="after")
+    def populate_compatibility_fields(self) -> "GeneratedClaim":
+        evidence_ids = [
+            item.evidence_id for item in self.evidence_refs
+        ]
+        if len(evidence_ids) != len(set(evidence_ids)):
+            raise ValueError("duplicate evidence_id")
+        self.evidence_ids = evidence_ids
+        self.quote = self.evidence_refs[0].quote
+        return self
 
 
 class Citation(BaseModel):

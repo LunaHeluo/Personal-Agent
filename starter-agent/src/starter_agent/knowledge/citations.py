@@ -10,13 +10,15 @@ def assemble_citations(
     available = {item.evidence_id: item for item in evidence}
     citations: list[Citation] = []
     for claim_index, claim in enumerate(claims, start=1):
-        if not claim.evidence_ids:
-            raise KnowledgeError("citation_validation_failed")
-        for evidence_index, evidence_id in enumerate(
-            claim.evidence_ids, start=1
+        for evidence_index, reference in enumerate(
+            claim.evidence_refs, start=1
         ):
-            item = available.get(evidence_id)
-            if item is None or not claim.quote or claim.quote not in item.text:
+            item = available.get(reference.evidence_id)
+            if (
+                item is None
+                or not reference.quote
+                or reference.quote not in item.text
+            ):
                 raise KnowledgeError("citation_validation_failed")
             citations.append(
                 Citation(
@@ -29,7 +31,7 @@ def assemble_citations(
                     section=" / ".join(item.section_path) or None,
                     start_line=item.start_line,
                     end_line=item.end_line,
-                    quote=claim.quote,
+                    quote=reference.quote,
                 )
             )
     return citations
