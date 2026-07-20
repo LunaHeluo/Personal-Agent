@@ -64,6 +64,12 @@ knowledge:
   chunk_target_chars: 1200
   chunk_overlap_chars: 150
   retrieval_top_k: 6
+  # 可选：覆盖或追加公共领域映射词；不要放入私人正文或凭据。
+  # query_mappings:
+  #   version: local-v1
+  #   groups:
+  #     rag: [RAG, 检索增强, 知识库]
+  #   disabled_groups: []
 
 tools:
   enabled:

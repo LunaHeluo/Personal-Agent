@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -67,6 +68,55 @@ class MemoryConfig(BaseModel):
     timeout_seconds: float = Field(default=30, gt=0, le=120)
 
 
+class QueryMappingConfig(BaseModel):
+    version: str = Field(
+        default="builtin-v1",
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9._-]+$",
+    )
+    groups: dict[str, list[str]] = Field(default_factory=dict)
+    disabled_groups: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_mappings(self) -> "QueryMappingConfig":
+        if (self.groups or self.disabled_groups) and "version" not in self.model_fields_set:
+            raise ValueError("query mapping overrides require an explicit version")
+        if len(self.groups) > 100:
+            raise ValueError("query mappings support at most 100 groups")
+        seen: dict[str, str] = {}
+        reserved = {"and", "or", "not", "near"}
+        normalized_groups: dict[str, list[str]] = {}
+        for group_id, values in self.groups.items():
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", group_id):
+                raise ValueError("query mapping group ids must be lowercase slugs")
+            if not 2 <= len(values) <= 32:
+                raise ValueError("query mapping groups require 2 to 32 terms")
+            normalized: list[str] = []
+            for raw in values:
+                value = " ".join(raw.split()).strip()
+                folded = value.casefold()
+                if (
+                    not value
+                    or len(value) > 64
+                    or "\x00" in value
+                    or any(ord(char) < 32 for char in value)
+                    or folded in reserved
+                ):
+                    raise ValueError("invalid query mapping term")
+                if folded in seen and seen[folded] != group_id:
+                    raise ValueError("query mapping terms cannot span groups")
+                seen[folded] = group_id
+                if folded not in {item.casefold() for item in normalized}:
+                    normalized.append(value)
+            normalized_groups[group_id] = normalized
+        if len(seen) > 500:
+            raise ValueError("query mappings support at most 500 terms")
+        self.groups = normalized_groups
+        self.disabled_groups = list(dict.fromkeys(self.disabled_groups))
+        return self
+
+
 class KnowledgeConfig(BaseModel):
     enabled: bool = True
     default_user_id: str = Field(default="local-user", min_length=1, max_length=120)
@@ -82,6 +132,7 @@ class KnowledgeConfig(BaseModel):
     chunk_target_chars: int = Field(default=1200, ge=100, le=20_000)
     chunk_overlap_chars: int = Field(default=150, ge=0, le=5_000)
     retrieval_top_k: int = Field(default=6, ge=1, le=50)
+    query_mappings: QueryMappingConfig = Field(default_factory=QueryMappingConfig)
 
     @model_validator(mode="after")
     def validate_chunk_overlap(self) -> "KnowledgeConfig":
