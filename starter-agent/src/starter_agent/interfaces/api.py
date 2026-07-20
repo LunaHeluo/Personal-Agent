@@ -7,24 +7,30 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from starter_agent.bootstrap import create_application, get_settings
+from starter_agent.bootstrap import (
+    create_application,
+    create_knowledge_service,
+    get_settings,
+)
 from starter_agent.domain.errors import AgentError
 from starter_agent.domain.models import (
     ChatResult,
     MemoryCategory,
     MemoryItem,
     MemorySensitivity,
+    Message,
     Role,
     SummaryTrace,
     TokenUsage,
     ToolResult,
 )
 from starter_agent.observability.logging import get_logger
+from starter_agent.knowledge.errors import KnowledgeError
 from starter_agent.tools.email.approval import EmailApprovalService
 from starter_agent.tools.email.errors import EmailError
 from starter_agent.tools.email.models import ApprovalChallengeView, SendApproval
@@ -38,6 +44,8 @@ class ChatRequest(BaseModel):
     model: str | None = None
     tool: str | None = Field(default=None, min_length=1, max_length=100)
     tool_governance_enabled: bool = True
+    knowledge_base_id: UUID | None = None
+    knowledge_mode: Literal["off", "required"] = "off"
 
 
 class ProviderInfo(BaseModel):
@@ -141,6 +149,21 @@ class EmailApprovalSendRequest(BaseModel):
     idempotency_key: str = Field(min_length=16, max_length=200)
 
 
+class KnowledgeRetrieveRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=10_000)
+    top_k: int = Field(default=6, ge=1, le=50)
+    document_ids: list[UUID] | None = None
+    document_types: list[str] | None = None
+    filenames: list[str] | None = None
+    versions: list[int] | None = None
+
+
+class KnowledgeAnswerRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=10_000)
+    provider: str | None = None
+    model: str | None = None
+
+
 def _email_approval_service() -> EmailApprovalService:
     manager = create_application().runtime.tools.email_manager
     if manager is None:
@@ -156,6 +179,13 @@ def _email_approval_service() -> EmailApprovalService:
 
 def _email_http_error(error: EmailError) -> HTTPException:
     return HTTPException(status_code=400, detail=error.public_payload())
+
+
+def _knowledge_http_error(error: KnowledgeError) -> HTTPException:
+    return HTTPException(
+        status_code=error.http_status,
+        detail=error.to_public_dict(),
+    )
 
 
 MEMORY_TTL_DAYS: dict[str, int] = {
@@ -273,6 +303,232 @@ def create_api() -> FastAPI:
                 for tool in registry.list()
             ]
         )
+
+    @api.get("/v1/knowledge-bases")
+    async def list_knowledge_bases() -> dict[str, object]:
+        bases = create_knowledge_service().list_knowledge_bases()
+        return {
+            "knowledge_bases": [
+                item.model_dump(mode="json") for item in bases
+            ]
+        }
+
+    @api.post(
+        "/v1/knowledge-bases/{knowledge_base_id}/documents",
+        status_code=202,
+    )
+    async def upload_knowledge_document(
+        knowledge_base_id: UUID,
+        file: UploadFile = File(...),
+        document_type: str = Form("other"),
+        confirmed_authorized: bool = Form(False),
+    ) -> dict[str, object]:
+        try:
+            content = await file.read(
+                get_settings().knowledge.max_upload_bytes + 1
+            )
+            result = create_knowledge_service().upload(
+                knowledge_base_id=knowledge_base_id,
+                filename=file.filename or "",
+                content=content,
+                document_type=document_type,
+                confirmed_authorized=confirmed_authorized,
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return {
+            "document_id": str(result.document.id),
+            "version_id": str(result.version.id),
+            "job_id": str(result.job.id),
+            "status": result.job.status,
+            "stage": result.job.stage,
+            "content_sha256": result.version.content_sha256,
+        }
+
+    @api.get("/v1/knowledge-bases/{knowledge_base_id}/documents")
+    async def list_knowledge_documents(
+        knowledge_base_id: UUID,
+    ) -> dict[str, object]:
+        documents = create_knowledge_service().list_documents(
+            knowledge_base_id
+        )
+        return {
+            "documents": [
+                item.model_dump(mode="json") for item in documents
+            ]
+        }
+
+    @api.get(
+        "/v1/knowledge-bases/{knowledge_base_id}/documents/{document_id}"
+    )
+    async def get_knowledge_document(
+        knowledge_base_id: UUID,
+        document_id: UUID,
+    ) -> dict[str, object]:
+        try:
+            document = create_knowledge_service().get_document(
+                knowledge_base_id, document_id
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return document.model_dump(mode="json")
+
+    @api.get(
+        "/v1/knowledge-bases/{knowledge_base_id}/documents/{document_id}/chunks"
+    )
+    async def list_knowledge_chunks(
+        knowledge_base_id: UUID,
+        document_id: UUID,
+        after_ordinal: int = Query(default=-1, ge=-1),
+        limit: int = Query(default=20, ge=1, le=100),
+    ) -> dict[str, object]:
+        try:
+            chunks = create_knowledge_service().list_chunks(
+                knowledge_base_id,
+                document_id,
+                after_ordinal=after_ordinal,
+                limit=limit,
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return {
+            "chunks": [
+                {
+                    **item.model_dump(
+                        mode="json",
+                        exclude={"text", "search_text"},
+                    ),
+                    "source_ref": item.source_ref,
+                    "preview": item.text[:400],
+                }
+                for item in chunks
+            ],
+            "next_after_ordinal": (
+                chunks[-1].ordinal if len(chunks) == limit else None
+            ),
+        }
+
+    @api.post("/v1/knowledge-bases/{knowledge_base_id}/retrieve")
+    async def retrieve_knowledge(
+        knowledge_base_id: UUID,
+        request: KnowledgeRetrieveRequest,
+    ) -> dict[str, object]:
+        try:
+            matches = create_knowledge_service().retrieve(
+                knowledge_base_id,
+                request.question,
+                top_k=request.top_k,
+                document_ids=request.document_ids,
+                document_types=request.document_types,
+                filenames=request.filenames,
+                versions=request.versions,
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return {
+            "status": "ok" if matches else "no_evidence",
+            "matches": [
+                item.model_dump(mode="json") for item in matches
+            ],
+        }
+
+    @api.post("/v1/knowledge-bases/{knowledge_base_id}/answer")
+    async def answer_from_knowledge(
+        knowledge_base_id: UUID,
+        request: KnowledgeAnswerRequest,
+    ) -> dict[str, object]:
+        try:
+            answer = await create_knowledge_service().answer(
+                knowledge_base_id,
+                request.question,
+                provider_name=request.provider,
+                model=request.model,
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return answer.model_dump(mode="json")
+
+    @api.put(
+        "/v1/knowledge-bases/{knowledge_base_id}/documents/{document_id}/content",
+        status_code=202,
+    )
+    async def update_knowledge_document(
+        knowledge_base_id: UUID,
+        document_id: UUID,
+        file: UploadFile = File(...),
+        confirmed_authorized: bool = Form(False),
+        if_match: str = Header(..., alias="If-Match"),
+    ) -> dict[str, object]:
+        try:
+            content = await file.read(
+                get_settings().knowledge.max_upload_bytes + 1
+            )
+            result = create_knowledge_service().update_document(
+                knowledge_base_id,
+                document_id,
+                expected_content_sha256=if_match.strip('"'),
+                filename=file.filename or "",
+                content=content,
+                confirmed_authorized=confirmed_authorized,
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return {
+            "document_id": str(result.document.id),
+            "version_id": str(result.version.id),
+            "job_id": str(result.job.id),
+            "version": result.version.version,
+            "content_sha256": result.version.content_sha256,
+            "status": "queued",
+        }
+
+    @api.delete(
+        "/v1/knowledge-bases/{knowledge_base_id}/documents/{document_id}"
+    )
+    async def delete_knowledge_document(
+        knowledge_base_id: UUID,
+        document_id: UUID,
+    ) -> dict[str, object]:
+        deleted = create_knowledge_service().delete_document(
+            knowledge_base_id, document_id
+        )
+        return {"status": "deleted", "existed": deleted}
+
+    @api.get(
+        "/v1/knowledge-bases/{knowledge_base_id}/citations/{chunk_id}"
+    )
+    async def resolve_knowledge_citation(
+        knowledge_base_id: UUID,
+        chunk_id: UUID,
+    ) -> dict[str, object]:
+        try:
+            chunk = create_knowledge_service().resolve_citation(
+                knowledge_base_id, chunk_id
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return {
+            **chunk.model_dump(
+                mode="json", exclude={"text", "search_text"}
+            ),
+            "source_ref": chunk.source_ref,
+            "quote": chunk.text[:400],
+        }
+
+    @api.get(
+        "/v1/knowledge-bases/{knowledge_base_id}/ingestion-jobs/{job_id}"
+    )
+    async def get_knowledge_ingestion_job(
+        knowledge_base_id: UUID,
+        job_id: UUID,
+    ) -> dict[str, object]:
+        try:
+            job = create_knowledge_service().get_job(
+                knowledge_base_id, job_id
+            )
+        except KnowledgeError as error:
+            raise _knowledge_http_error(error) from error
+        return job.model_dump(mode="json")
 
     @api.post(
         "/v1/email/drafts/{draft_id}/approval-challenges",
@@ -407,6 +663,59 @@ def create_api() -> FastAPI:
     @api.post("/v1/chat", response_model=ChatResult)
     async def chat(request: ChatRequest) -> ChatResult:
         try:
+            if request.knowledge_mode == "required":
+                if request.knowledge_base_id is None:
+                    raise KnowledgeError("knowledge_base_not_found")
+                rag = await create_knowledge_service().answer(
+                    request.knowledge_base_id,
+                    request.message,
+                    provider_name=request.provider,
+                    model=request.model,
+                )
+                application = create_application()
+                session_id = (
+                    application.store.ensure_session(request.session_id)
+                    if hasattr(application, "store")
+                    else request.session_id or uuid4()
+                )
+                turn_id = uuid4()
+                if hasattr(application, "store"):
+                    application.store.add_message(
+                        session_id,
+                        turn_id,
+                        Message(role="user", content=request.message),
+                    )
+                    application.store.add_message(
+                        session_id,
+                        turn_id,
+                        Message(
+                            role="assistant",
+                            content=rag.answer,
+                            metadata={
+                                "knowledge_mode": "required",
+                                "citations": [
+                                    item.model_dump(mode="json")
+                                    for item in rag.citations
+                                ],
+                            },
+                        ),
+                    )
+                return ChatResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    content=rag.answer,
+                    provider=request.provider
+                    or get_settings().model.default_provider,
+                    model=request.model or get_settings().model.default_model,
+                    knowledge_mode="required",
+                    claims=[
+                        item.model_dump(mode="json") for item in rag.claims
+                    ],
+                    citations=[
+                        item.model_dump(mode="json") for item in rag.citations
+                    ],
+                    refusal_reason=rag.refusal_reason,
+                )
             return await create_application().chat(
                 content=request.message,
                 session_id=request.session_id,
@@ -415,6 +724,8 @@ def create_api() -> FastAPI:
                 required_tool_name=request.tool,
                 tool_governance_enabled=request.tool_governance_enabled,
             )
+        except KnowledgeError as exc:
+            raise _knowledge_http_error(exc) from exc
         except AgentError as exc:
             raise HTTPException(
                 status_code=exc.http_status,
@@ -423,6 +734,45 @@ def create_api() -> FastAPI:
 
     @api.post("/v1/chat/stream")
     async def chat_stream(request: ChatRequest) -> StreamingResponse:
+        if request.knowledge_mode == "required":
+            async def knowledge_events():
+                try:
+                    result = await chat(request)
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "delta",
+                                "content": result.content,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "done",
+                                "result": result.model_dump(mode="json"),
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+                except HTTPException as exc:
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {"type": "error", "error": exc.detail},
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+            return StreamingResponse(
+                knowledge_events(), media_type="text/event-stream"
+            )
+
         async def events():
             queue: asyncio.Queue[dict | None] = asyncio.Queue()
 

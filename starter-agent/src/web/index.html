@@ -61,6 +61,69 @@
       opacity: 0.55;
     }
 
+    [hidden] { display: none !important; }
+
+    .primary-nav {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .primary-nav button[aria-current="page"] {
+      border-color: var(--accent);
+      background: var(--soft);
+      color: var(--accent-dark);
+      font-weight: 650;
+    }
+
+    .knowledge-view {
+      min-width: 0;
+      height: 100%;
+      overflow: auto;
+      padding: 24px;
+    }
+
+    .knowledge-layout {
+      display: grid;
+      grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+      gap: 18px;
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+
+    .knowledge-card {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+
+    .knowledge-card h1,
+    .knowledge-card h2 { margin-top: 0; }
+
+    .knowledge-form {
+      display: grid;
+      gap: 12px;
+    }
+
+    .knowledge-warning { color: var(--warn); }
+    .knowledge-status { min-height: 24px; color: var(--muted); }
+    .knowledge-document {
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .knowledge-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .knowledge-meta { color: var(--muted); font-size: 13px; }
+    .knowledge-chunk {
+      white-space: pre-wrap;
+      padding: 10px;
+      margin: 8px 0;
+      border-radius: 8px;
+      background: var(--soft);
+    }
+
     .app {
       display: grid;
       grid-template-columns: 300px minmax(0, 1fr);
@@ -879,6 +942,10 @@
           <button id="newSessionButton" type="button" title="新建会话">新建</button>
         </div>
       </div>
+      <nav class="primary-nav" aria-label="主导航">
+        <button id="chatNavButton" type="button" aria-current="page">对话</button>
+        <button id="knowledgeNavButton" type="button">知识库</button>
+      </nav>
       <div class="sidebar-clear-row">
         <button id="clearAllSessionsButton" class="clear-all-sessions" type="button">
           清除全部
@@ -889,7 +956,7 @@
       </div>
     </aside>
 
-    <section class="main">
+    <section id="chatView" class="main">
       <header class="topbar">
         <div>
           <h1>求职 Agent 对话</h1>
@@ -913,6 +980,10 @@
               <option value="">使用后端默认</option>
             </select>
           </div>
+          <div class="field">
+            <label for="chatKnowledgeMode">知识库问答</label>
+            <input id="chatKnowledgeMode" type="checkbox">
+          </div>
         </div>
       </header>
 
@@ -927,6 +998,42 @@
         </form>
         <div class="composer-note">Shift + Enter 换行</div>
       </footer>
+    </section>
+
+    <section id="knowledgeView" class="knowledge-view" hidden>
+      <div class="knowledge-layout">
+        <section class="knowledge-card">
+          <h1>个人知识库</h1>
+          <p class="knowledge-warning">不要上传身份证、未授权公司资料、API Key、邮箱密码或授权码。</p>
+          <form id="knowledgeUploadForm" class="knowledge-form">
+            <label>Markdown 文件
+              <input id="knowledgeFile" type="file" accept=".md,.markdown" required>
+            </label>
+            <label>资料类型
+              <select id="knowledgeDocumentType">
+                <option value="resume">简历</option>
+                <option value="job_description">岗位 JD</option>
+                <option value="interview_notes">面试准备</option>
+                <option value="company_research">公司调研</option>
+                <option value="communication_summary">沟通摘要</option>
+                <option value="other">其他</option>
+              </select>
+            </label>
+            <label>
+              <input id="knowledgeAuthorized" type="checkbox" required>
+              我确认资料属于本人或已获得上传与索引授权
+            </label>
+            <button id="knowledgeUploadButton" type="submit">上传并入库</button>
+          </form>
+          <div id="knowledgeStatus" class="knowledge-status" aria-live="polite">尚未加载知识库</div>
+        </section>
+        <section class="knowledge-card">
+          <h2>文档</h2>
+          <div id="knowledgeDocumentList"></div>
+          <h2>Chunk 预览</h2>
+          <div id="knowledgeChunkPreview"></div>
+        </section>
+      </div>
     </section>
   </main>
 
@@ -1025,6 +1132,7 @@
     const apiBaseInput = document.querySelector("#apiBase");
     const providerSelect = document.querySelector("#providerSelect");
     const modelSelect = document.querySelector("#modelSelect");
+    const chatKnowledgeMode = document.querySelector("#chatKnowledgeMode");
     const statusEl = document.querySelector("#status");
     const tokenBudgetEl = document.querySelector("#tokenBudget");
     const messagesEl = document.querySelector("#messages");
@@ -1049,6 +1157,19 @@
     const memorySaveButton = document.querySelector("#memorySaveButton");
     const memoryCancelButton = document.querySelector("#memoryCancelButton");
     const memoryList = document.querySelector("#memoryList");
+    const chatView = document.querySelector("#chatView");
+    const knowledgeView = document.querySelector("#knowledgeView");
+    const chatNavButton = document.querySelector("#chatNavButton");
+    const knowledgeNavButton = document.querySelector("#knowledgeNavButton");
+    const knowledgeUploadForm = document.querySelector("#knowledgeUploadForm");
+    const knowledgeFile = document.querySelector("#knowledgeFile");
+    const knowledgeDocumentType = document.querySelector("#knowledgeDocumentType");
+    const knowledgeAuthorized = document.querySelector("#knowledgeAuthorized");
+    const knowledgeUploadButton = document.querySelector("#knowledgeUploadButton");
+    const knowledgeStatus = document.querySelector("#knowledgeStatus");
+    const knowledgeDocumentList = document.querySelector("#knowledgeDocumentList");
+    const knowledgeChunkPreview = document.querySelector("#knowledgeChunkPreview");
+    let activeKnowledgeBaseId = null;
 
     function apiBase() {
       return apiBaseInput.value.replace(/\/+$/, "");
@@ -1445,6 +1566,13 @@
       if (providerSelect.value) payload.provider = providerSelect.value;
       if (modelSelect.value) payload.model = modelSelect.value;
       payload.tool_governance_enabled = state.toolGovernanceEnabled;
+      if (chatKnowledgeMode.checked && activeKnowledgeBaseId) {
+        payload.knowledge_mode = "required";
+        payload.knowledge_base_id = activeKnowledgeBaseId;
+        delete payload.tool;
+      } else {
+        payload.knowledge_mode = "off";
+      }
       return payload;
     }
 
@@ -2199,6 +2327,183 @@
       await loadProviders();
       await loadTools();
       await loadSessions();
+    });
+
+    function setKnowledgeStatus(message, isError = false) {
+      knowledgeStatus.textContent = message;
+      knowledgeStatus.style.color = isError ? "var(--warn)" : "var(--muted)";
+    }
+
+    function showPrimaryView(view) {
+      const knowledge = view === "knowledge";
+      chatView.hidden = knowledge;
+      knowledgeView.hidden = !knowledge;
+      chatNavButton.setAttribute("aria-current", knowledge ? "false" : "page");
+      knowledgeNavButton.setAttribute("aria-current", knowledge ? "page" : "false");
+      if (knowledge) loadKnowledgeBase();
+    }
+
+    async function knowledgeError(response, fallback) {
+      let detail = null;
+      try { detail = await response.json(); } catch (_error) { /* no body */ }
+      return detail?.detail?.message || detail?.message || fallback;
+    }
+
+    async function loadKnowledgeBase() {
+      setKnowledgeStatus("正在加载知识库...");
+      knowledgeDocumentList.replaceChildren();
+      try {
+        const basesResponse = await fetch(`${apiBase()}/v1/knowledge-bases`);
+        if (!basesResponse.ok) throw new Error(await knowledgeError(basesResponse, "知识库加载失败"));
+        const bases = await basesResponse.json();
+        activeKnowledgeBaseId = bases.knowledge_bases[0]?.id || null;
+        if (!activeKnowledgeBaseId) throw new Error("没有可用知识库");
+        const response = await fetch(`${apiBase()}/v1/knowledge-bases/${activeKnowledgeBaseId}/documents`);
+        if (!response.ok) throw new Error(await knowledgeError(response, "文档列表加载失败"));
+        const payload = await response.json();
+        renderKnowledgeDocuments(payload.documents);
+        setKnowledgeStatus(`已加载 ${payload.documents.length} 份文档`);
+      } catch (error) {
+        setKnowledgeStatus(error.message || "知识库加载失败", true);
+      }
+    }
+
+    function renderKnowledgeDocuments(documents) {
+      knowledgeDocumentList.replaceChildren();
+      if (!documents.length) {
+        const empty = document.createElement("p");
+        empty.textContent = "暂无文档";
+        knowledgeDocumentList.appendChild(empty);
+        return;
+      }
+      for (const item of documents) {
+        const row = document.createElement("article");
+        row.className = "knowledge-document";
+        const title = document.createElement("strong");
+        title.textContent = item.filename;
+        const meta = document.createElement("div");
+        meta.className = "knowledge-meta";
+        meta.textContent = `版本 ${item.version || "-"} · ${item.status} · Chunk ${item.chunk_count} · ${item.created_at}`;
+        const actions = document.createElement("div");
+        actions.className = "knowledge-actions";
+        const preview = document.createElement("button");
+        preview.type = "button";
+        preview.textContent = "查看 Chunk";
+        preview.addEventListener("click", () => loadKnowledgeChunks(item));
+        const update = document.createElement("button");
+        update.type = "button";
+        update.textContent = "更新";
+        update.addEventListener("click", () => chooseKnowledgeUpdate(item));
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.textContent = "删除";
+        remove.addEventListener("click", () => deleteKnowledgeDocument(item));
+        actions.append(preview, update, remove);
+        row.append(title, meta, actions);
+        knowledgeDocumentList.appendChild(row);
+      }
+    }
+
+    async function loadKnowledgeChunks(item) {
+      knowledgeChunkPreview.replaceChildren();
+      setKnowledgeStatus(`正在加载 ${item.filename} 的 Chunk...`);
+      const response = await fetch(`${apiBase()}/v1/knowledge-bases/${activeKnowledgeBaseId}/documents/${item.id}/chunks`);
+      if (!response.ok) {
+        setKnowledgeStatus(await knowledgeError(response, "Chunk 预览失败"), true);
+        return;
+      }
+      const payload = await response.json();
+      for (const chunk of payload.chunks) {
+        const block = document.createElement("section");
+        block.className = "knowledge-chunk";
+        const meta = document.createElement("strong");
+        meta.textContent = `${chunk.id} · ${(chunk.section_path || []).join(" / ")} · L${chunk.start_line}-L${chunk.end_line}`;
+        const text = document.createElement("div");
+        text.textContent = chunk.preview;
+        block.append(meta, text);
+        knowledgeChunkPreview.appendChild(block);
+      }
+      setKnowledgeStatus(`已显示 ${payload.chunks.length} 个 Chunk`);
+    }
+
+    async function submitKnowledgeFile(file, item = null) {
+      const data = new FormData();
+      data.append("file", file);
+      data.append("confirmed_authorized", "true");
+      if (!item) data.append("document_type", knowledgeDocumentType.value);
+      const url = item
+        ? `${apiBase()}/v1/knowledge-bases/${activeKnowledgeBaseId}/documents/${item.id}/content`
+        : `${apiBase()}/v1/knowledge-bases/${activeKnowledgeBaseId}/documents`;
+      const options = { method: item ? "PUT" : "POST", body: data, headers: {} };
+      if (item) options.headers["If-Match"] = item.content_sha256;
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        const label = item ? "更新失败" : "上传失败";
+        throw new Error(await knowledgeError(response, label));
+      }
+      const result = await response.json();
+      const jobResponse = await fetch(`${apiBase()}/v1/knowledge-bases/${activeKnowledgeBaseId}/ingestion-jobs/${result.job_id}`);
+      const job = jobResponse.ok ? await jobResponse.json() : null;
+      if (job?.status === "failed") throw new Error(`解析或索引失败：${job.error_code || job.stage}`);
+    }
+
+    async function chooseKnowledgeUpdate(item) {
+      const picker = document.createElement("input");
+      picker.type = "file";
+      picker.accept = ".md,.markdown";
+      picker.addEventListener("change", async () => {
+        if (!picker.files[0]) return;
+        try {
+          setKnowledgeStatus(`正在更新 ${item.filename}...`);
+          await submitKnowledgeFile(picker.files[0], item);
+          await loadKnowledgeBase();
+        } catch (error) {
+          setKnowledgeStatus(error.message || "更新失败", true);
+        }
+      });
+      picker.click();
+    }
+
+    async function deleteKnowledgeDocument(item) {
+      if (!window.confirm(`确认删除“${item.filename}”版本 ${item.version}？删除后旧内容不可检索。`)) return;
+      const response = await fetch(
+        `${apiBase()}/v1/knowledge-bases/${activeKnowledgeBaseId}/documents/${item.id}`,
+        { method: "DELETE" }
+      );
+      if (!response.ok) {
+        setKnowledgeStatus(await knowledgeError(response, "删除失败"), true);
+        return;
+      }
+      knowledgeChunkPreview.replaceChildren();
+      await loadKnowledgeBase();
+    }
+
+    knowledgeUploadForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!activeKnowledgeBaseId || !knowledgeFile.files[0] || !knowledgeAuthorized.checked) return;
+      knowledgeUploadButton.disabled = true;
+      try {
+        setKnowledgeStatus("正在上传并建立索引...");
+        await submitKnowledgeFile(knowledgeFile.files[0]);
+        knowledgeUploadForm.reset();
+        await loadKnowledgeBase();
+      } catch (error) {
+        setKnowledgeStatus(error.message || "上传失败", true);
+      } finally {
+        knowledgeUploadButton.disabled = false;
+      }
+    });
+    chatNavButton.addEventListener("click", () => showPrimaryView("chat"));
+    knowledgeNavButton.addEventListener("click", () => showPrimaryView("knowledge"));
+    chatKnowledgeMode.addEventListener("change", async () => {
+      if (chatKnowledgeMode.checked && !activeKnowledgeBaseId) {
+        await loadKnowledgeBase();
+      }
+      setStatus(
+        chatKnowledgeMode.checked
+          ? "知识库问答已开启；回答将严格依据已入库资料"
+          : "知识库问答已关闭"
+      );
     });
 
     async function boot() {

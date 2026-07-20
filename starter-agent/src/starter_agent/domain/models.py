@@ -98,6 +98,10 @@ class ChatResult(BaseModel):
     token_budget_status: Literal["normal", "warning", "exceeded"] = "normal"
     context_usage: ContextUsage = Field(default_factory=ContextUsage)
     summary_trace: SummaryTrace | None = None
+    knowledge_mode: Literal["off", "required"] = "off"
+    claims: list[dict[str, Any]] = Field(default_factory=list)
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+    refusal_reason: str | None = None
     tool_governance_enabled: bool = True
     finish_reason: Literal["completed", "continuation_required"] = "completed"
     continuation: ContinuationInfo | None = None

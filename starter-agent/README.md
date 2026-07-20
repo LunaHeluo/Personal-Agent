@@ -274,3 +274,19 @@ uv run agent chat "请搜索悉尼的 AI Agent 工程师岗位，返回 5 条带
 ```
 
 搜索结果是公开网页线索，不代表岗位仍然有效；投递前应打开来源页面复核。
+
+## 带引用的个人知识库
+
+启动 API 和前端后，可从 Starter Agent 侧边栏一级“知识库”入口上传 UTF-8
+Markdown。页面显示入库状态、文档版本、Chunk 数量、可定位预览、更新和删除动作。
+聊天区的“知识库问答”开关开启后，只依据当前知识库检索证据回答；没有足够证据时
+明确拒答，不会自动调用邮件、简历写入或其他外部工具。
+
+第一阶段检索使用 SQLite FTS5 `trigram` 与 BM25，不需要 Embedding、向量数据库或
+模型 Rerank。测试只使用：
+
+- `tests/fixtures/knowledge/resume_demo.md`
+- `tests/fixtures/knowledge/job_demo.md`
+
+不要上传身份证、未授权公司资料、真实 API Key、邮箱密码、授权码或其他无权处理的
+资料。完整自动化与人工验收步骤见 `docs/rag-acceptance.md`。

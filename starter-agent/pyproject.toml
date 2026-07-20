@@ -11,6 +11,7 @@ dependencies = [
     "openai>=1.60.0,<2",
     "pydantic>=2.10.0,<3",
     "pydantic-settings>=2.7.0,<3",
+    "python-multipart>=0.0.20,<1",
     "pyyaml>=6.0.2,<7",
     "rich>=13.9.0,<15",
     "sqlalchemy>=2.0.36,<3",

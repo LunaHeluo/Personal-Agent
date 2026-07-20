@@ -67,6 +67,33 @@ class MemoryConfig(BaseModel):
     timeout_seconds: float = Field(default=30, gt=0, le=120)
 
 
+class KnowledgeConfig(BaseModel):
+    enabled: bool = True
+    default_user_id: str = Field(default="local-user", min_length=1, max_length=120)
+    default_project_id: str = Field(
+        default="default-project", min_length=1, max_length=120
+    )
+    max_upload_bytes: int = Field(default=2 * 1024 * 1024, ge=1, le=20 * 1024 * 1024)
+    max_documents: int = Field(default=100, ge=1, le=10_000)
+    max_chunks: int = Field(default=5_000, ge=1, le=100_000)
+    allowed_extensions: list[str] = Field(
+        default_factory=lambda: [".md", ".markdown"]
+    )
+    chunk_target_chars: int = Field(default=1200, ge=100, le=20_000)
+    chunk_overlap_chars: int = Field(default=150, ge=0, le=5_000)
+    retrieval_top_k: int = Field(default=6, ge=1, le=50)
+
+    @model_validator(mode="after")
+    def validate_chunk_overlap(self) -> "KnowledgeConfig":
+        if self.chunk_overlap_chars >= self.chunk_target_chars:
+            raise ValueError("knowledge chunk overlap must be smaller than target")
+        normalized = [value.lower() for value in self.allowed_extensions]
+        if not normalized or any(not value.startswith(".") for value in normalized):
+            raise ValueError("knowledge allowed_extensions must contain suffixes")
+        self.allowed_extensions = normalized
+        return self
+
+
 class SerpApiKeyConfig(BaseModel):
     api_key_env: str
 
@@ -216,6 +243,7 @@ class AgentSettings(BaseModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     project_root: Path = PROJECT_ROOT
 
