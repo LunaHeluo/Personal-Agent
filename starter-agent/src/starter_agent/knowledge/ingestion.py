@@ -14,6 +14,7 @@ class KnowledgeIngestionPipeline:
         *,
         target_chars: int,
         overlap_chars: int,
+        max_chunks: int = 5_000,
     ) -> None:
         self.store = store
         self.parser = MarkdownParser()
@@ -22,12 +23,15 @@ class KnowledgeIngestionPipeline:
             max_chars=max(1800, target_chars),
             overlap_chars=overlap_chars,
         )
+        self.max_chunks = max_chunks
 
     def run(self, scope: KnowledgeScope, upload: UploadBundle) -> None:
         stage = "parse"
         try:
+            self.store.mark_job_running(scope, upload.job.id, stage=stage)
             parsed = self.parser.parse(upload.version.source_text)
             stage = "chunk"
+            self.store.mark_job_running(scope, upload.job.id, stage=stage)
             chunks = self.chunker.chunk(
                 parsed=parsed,
                 scope=scope,
@@ -37,6 +41,15 @@ class KnowledgeIngestionPipeline:
                 version=upload.version.version,
                 filename=upload.document.filename,
             )
+            if len(chunks) > self.max_chunks:
+                raise KnowledgeError("knowledge_chunk_capacity_exceeded")
+            active_elsewhere = self.store.count_active_chunks(
+                scope,
+                upload.document.knowledge_base_id,
+                exclude_document_id=upload.document.id,
+            )
+            if active_elsewhere + len(chunks) > self.max_chunks:
+                raise KnowledgeError("knowledge_chunk_capacity_exceeded")
             self.store.complete_chunking(scope, upload, chunks)
         except KnowledgeError as error:
             self.store.fail_ingestion(

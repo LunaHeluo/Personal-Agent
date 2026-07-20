@@ -9,6 +9,7 @@ def test_knowledge_defaults_are_safe_and_local() -> None:
     assert settings.knowledge.default_project_id == "default-project"
     assert settings.knowledge.max_upload_bytes == 2 * 1024 * 1024
     assert settings.knowledge.max_documents == 100
+    assert settings.knowledge.max_chunks == 5000
     assert settings.knowledge.allowed_extensions == [".md", ".markdown"]
     assert settings.knowledge.chunk_target_chars == 1200
     assert settings.knowledge.chunk_overlap_chars == 150

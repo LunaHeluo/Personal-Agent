@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, create_engine, event, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+from sqlalchemy.pool import StaticPool
 
 from starter_agent.knowledge.errors import KnowledgeError
 from starter_agent.knowledge.models import (
@@ -150,7 +151,13 @@ class SQLiteKnowledgeStore:
                 database_path = project_root / database_path
             database_path.parent.mkdir(parents=True, exist_ok=True)
             database_url = f"sqlite:///{database_path}"
-        self.engine = create_engine(database_url)
+        engine_options: dict[str, object] = {}
+        if database_url.endswith("/:memory:"):
+            engine_options = {
+                "poolclass": StaticPool,
+                "connect_args": {"check_same_thread": False},
+            }
+        self.engine = create_engine(database_url, **engine_options)
         if self.engine.dialect.name == "sqlite":
             @event.listens_for(self.engine, "connect")
             def _configure_sqlite(dbapi_connection, _record) -> None:
@@ -319,6 +326,34 @@ class SQLiteKnowledgeStore:
                 )
                 or 0
             )
+
+    def count_active_chunks(
+        self,
+        scope: KnowledgeScope,
+        knowledge_base_id: UUID,
+        *,
+        exclude_document_id: UUID | None = None,
+    ) -> int:
+        query = (
+            select(func.count())
+            .select_from(KnowledgeChunkRow)
+            .join(
+                KnowledgeDocumentRow,
+                KnowledgeDocumentRow.id == KnowledgeChunkRow.document_id,
+            )
+            .where(
+                *self._scope_filters(scope),
+                KnowledgeChunkRow.knowledge_base_id == str(knowledge_base_id),
+                KnowledgeDocumentRow.active_version_id
+                == KnowledgeChunkRow.version_id,
+            )
+        )
+        if exclude_document_id is not None:
+            query = query.where(
+                KnowledgeChunkRow.document_id != str(exclude_document_id)
+            )
+        with Session(self.engine) as db:
+            return int(db.scalar(query) or 0)
 
     def create_upload(
         self,
@@ -542,6 +577,67 @@ class SQLiteKnowledgeStore:
                 )
             )
         return self._job(row) if row else None
+
+    def mark_job_running(
+        self,
+        scope: KnowledgeScope,
+        job_id: UUID,
+        *,
+        stage: str,
+    ) -> None:
+        with Session(self.engine) as db, db.begin():
+            row = db.scalar(
+                select(IngestionJobRow).where(
+                    IngestionJobRow.id == str(job_id),
+                    IngestionJobRow.user_id == scope.user_id,
+                    IngestionJobRow.project_id == scope.project_id,
+                )
+            )
+            if row is None:
+                raise KnowledgeError("document_not_found")
+            row.status = "running"
+            row.stage = stage
+            row.started_at = datetime.now(UTC)
+
+    def recover_ingestion_jobs(
+        self, scope: KnowledgeScope
+    ) -> list[UploadBundle]:
+        now = datetime.now(UTC)
+        queued: list[UploadBundle] = []
+        with Session(self.engine) as db, db.begin():
+            rows = list(
+                db.scalars(
+                    select(IngestionJobRow).where(
+                        IngestionJobRow.user_id == scope.user_id,
+                        IngestionJobRow.project_id == scope.project_id,
+                        IngestionJobRow.status.in_(["queued", "running"]),
+                    )
+                )
+            )
+            for job in rows:
+                document = db.get(KnowledgeDocumentRow, job.document_id)
+                version = db.get(DocumentVersionRow, job.version_id)
+                if document is None or version is None:
+                    continue
+                if job.status == "running":
+                    job.status = "failed"
+                    job.error_code = "ingestion_interrupted"
+                    job.finished_at = now
+                    version.status = "failed"
+                    version.error_code = "ingestion_interrupted"
+                    document.status = "failed"
+                    db.query(KnowledgeChunkRow).filter(
+                        KnowledgeChunkRow.version_id == version.id
+                    ).delete()
+                    continue
+                queued.append(
+                    UploadBundle(
+                        document=self._document(document),
+                        version=self._version(version),
+                        job=self._job(job),
+                    )
+                )
+        return queued
 
     def complete_chunking(
         self,

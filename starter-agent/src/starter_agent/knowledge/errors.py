@@ -94,6 +94,16 @@ _MESSAGES: dict[str, tuple[str, str, int]] = {
         "请重试或更换生成模型",
         502,
     ),
+    "knowledge_chunk_capacity_exceeded": (
+        "知识库 Chunk 数量已达到上限",
+        "请删除不再需要的文档或缩短文档后重试",
+        409,
+    ),
+    "ingestion_interrupted": (
+        "入库任务因应用中断而未完成",
+        "请重新提交或重试该文档",
+        409,
+    ),
 }
 
 

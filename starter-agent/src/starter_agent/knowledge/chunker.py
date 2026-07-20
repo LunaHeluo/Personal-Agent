@@ -48,7 +48,7 @@ class KnowledgeChunker:
                 )
                 if current and (
                     projected > self.target_chars
-                    or (section_changed and current_length >= self.target_chars // 2)
+                    or section_changed
                 ):
                     groups.append(current)
                     current = []

@@ -12,7 +12,8 @@ import structlog
 _SENSITIVE_KEY = re.compile(
     r"password|credential|authorization|auth_code|api[_-]?key|"
     r"access[_-]?token|refresh[_-]?token|body_text|snippet|"
-    r"subject|sender|recipient|attachment_name|query_text",
+    r"subject|sender|recipient|attachment_name|query_text|"
+    r"document_text|chunk_text|search_text|question|quote|upload_content",
     re.IGNORECASE,
 )
 _SECRET_OR_ADDRESS = re.compile(

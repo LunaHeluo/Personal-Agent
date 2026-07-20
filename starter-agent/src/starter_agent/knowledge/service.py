@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from uuid import NAMESPACE_URL, UUID, uuid5
+from threading import RLock
 
 from starter_agent.knowledge.errors import KnowledgeError
 from starter_agent.knowledge.ingestion import KnowledgeIngestionPipeline
@@ -45,10 +46,14 @@ class KnowledgeApplicationService:
             store,
             target_chars=settings.knowledge.chunk_target_chars,
             overlap_chars=settings.knowledge.chunk_overlap_chars,
+            max_chunks=settings.knowledge.max_chunks,
         )
         self.retriever = KnowledgeRetriever(store)
         self.providers = ProviderRegistry(settings)
         self.evidence_gate = EvidenceSufficiencyGate()
+        self._document_locks: dict[UUID, RLock] = {}
+        for pending in self.store.recover_ingestion_jobs(self.scope):
+            self.ingestion.run(self.scope, pending)
 
     def list_knowledge_bases(self) -> list[KnowledgeBase]:
         return self.store.list_knowledge_bases(self.scope)
@@ -168,23 +173,27 @@ class KnowledgeApplicationService:
             max_bytes=self.settings.knowledge.max_upload_bytes,
             allowed_extensions=self.settings.knowledge.allowed_extensions,
         )
-        upload = self.store.create_update(
-            self.scope,
-            knowledge_base_id=knowledge_base_id,
-            document_id=document_id,
-            expected_content_sha256=expected_content_sha256,
-            source_text=validated.text,
-            content_sha256=validated.content_sha256,
-        )
-        self.ingestion.run(self.scope, upload)
-        return upload
+        lock = self._document_locks.setdefault(document_id, RLock())
+        with lock:
+            upload = self.store.create_update(
+                self.scope,
+                knowledge_base_id=knowledge_base_id,
+                document_id=document_id,
+                expected_content_sha256=expected_content_sha256,
+                source_text=validated.text,
+                content_sha256=validated.content_sha256,
+            )
+            self.ingestion.run(self.scope, upload)
+            return upload
 
     def delete_document(
         self, knowledge_base_id: UUID, document_id: UUID
     ) -> bool:
-        return self.store.delete_document(
-            self.scope, knowledge_base_id, document_id
-        )
+        lock = self._document_locks.setdefault(document_id, RLock())
+        with lock:
+            return self.store.delete_document(
+                self.scope, knowledge_base_id, document_id
+            )
 
     def resolve_citation(
         self, knowledge_base_id: UUID, chunk_id: UUID

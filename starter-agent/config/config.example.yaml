@@ -51,11 +51,13 @@ runtime:
   max_tool_result_chars: 8000
 
 knowledge:
+  # 仅配置容量和行为参数；不要在 YAML 中放入秘密或私人文档正文。
   enabled: true
   default_user_id: local-user
   default_project_id: default-project
   max_upload_bytes: 2097152
   max_documents: 100
+  max_chunks: 5000
   allowed_extensions:
     - .md
     - .markdown

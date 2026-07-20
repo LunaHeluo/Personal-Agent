@@ -1,5 +1,5 @@
+from pathlib import Path
 from unittest.mock import Mock
-from uuid import uuid4
 
 import pytest
 
@@ -10,17 +10,18 @@ from starter_agent.settings import AgentSettings
 
 
 @pytest.mark.asyncio
-async def test_no_evidence_refuses_without_loading_provider(tmp_path) -> None:
+async def test_no_evidence_refuses_without_loading_provider() -> None:
     settings = AgentSettings.model_validate(
         {
             "providers": {"mock": {"type": "mock", "models": ["starter-mock"]}},
             "model": {"default_provider": "mock", "default_model": "starter-mock"},
-            "project_root": tmp_path,
-            "app": {"database_url": "sqlite:///knowledge.db"},
+            "project_root": Path.cwd(),
+            "app": {"database_url": "sqlite+pysqlite:///:memory:"},
         }
     )
     service = KnowledgeApplicationService(
-        settings, SQLiteKnowledgeStore("sqlite:///knowledge.db", tmp_path)
+        settings,
+        SQLiteKnowledgeStore("sqlite+pysqlite:///:memory:", Path.cwd()),
     )
     service.retriever.retrieve = Mock(return_value=[])
     service.providers.get = Mock(side_effect=AssertionError("provider must not load"))
@@ -31,4 +32,3 @@ async def test_no_evidence_refuses_without_loading_provider(tmp_path) -> None:
     assert result.refusal_reason == "no_evidence"
     assert "知识库中没有足够证据" in result.answer
     service.providers.get.assert_not_called()
-
