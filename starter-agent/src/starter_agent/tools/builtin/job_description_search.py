@@ -18,7 +18,7 @@ from starter_agent.tools.adapters.safe_web_fetcher import (
 from starter_agent.tools.base import Tool, ToolContext
 
 
-_MATCH_TOKEN = re.compile(r"[\w]+(?:[+#]+(?=\s|$))?")
+_MATCH_TOKEN = re.compile(r"[\w]+(?:[+#]+(?:/[\w]+)?(?=\W|$))?")
 
 
 class SearchJobDescriptionTool(Tool):

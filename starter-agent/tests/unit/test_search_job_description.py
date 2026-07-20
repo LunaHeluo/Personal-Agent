@@ -225,6 +225,9 @@ async def test_rejects_description_without_core_sections() -> None:
         ("AB", "Grab Holdings", False),
         ("Example Inc", "Example, Inc.", True),
         ("C++ Developer", "C Developer", False),
+        ("C++ Developer", "C++-Developer", True),
+        ("C Developer", "C++/C Developer", False),
+        ("C Developer", "C Developer", True),
         ("AI Product Manager", "Senior AI Product Manager", True),
         ("Senior AI Product Manager", "AI Product Manager", True),
         (

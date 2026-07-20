@@ -107,3 +107,76 @@ def test_guard_structured_truncation_keeps_only_safe_classification_metadata() -
     assert result.is_truncated is True
     assert payload["metadata"]["is_untrusted_external_content"] is True
     assert "external_instruction" not in payload["metadata"]
+
+
+def test_guard_generic_fallback_never_repeats_untrusted_source_metadata() -> None:
+    counter = TokenCounter(safety_ratio=1.15)
+    guard = ToolResultGuard(counter, max_result_tokens=300)
+    sentinel = "ATTACKER_CONTROLLED_METADATA_SENTINEL"
+    raw = json.dumps(
+        {
+            "metadata": {
+                "is_untrusted_external_content": True,
+                "external_instruction": sentinel,
+            },
+            "ok": True,
+            "data": {"raw_text": "Job detail " * 2_000},
+        },
+        ensure_ascii=False,
+    )
+
+    result = guard.guard(
+        raw,
+        "search_job_description",
+        "call-job-description",
+        "tool:search_job_description:turn-1:call-job-description",
+    )
+    payload = json.loads(result.content)
+
+    assert result.is_truncated is True
+    assert sentinel not in result.content
+    assert payload["metadata"]["is_untrusted_external_content"] is True
+    assert set(payload["metadata"]).isdisjoint({"external_instruction"})
+
+
+def test_guard_generic_fallback_stays_within_budget_after_final_metadata() -> None:
+    counter = TokenCounter(safety_ratio=1.15)
+    guard = ToolResultGuard(counter, max_result_tokens=300)
+    raw = json.dumps(
+        {"ok": True, "data": {"raw_text": "Job detail " * 2_000}},
+        ensure_ascii=False,
+    )
+
+    result = guard.guard(
+        raw,
+        "search_job_description",
+        "call-job-description",
+        "tool:search_job_description:turn-1:call-job-description",
+    )
+
+    assert result.is_truncated is True
+    assert result.context_result_tokens <= guard.max_result_tokens
+
+
+def test_guard_uses_empty_content_when_even_metadata_only_exceeds_tiny_budget() -> None:
+    counter = TokenCounter(safety_ratio=1.15)
+    guard = ToolResultGuard(counter, max_result_tokens=80)
+    raw = json.dumps(
+        {
+            "ok": True,
+            "data": {"raw_text": "Job detail " * 2_000},
+            "metadata": {"is_untrusted_external_content": True},
+        },
+        ensure_ascii=False,
+    )
+
+    result = guard.guard(
+        raw,
+        "search_job_description",
+        "call-job-description",
+        "tool:search_job_description:turn-1:call-job-description",
+    )
+
+    assert result.is_truncated is True
+    assert result.content == ""
+    assert result.context_result_tokens <= guard.max_result_tokens
