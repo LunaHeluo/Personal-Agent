@@ -177,6 +177,9 @@ uv run agent serve
 - [ ] RAG Generation 使用 `tools=[]`，提示注入文档不能触发工具或改变权限。
 - [ ] 每个事实性结论均有邻近引用，不能用无关引用装饰回答。
 - [ ] quote 是对应 Chunk 正文的连续子串，并真正支持该结论。
+- [ ] 跨简历/JD claim 为每个 Evidence 返回独立 quote。
+- [ ] 每个 `evidence_refs[].quote` 都能在对应 canonical Chunk 中逐字定位。
+- [ ] 兼容字段存在，但人工验收不使用首条兼容 `quote` 代替完整逐证据核验。
 - [ ] 引用中的文件名、版本、章节、行号和 Chunk ID 来自服务端 canonical metadata。
 - [ ] 无证据、证据不足或引用校验失败时明确拒答。
 - [ ] 回答流畅、符合常识或模型自称“已检索”均不算通过。
@@ -208,7 +211,8 @@ uv run agent serve
 2. 前端入口、上传状态、列表、Chunk 数量、预览、更新和删除均可人工复现。
 3. 两份固定安全文档成功入库，Chunk metadata 能定位原文。
 4. 有证据问题返回受支持的结论，所有事实性 claim 均有有效 canonical 引用。
-5. 至少使用一次真实 `glm-4.7` 完成有证据 `/answer`，结构化结果可解析且引用校验通过。
+5. 至少使用一次真实 `glm-4.7` 完成有证据 `/answer`，结构化结果可解析；跨文档
+   claim 为每个 Evidence 提供独立 quote，且全部通过 canonical 引用校验。
 6. 无证据问题稳定返回 `refused`，不调用模型且不产生引用。
 7. metadata filter 和 Scope 隔离在 Retrieval 阶段生效。
 8. 更新后旧版本不再检索，旧引用失效。
@@ -241,6 +245,7 @@ uv run agent serve
 | `glm-4.7` Provider 健康检查 | 通过 | `zhipu responded successfully (glm-4.7)`。 |
 | 真实无证据链路 | 通过 | “资料里真实 HR 的手机号码是什么？”返回零命中、`refused/no_evidence`、零引用，Provider 未调用。 |
 | `glm-4.7` 有证据 Generation | 通过 | 使用两份安全 fixture 提问简历与目标 JD 的匹配岗位，返回 `answered`；引用覆盖 `resume_demo.md` 与 `job_demo.md`，3 条 quote 均可在服务端 canonical Chunk 中逐字定位。 |
+| `glm-4.7` 逐证据跨文档引用 | 通过 | 安全 fixture 的简历/JD回答返回 2 个 claim 和 2 条独立引用；引用覆盖两份文档，所有 quote 均通过 canonical Chunk 连续子串校验。 |
 
 ### 当前最终结论
 
@@ -248,4 +253,5 @@ uv run agent serve
 
 确定性 Retrieval、映射词管理、引用校验、拒答、更新和删除链路均已通过。真实
 `glm-4.7` 的单层 fenced JSON 可在不放宽 Schema、状态枚举、Evidence ID 和连续
-quote 校验的前提下完成解析；本次验收没有使用真实隐私资料，也没有记录 API Key。
+quote 校验的前提下完成解析；跨文档 claim 已按 Evidence 分别携带 quote。本次验收
+没有使用真实隐私资料，也没有记录 API Key。

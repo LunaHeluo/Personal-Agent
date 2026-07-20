@@ -35,8 +35,12 @@ def _valid_payload() -> str:
             "claims": [
                 {
                     "text": "候选人熟练 Python。",
-                    "evidence_ids": ["E1"],
-                    "quote": "熟练 Python",
+                    "evidence_refs": [
+                        {
+                            "evidence_id": "E1",
+                            "quote": "熟练 Python",
+                        }
+                    ],
                 }
             ],
         },
@@ -83,6 +87,34 @@ async def test_generation_prompt_defines_the_strict_status_contract() -> None:
     assert '"answered"、"refused"、"conflict"' in system_prompt
     assert '"success"' in system_prompt
     assert "不要输出" in system_prompt
+    assert '"evidence_refs"' in system_prompt
+    assert '"evidence_id"' in system_prompt
+    assert "每个引用项只对应一个 Evidence" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_generation_still_accepts_legacy_single_evidence_claim() -> None:
+    legacy = json.dumps(
+        {
+            "status": "answered",
+            "answer": "候选人熟练 Python。",
+            "claims": [
+                {
+                    "text": "候选人熟练 Python。",
+                    "evidence_ids": ["E1"],
+                    "quote": "熟练 Python",
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+    answer = await RagGenerator(
+        StubProvider(legacy), "test"
+    ).generate("会 Python 吗？", [_evidence()])
+
+    assert answer.status == "answered"
+    assert answer.claims[0].evidence_refs[0].evidence_id == "E1"
 
 
 @pytest.mark.asyncio

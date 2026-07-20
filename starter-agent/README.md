@@ -308,5 +308,24 @@ knowledge:
 `mapping_version`，便于复现词表变更；用户明确输入的专有词和数字仍是必需锚点，
 同义词扩展不会绕过文档更新或删除验证。
 
+跨文档 claim 为每个 Evidence 返回独立 quote，同时保留旧字段：
+
+```json
+{
+  "text": "候选人的 Python 能力符合岗位要求",
+  "evidence_refs": [
+    {"evidence_id": "E1", "quote": "简历原文"},
+    {"evidence_id": "E2", "quote": "JD 原文"}
+  ],
+  "evidence_ids": ["E1", "E2"],
+  "quote": "简历原文"
+}
+```
+
+新调用方应读取 `evidence_refs` 或 top-level `citations`。`evidence_ids` 与
+`quote` 是兼容字段；多证据 claim 的兼容 `quote` 只表示第一条引用。带文件名、
+版本、章节、行号和 Chunk ID 的 top-level `citations` 是定位来源的权威字段。
+每个 quote 仍必须是对应 Chunk 的连续原文，不会做模糊匹配或自动改写。
+
 不要上传身份证、未授权公司资料、真实 API Key、邮箱密码、授权码或其他无权处理的
 资料。完整自动化与人工验收步骤见 `docs/rag-acceptance.md`。
