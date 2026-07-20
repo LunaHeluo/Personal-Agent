@@ -23,6 +23,7 @@ from starter_agent.domain.models import (
     MemoryCategory,
     MemoryItem,
     MemorySensitivity,
+    Message,
     Role,
     SummaryTrace,
     TokenUsage,
@@ -43,6 +44,8 @@ class ChatRequest(BaseModel):
     model: str | None = None
     tool: str | None = Field(default=None, min_length=1, max_length=100)
     tool_governance_enabled: bool = True
+    knowledge_base_id: UUID | None = None
+    knowledge_mode: Literal["off", "required"] = "off"
 
 
 class ProviderInfo(BaseModel):
@@ -660,6 +663,59 @@ def create_api() -> FastAPI:
     @api.post("/v1/chat", response_model=ChatResult)
     async def chat(request: ChatRequest) -> ChatResult:
         try:
+            if request.knowledge_mode == "required":
+                if request.knowledge_base_id is None:
+                    raise KnowledgeError("knowledge_base_not_found")
+                rag = await create_knowledge_service().answer(
+                    request.knowledge_base_id,
+                    request.message,
+                    provider_name=request.provider,
+                    model=request.model,
+                )
+                application = create_application()
+                session_id = (
+                    application.store.ensure_session(request.session_id)
+                    if hasattr(application, "store")
+                    else request.session_id or uuid4()
+                )
+                turn_id = uuid4()
+                if hasattr(application, "store"):
+                    application.store.add_message(
+                        session_id,
+                        turn_id,
+                        Message(role="user", content=request.message),
+                    )
+                    application.store.add_message(
+                        session_id,
+                        turn_id,
+                        Message(
+                            role="assistant",
+                            content=rag.answer,
+                            metadata={
+                                "knowledge_mode": "required",
+                                "citations": [
+                                    item.model_dump(mode="json")
+                                    for item in rag.citations
+                                ],
+                            },
+                        ),
+                    )
+                return ChatResult(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    content=rag.answer,
+                    provider=request.provider
+                    or get_settings().model.default_provider,
+                    model=request.model or get_settings().model.default_model,
+                    knowledge_mode="required",
+                    claims=[
+                        item.model_dump(mode="json") for item in rag.claims
+                    ],
+                    citations=[
+                        item.model_dump(mode="json") for item in rag.citations
+                    ],
+                    refusal_reason=rag.refusal_reason,
+                )
             return await create_application().chat(
                 content=request.message,
                 session_id=request.session_id,
@@ -668,6 +724,8 @@ def create_api() -> FastAPI:
                 required_tool_name=request.tool,
                 tool_governance_enabled=request.tool_governance_enabled,
             )
+        except KnowledgeError as exc:
+            raise _knowledge_http_error(exc) from exc
         except AgentError as exc:
             raise HTTPException(
                 status_code=exc.http_status,
@@ -676,6 +734,45 @@ def create_api() -> FastAPI:
 
     @api.post("/v1/chat/stream")
     async def chat_stream(request: ChatRequest) -> StreamingResponse:
+        if request.knowledge_mode == "required":
+            async def knowledge_events():
+                try:
+                    result = await chat(request)
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "delta",
+                                "content": result.content,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "done",
+                                "result": result.model_dump(mode="json"),
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+                except HTTPException as exc:
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {"type": "error", "error": exc.detail},
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+            return StreamingResponse(
+                knowledge_events(), media_type="text/event-stream"
+            )
+
         async def events():
             queue: asyncio.Queue[dict | None] = asyncio.Queue()
 

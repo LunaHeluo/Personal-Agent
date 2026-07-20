@@ -18,6 +18,7 @@ def test_primary_navigation_and_knowledge_controls_exist() -> None:
         'aria-live="polite"',
         'id="knowledgeDocumentList"',
         'id="knowledgeChunkPreview"',
+        'id="chatKnowledgeMode"',
     ):
         assert contract in HTML
 
@@ -34,6 +35,7 @@ def test_knowledge_ui_calls_lifecycle_apis_and_uses_safe_rendering() -> None:
         "上传失败",
         "解析或索引失败",
         "删除失败",
+        'payload.knowledge_mode = "required"',
     ):
         assert contract in HTML
     assert "knowledgeDocumentList.innerHTML" not in HTML

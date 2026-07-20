@@ -5,6 +5,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from starter_agent.knowledge.errors import KnowledgeError
 from starter_agent.knowledge.ingestion import KnowledgeIngestionPipeline
 from starter_agent.knowledge.generation import RagGenerator
+from starter_agent.knowledge.evidence import EvidenceSufficiencyGate
 from starter_agent.knowledge.models import (
     IngestionJob,
     KnowledgeBase,
@@ -47,6 +48,7 @@ class KnowledgeApplicationService:
         )
         self.retriever = KnowledgeRetriever(store)
         self.providers = ProviderRegistry(settings)
+        self.evidence_gate = EvidenceSufficiencyGate()
 
     def list_knowledge_bases(self) -> list[KnowledgeBase]:
         return self.store.list_knowledge_bases(self.scope)
@@ -218,9 +220,19 @@ class KnowledgeApplicationService:
             )
             for index, item in enumerate(matches, start=1)
         ]
+        decision = self.evidence_gate.evaluate(question, evidence)
+        if not decision.allowed:
+            return RagAnswer(
+                status="refused",
+                answer="知识库中没有足够证据回答该问题。",
+                refusal_reason=decision.reason,
+            )
         provider_key = provider_name or self.settings.model.default_provider
         generator = RagGenerator(
             self.providers.get(provider_key),
             model or self.settings.model.default_model,
         )
-        return await generator.generate(question, evidence)
+        answer = await generator.generate(question, evidence)
+        if decision.conflict:
+            answer.status = "conflict"
+        return answer

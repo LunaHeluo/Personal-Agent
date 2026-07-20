@@ -980,6 +980,10 @@
               <option value="">使用后端默认</option>
             </select>
           </div>
+          <div class="field">
+            <label for="chatKnowledgeMode">知识库问答</label>
+            <input id="chatKnowledgeMode" type="checkbox">
+          </div>
         </div>
       </header>
 
@@ -1128,6 +1132,7 @@
     const apiBaseInput = document.querySelector("#apiBase");
     const providerSelect = document.querySelector("#providerSelect");
     const modelSelect = document.querySelector("#modelSelect");
+    const chatKnowledgeMode = document.querySelector("#chatKnowledgeMode");
     const statusEl = document.querySelector("#status");
     const tokenBudgetEl = document.querySelector("#tokenBudget");
     const messagesEl = document.querySelector("#messages");
@@ -1561,6 +1566,13 @@
       if (providerSelect.value) payload.provider = providerSelect.value;
       if (modelSelect.value) payload.model = modelSelect.value;
       payload.tool_governance_enabled = state.toolGovernanceEnabled;
+      if (chatKnowledgeMode.checked && activeKnowledgeBaseId) {
+        payload.knowledge_mode = "required";
+        payload.knowledge_base_id = activeKnowledgeBaseId;
+        delete payload.tool;
+      } else {
+        payload.knowledge_mode = "off";
+      }
       return payload;
     }
 
@@ -2483,6 +2495,16 @@
     });
     chatNavButton.addEventListener("click", () => showPrimaryView("chat"));
     knowledgeNavButton.addEventListener("click", () => showPrimaryView("knowledge"));
+    chatKnowledgeMode.addEventListener("change", async () => {
+      if (chatKnowledgeMode.checked && !activeKnowledgeBaseId) {
+        await loadKnowledgeBase();
+      }
+      setStatus(
+        chatKnowledgeMode.checked
+          ? "知识库问答已开启；回答将严格依据已入库资料"
+          : "知识库问答已关闭"
+      );
+    });
 
     async function boot() {
       messagesEl.replaceChildren();
