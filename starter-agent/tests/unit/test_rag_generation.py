@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 
+from starter_agent.domain.errors import ProviderTimeoutError
 from starter_agent.domain.models import ModelResponse
 from starter_agent.knowledge.errors import KnowledgeError
 from starter_agent.knowledge.generation import RagGenerator
@@ -12,17 +13,45 @@ from starter_agent.knowledge.models import Evidence
 class StubProvider:
     name = "stub"
 
-    def __init__(self, content: str | None = None) -> None:
+    def __init__(self, *contents: str) -> None:
+        self.contents = list(contents) or [_valid_payload()]
+        self.fallback_content = self.contents[-1]
+        self.calls = []
         self.tools = None
-        self.content = content
         self.messages = None
 
     async def complete(self, messages, model, tools, **kwargs):
         self.tools = tools
         self.messages = messages
+        self.calls.append(
+            {
+                "messages": messages,
+                "model": model,
+                "tools": tools,
+            }
+        )
+        content = (
+            self.contents.pop(0)
+            if self.contents
+            else self.fallback_content
+        )
         return ModelResponse(
-            content=self.content or _valid_payload(),
+            content=content,
             provider="stub",
+            model=model,
+        )
+
+
+class TimeoutProvider:
+    name = "timeout"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, messages, model, tools, **kwargs):
+        self.calls += 1
+        raise ProviderTimeoutError(
+            provider=self.name,
             model=model,
         )
 
@@ -155,3 +184,159 @@ async def test_generation_rejects_multiple_json_fences() -> None:
         )
 
     assert exc_info.value.code == "generation_invalid_output"
+
+
+@pytest.mark.asyncio
+async def test_valid_first_response_does_not_retry() -> None:
+    provider = StubProvider(_valid_payload())
+
+    answer = await RagGenerator(provider, "test").generate(
+        "会 Python 吗？",
+        [_evidence()],
+    )
+
+    assert answer.status == "answered"
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["tools"] == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_first_response_retries_once() -> None:
+    provider = StubProvider(
+        "我认为候选人熟练 Python。",
+        _valid_payload(),
+    )
+
+    answer = await RagGenerator(provider, "test").generate(
+        "会 Python 吗？",
+        [_evidence()],
+    )
+
+    assert answer.status == "answered"
+    assert len(provider.calls) == 2
+    retry_messages = provider.calls[1]["messages"]
+    retry_prompt = "\n".join(
+        message.content for message in retry_messages
+    )
+    assert "只输出一个 JSON 对象" in retry_prompt
+    assert '"evidence_refs"' in retry_prompt
+    assert '"evidence_id"' in retry_prompt
+    assert '"quote"' in retry_prompt
+    assert "熟练 Python" in retry_prompt
+    assert provider.calls[1]["tools"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_payload",
+    [
+        json.dumps(
+            {
+                "status": "answered",
+                "answer": "候选人熟练 Python。",
+            },
+            ensure_ascii=False,
+        ),
+        json.dumps(
+            {
+                "status": "answered",
+                "answer": "候选人熟练 Python。",
+                "claims": [
+                    {
+                        "text": "候选人熟练 Python。",
+                        "evidence_refs": [
+                            {
+                                "evidence_id": "E1",
+                                "quote": "熟练 Python",
+                            }
+                        ],
+                        "evidence_ids": ["E1"],
+                        "quote": "熟练 Python",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    ],
+)
+async def test_schema_errors_retry_once(
+    invalid_payload: str,
+) -> None:
+    provider = StubProvider(
+        invalid_payload,
+        _valid_payload(),
+    )
+
+    answer = await RagGenerator(provider, "test").generate(
+        "会 Python 吗？",
+        [_evidence()],
+    )
+
+    assert answer.status == "answered"
+    assert len(provider.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_second_invalid_response_does_not_call_third_time() -> None:
+    provider = StubProvider(
+        "first invalid response",
+        "second invalid response",
+    )
+
+    with pytest.raises(KnowledgeError) as error:
+        await RagGenerator(provider, "test").generate(
+            "会 Python 吗？",
+            [_evidence()],
+        )
+
+    assert error.value.code == "generation_invalid_output"
+    assert len(provider.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_provider_error_is_not_retried() -> None:
+    provider = TimeoutProvider()
+
+    with pytest.raises(ProviderTimeoutError):
+        await RagGenerator(provider, "test").generate(
+            "会 Python 吗？",
+            [_evidence()],
+        )
+
+    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reference",
+    [
+        {"evidence_id": "E2", "quote": "熟练 Python"},
+        {"evidence_id": "E1", "quote": "改写后的 Python 能力"},
+    ],
+)
+async def test_citation_error_is_not_retried(
+    reference: dict[str, str],
+) -> None:
+    payload = json.dumps(
+        {
+            "status": "answered",
+            "answer": "候选人熟练 Python。",
+            "claims": [
+                {
+                    "text": "候选人熟练 Python。",
+                    "evidence_refs": [reference],
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    provider = StubProvider(payload)
+
+    with pytest.raises(KnowledgeError) as error:
+        await RagGenerator(provider, "test").generate(
+            "会 Python 吗？",
+            [_evidence()],
+        )
+
+    assert error.value.code == "citation_validation_failed"
+    assert len(provider.calls) == 1
