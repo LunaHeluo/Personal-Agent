@@ -12,8 +12,18 @@ from starter_agent.settings import AgentSettings
 class CrossDocumentProvider:
     name = "cross-document"
 
+    def __init__(self) -> None:
+        self.calls = 0
+
     async def complete(self, messages, model, tools, **kwargs):
         assert tools == []
+        self.calls += 1
+        if self.calls == 1:
+            return ModelResponse(
+                content="候选人的 Agent 经历符合岗位要求。",
+                provider=self.name,
+                model=model,
+            )
         return ModelResponse(
             content=json.dumps(
                 {
@@ -137,7 +147,8 @@ def test_comparison_coverage_respects_filters_and_top_k() -> None:
 async def test_cross_document_answer_validates_each_quote_and_keeps_legacy_fields() -> None:
     service = _service()
     _upload_comparison_documents(service)
-    service.providers.get = lambda _name: CrossDocumentProvider()
+    provider = CrossDocumentProvider()
+    service.providers.get = lambda _name: provider
 
     answer = await service.answer(
         service.default_knowledge_base_id,
@@ -159,3 +170,13 @@ async def test_cross_document_answer_validates_each_quote_and_keeps_legacy_field
             "quote": "需要大模型应用和 Agent 平台开发经验",
         },
     ]
+    assert provider.calls == 2
+    evidence_text_by_filename = {
+        "resume.md": "负责 AI Agent 平台和大语言模型应用开发。",
+        "agent-jd.md": "需要大模型应用和 Agent 平台开发经验。",
+    }
+    assert all(
+        citation.quote
+        in evidence_text_by_filename[citation.filename]
+        for citation in answer.citations
+    )
