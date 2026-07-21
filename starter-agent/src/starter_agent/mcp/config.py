@@ -17,7 +17,48 @@ _SECRET_ARGUMENT = re.compile(
     r"(?:api[_-]?key|authorization|bearer|cookie|credential|pass(?:word|wd)?|secret|token)",
     flags=re.IGNORECASE,
 )
-_SECRET_VALUE = re.compile(r"(?:sk-[A-Za-z0-9_-]{8,}|eyJ[A-Za-z0-9_-]{8,})")
+_SECRET_VALUE = re.compile(
+    r"(?:"
+    r"sk-(?:proj-)?[A-Za-z0-9_-]{8,}"
+    r"|eyJ[A-Za-z0-9_-]{8,}"
+    r"|gh[pousr]_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|(?:AKIA|ASIA)[A-Z0-9]{16}"
+    r"|AIza[A-Za-z0-9_-]{35}"
+    r"|xox[baprs]-[A-Za-z0-9-]{10,}"
+    r"|(?:https?|wss?)://[^/\s:@]+:[^/\s@]+@"
+    r"|\bbasic\s+[A-Za-z0-9+/]{8,}={0,2}"
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    r")",
+    flags=re.IGNORECASE,
+)
+_DANGEROUS_ENVIRONMENT_NAMES = frozenset(
+    {
+        "BASH_ENV",
+        "CDPATH",
+        "ENV",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "JAVA_TOOL_OPTIONS",
+        "NODE_OPTIONS",
+        "NODE_PATH",
+        "NPM_CONFIG_GLOBALCONFIG",
+        "NPM_CONFIG_PREFIX",
+        "NPM_CONFIG_REGISTRY",
+        "NPM_CONFIG_USERCONFIG",
+        "PERL5OPT",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "RUBYOPT",
+        "_JAVA_OPTIONS",
+    }
+)
+_DANGEROUS_ENVIRONMENT_PREFIXES = (
+    "DYLD_",
+    "GIT_CONFIG_",
+    "LD_",
+    "NPM_CONFIG_",
+)
 
 
 class McpConfigError(ConfigurationError):
@@ -67,7 +108,41 @@ class McpServerConfig(BaseModel):
     ) -> tuple[str, ...]:
         if any(not _ENVIRONMENT_NAME.fullmatch(value) for value in values):
             raise ValueError("MCP env accepts environment names only")
+        for value in values:
+            normalized = value.upper()
+            if _SECRET_ARGUMENT.search(normalized):
+                raise ValueError("MCP env rejects sensitive environment names")
+            if normalized in _DANGEROUS_ENVIRONMENT_NAMES or normalized.startswith(
+                _DANGEROUS_ENVIRONMENT_PREFIXES
+            ):
+                raise ValueError("MCP env rejects dangerous process environment names")
         return tuple(sorted(set(values)))
+
+
+class _FrozenServerMap(dict[str, McpServerConfig]):
+    def __init__(self, value: dict[str, McpServerConfig]):
+        dict.__init__(self)
+        for key, server in value.items():
+            dict.__setitem__(self, key, server)
+
+    @staticmethod
+    def _immutable(*_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("MCP server maps are immutable")
+
+    __delitem__ = _immutable
+    __ior__ = _immutable
+    __setitem__ = _immutable
+    clear = _immutable
+    pop = _immutable
+    popitem = _immutable
+    setdefault = _immutable
+    update = _immutable
+
+    def __copy__(self) -> "_FrozenServerMap":
+        return self
+
+    def __deepcopy__(self, _memo: dict[int, Any]) -> "_FrozenServerMap":
+        return self
 
 
 class McpConfiguration(BaseModel):
@@ -76,6 +151,13 @@ class McpConfiguration(BaseModel):
     source_path: Path
     servers: dict[str, McpServerConfig]
     config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("servers")
+    @classmethod
+    def freeze_servers(
+        cls, values: dict[str, McpServerConfig]
+    ) -> dict[str, McpServerConfig]:
+        return _FrozenServerMap(values)
 
 
 class McpConfigLoader:

@@ -3,7 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from starter_agent.mcp.config import McpConfigError, McpConfigLoader
+from starter_agent.mcp.config import (
+    McpConfigError,
+    McpConfigLoader,
+    McpConfiguration,
+    McpServerConfig,
+)
 from starter_agent.settings import load_settings
 
 
@@ -112,3 +117,122 @@ def test_rejects_cwd_escape_unknown_fields_and_control_characters(
         _write_config(path, {"mcpServers": {"unsafe": server}})
         with pytest.raises(McpConfigError):
             loader.load(path)
+
+
+@pytest.mark.parametrize(
+    "environment_name",
+    [
+        "NODE_OPTIONS",
+        "NPM_CONFIG_USERCONFIG",
+        "AWS_SECRET_ACCESS_KEY",
+    ],
+)
+def test_rejects_dangerous_process_environment_names(
+    tmp_path: Path,
+    environment_name: str,
+) -> None:
+    path = tmp_path / "mcp.json"
+    _write_config(
+        path,
+        {
+            "mcpServers": {
+                "unsafe": {
+                    "command": "npx",
+                    "env": [environment_name],
+                }
+            }
+        },
+    )
+
+    with pytest.raises(McpConfigError, match="dangerous|sensitive"):
+        McpConfigLoader(tmp_path).load(path)
+
+
+@pytest.mark.parametrize(
+    "secret_value",
+    [
+        "ghp_" + "A" * 36,
+        "AKIA" + "A" * 16,
+        "https://user:password@example.test/job",
+        "Basic dXNlcjpwYXNzd29yZA==",
+    ],
+)
+def test_rejects_high_confidence_secret_shapes(
+    tmp_path: Path,
+    secret_value: str,
+) -> None:
+    path = tmp_path / "mcp.json"
+    _write_config(
+        path,
+        {
+            "mcpServers": {
+                "unsafe": {
+                    "command": "npx",
+                    "args": [secret_value],
+                }
+            }
+        },
+    )
+
+    with pytest.raises(McpConfigError, match="secret"):
+        McpConfigLoader(tmp_path).load(path)
+
+
+def test_allows_playwright_package_and_non_sensitive_environment_names(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "mcp.json"
+    _write_config(
+        path,
+        {
+            "mcpServers": {
+                "playwright": {
+                    "command": "npx",
+                    "args": ["@playwright/mcp@latest"],
+                    "env": ["PLAYWRIGHT_BROWSERS_PATH", "LANG"],
+                }
+            }
+        },
+    )
+
+    config = McpConfigLoader(tmp_path).load(path)
+
+    assert config.servers["playwright"].args == ("@playwright/mcp@latest",)
+    assert config.servers["playwright"].env == (
+        "LANG",
+        "PLAYWRIGHT_BROWSERS_PATH",
+    )
+
+
+def test_loaded_config_is_defensively_copied_immutable_and_round_trips(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "mcp.json"
+    _write_config(
+        path,
+        {
+            "mcpServers": {
+                "playwright": {
+                    "command": "npx",
+                    "args": ["@playwright/mcp@latest"],
+                    "env": ["LANG"],
+                }
+            }
+        },
+    )
+    config = McpConfigLoader(tmp_path).load(path)
+    original_hash = config.config_hash
+    args = ["@playwright/mcp@latest"]
+    env = ["LANG"]
+    server = McpServerConfig(command="npx", args=args, env=env)
+    args.append("mutated")
+    env.append("MUTATED")
+
+    with pytest.raises(TypeError):
+        config.servers["mutated"] = server
+
+    assert "mutated" not in config.servers
+    assert config.config_hash == original_hash
+    assert server.args == ("@playwright/mcp@latest",)
+    assert server.env == ("LANG",)
+    assert McpConfiguration.model_validate_json(config.model_dump_json()) == config

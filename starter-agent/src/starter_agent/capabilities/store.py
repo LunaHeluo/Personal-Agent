@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -85,6 +86,14 @@ class CapabilitySnapshotRow(CapabilityBase):
     stale: Mapped[bool] = mapped_column(Boolean, index=True)
     active: Mapped[bool] = mapped_column(Boolean, index=True)
     payload_json: Mapped[str] = mapped_column(Text)
+
+
+ACTIVE_SNAPSHOT_INDEX = Index(
+    "uq_mcp_capability_snapshots_server_active",
+    CapabilitySnapshotRow.server_id,
+    unique=True,
+    sqlite_where=CapabilitySnapshotRow.active.is_(True),
+)
 
 
 class McpToolRow(CapabilityBase):
@@ -230,6 +239,7 @@ class CapabilityStore:
                 cursor.close()
 
         CapabilityBase.metadata.create_all(self.engine)
+        ACTIVE_SNAPSHOT_INDEX.create(self.engine, checkfirst=True)
 
     def close(self) -> None:
         self.engine.dispose()
@@ -310,6 +320,8 @@ class CapabilityStore:
         resources: Iterable[Resource] = (),
         prompts: Iterable[Prompt] = (),
     ) -> Snapshot:
+        if snapshot.active:
+            raise ValueError("Snapshots must be created inactive and activated explicitly")
         tool_items = tuple(tools)
         resource_items = tuple(resources)
         prompt_items = tuple(prompts)
@@ -394,21 +406,23 @@ class CapabilityStore:
                     CapabilitySnapshotRow.server_id == server_id
                 )
             ).all()
-            selected: Snapshot | None = None
             for row in rows:
                 current = Snapshot.model_validate_json(row.payload_json)
-                active = row.id == snapshot_id
-                if current.active != active:
-                    current = Snapshot.model_validate(
-                        {**current.model_dump(mode="python"), "active": active}
+                if current.active:
+                    inactive = Snapshot.model_validate(
+                        {**current.model_dump(mode="python"), "active": False}
                     )
-                    row.active = active
-                    row.payload_json = current.model_dump_json()
-                if active:
-                    selected = current
+                    row.active = False
+                    row.payload_json = inactive.model_dump_json()
+            db.flush()
+            target_current = Snapshot.model_validate_json(target.payload_json)
+            selected = Snapshot.model_validate(
+                {**target_current.model_dump(mode="python"), "active": True}
+            )
+            target.active = True
+            target.payload_json = selected.model_dump_json()
+            db.flush()
             db.commit()
-            if selected is None:
-                raise RecordNotFoundError(f"Snapshot not found: {snapshot_id}")
             return selected
 
     def list_tools(self, snapshot_id: str) -> list[Tool]:
@@ -545,7 +559,8 @@ class CapabilityStore:
             current = Confirmation.model_validate_json(row.payload_json)
             if current.status != "pending":
                 if (
-                    current.idempotency_key_hash == key_hash
+                    expected_revision == current.revision - 1
+                    and current.idempotency_key_hash == key_hash
                     and current.decision == decision
                 ):
                     return current
@@ -558,14 +573,14 @@ class CapabilityStore:
                         **current.model_dump(mode="python"),
                         "status": "expired",
                         "decided_at": now,
-                        "revision": current.revision + 1,
+                        "revision": expected_revision + 1,
                     }
                 )
                 result = db.execute(
                     update(ConfirmationRow)
                     .where(
                         ConfirmationRow.id == confirmation_id,
-                        ConfirmationRow.revision == current.revision,
+                        ConfirmationRow.revision == expected_revision,
                         ConfirmationRow.status == "pending",
                     )
                     .values(
@@ -615,6 +630,7 @@ class CapabilityStore:
                     and latest.idempotency_key_hash == key_hash
                     and latest.decision == decision
                     and latest.status != "pending"
+                    and expected_revision == latest.revision - 1
                 ):
                     return latest
                 raise RevisionConflictError(
