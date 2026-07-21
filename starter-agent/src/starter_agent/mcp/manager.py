@@ -131,6 +131,8 @@ class McpManager:
     async def connect(self, server_id: str) -> Server:
         handle = self.get_handle(server_id)
         async with handle.connect_lock:
+            if not self._accepting or not handle.accepting:
+                return handle.status
             if handle.session is not None:
                 return handle.status
             started_at = datetime.now(UTC)
@@ -176,6 +178,9 @@ class McpManager:
                     message=str(exc),
                     transport_closed=True,
                 )
+            if not self._accepting or not handle.accepting:
+                await self._drain_and_close_locked(handle)
+                return handle.status
             return self._update(
                 handle,
                 connection_state="ready",
@@ -233,6 +238,12 @@ class McpManager:
                 handle.drain_event.set()
 
     async def _drain_and_close(self, handle: ServerHandle) -> str | None:
+        async with handle.connect_lock:
+            return await self._drain_and_close_locked(handle)
+
+    async def _drain_and_close_locked(
+        self, handle: ServerHandle
+    ) -> str | None:
         error_code: str | None = None
         try:
             async with asyncio.timeout(self.shutdown_timeout_seconds):

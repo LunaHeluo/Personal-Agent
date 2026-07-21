@@ -47,6 +47,27 @@ class _ManagedClient:
         self.session = None
 
 
+class _BlockingManagedClient(_ManagedClient):
+    def __init__(self, server_id: str) -> None:
+        super().__init__(server_id)
+        self.connect_started = asyncio.Event()
+        self.release_connect = asyncio.Event()
+
+    async def connect(self) -> ClientMetadata:
+        self.connect_count += 1
+        self.connect_started.set()
+        await self.release_connect.wait()
+        self.session = self._session
+        return ClientMetadata(
+            protocol_version="2025-06-18",
+            runtime_name=f"fixture-{self.server_id}",
+            runtime_version="1.0.1",
+            node_version="v22.1.0",
+            npx_version="10.8.0",
+            started_at=datetime.now(UTC),
+        )
+
+
 def _configuration(tmp_path: Path) -> McpConfiguration:
     return McpConfiguration(
         source_path=tmp_path / "mcp.json",
@@ -204,3 +225,59 @@ def test_api_lifespan_keeps_base_agent_available_when_mcp_start_fails(
 
     assert response.status_code == 200
     assert manager.shutdown_called is True
+
+
+def test_api_lifespan_uses_controlled_manager_in_test_suite(
+    mcp_test_manager,
+) -> None:
+    with TestClient(api_module.create_api()) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert mcp_test_manager.start_count == 1
+    assert mcp_test_manager.shutdown_count == 1
+
+
+@pytest.mark.asyncio
+async def test_close_serializes_with_connect_and_cannot_bounce_back_ready(
+    tmp_path: Path,
+) -> None:
+    clients: dict[str, _ManagedClient] = {}
+
+    def factory(server_id: str, _config: McpServerConfig):
+        client = (
+            _BlockingManagedClient(server_id)
+            if server_id == "alpha"
+            else _ManagedClient(server_id)
+        )
+        clients[server_id] = client
+        return client
+
+    manager = McpManager(
+        _configuration(tmp_path),
+        client_factory=factory,
+        initialize_timeout_seconds=1,
+        shutdown_timeout_seconds=0.2,
+    )
+    alpha = clients["alpha"]
+    assert isinstance(alpha, _BlockingManagedClient)
+    connect_task = asyncio.create_task(manager.connect("alpha"))
+    await alpha.connect_started.wait()
+
+    close_task = asyncio.create_task(manager.close("alpha"))
+    await asyncio.sleep(0)
+    close_finished_while_connecting = close_task.done()
+    alpha.release_connect.set()
+    await asyncio.gather(connect_task, close_task)
+    raced_state = manager.get_status("alpha").connection_state
+    raced_session = alpha.session
+
+    await manager.close("alpha")
+
+    assert close_finished_while_connecting is False
+    assert raced_state == "closed"
+    assert raced_session is None
+    with pytest.raises(McpManagerError) as raised:
+        async with manager.lease("alpha"):
+            pass
+    assert raised.value.code == "manager_draining"

@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import shutil
+import threading
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -87,34 +88,81 @@ class SafeStderrTail:
         self.max_chars = max_chars
         self._tail = ""
         self._pending = ""
+        read_fd, write_fd = os.pipe()
+        self._reader = os.fdopen(read_fd, "rb", buffering=0)
+        self._writer = os.fdopen(
+            write_fd,
+            "w",
+            encoding="utf-8",
+            errors="replace",
+            buffering=1,
+        )
+        self._reader_task: asyncio.Task[None] | None = None
+        self._lock = threading.Lock()
+
+    def start(self) -> None:
+        if self._reader_task is None:
+            self._reader_task = asyncio.create_task(
+                asyncio.to_thread(self._drain_pipe)
+            )
 
     def write(self, value: str) -> int:
         if not isinstance(value, str):
             raise TypeError("stderr sink accepts text only")
-        self._pending += value
-        while "\n" in self._pending:
-            line, self._pending = self._pending.split("\n", 1)
-            self._append(redact_runtime_text(f"{line}\n", max_chars=self.max_chars))
-        if len(self._pending) > self.max_chars * 2:
-            self._append(
-                redact_runtime_text(self._pending, max_chars=self.max_chars)
-            )
-            self._pending = ""
-        return len(value)
+        return self._writer.write(value)
 
     def flush(self) -> None:
-        return None
+        self._writer.flush()
+
+    def fileno(self) -> int:
+        return self._writer.fileno()
 
     def writable(self) -> bool:
         return True
 
+    async def close(self) -> None:
+        if not self._writer.closed:
+            self._writer.close()
+        if self._reader_task is not None:
+            await self._reader_task
+        elif not self._reader.closed:
+            self._reader.close()
+
     @property
     def summary(self) -> str:
-        pending = redact_runtime_text(self._pending, max_chars=self.max_chars)
-        return f"{self._tail}{pending}"[-self.max_chars :]
+        with self._lock:
+            pending = redact_runtime_text(
+                self._pending, max_chars=self.max_chars
+            )
+            return f"{self._tail}{pending}"[-self.max_chars :]
 
     def _append(self, value: str) -> None:
         self._tail = f"{self._tail}{value}"[-self.max_chars :]
+
+    def _drain_pipe(self) -> None:
+        try:
+            while chunk := self._reader.read(4_096):
+                self._ingest(chunk.decode("utf-8", errors="replace"))
+        finally:
+            self._reader.close()
+
+    def _ingest(self, value: str) -> None:
+        with self._lock:
+            self._pending += value
+            while "\n" in self._pending:
+                line, self._pending = self._pending.split("\n", 1)
+                self._append(
+                    redact_runtime_text(
+                        f"{line}\n", max_chars=self.max_chars
+                    )
+                )
+            if len(self._pending) > self.max_chars * 2:
+                self._append(
+                    redact_runtime_text(
+                        self._pending, max_chars=self.max_chars
+                    )
+                )
+                self._pending = ""
 
 
 def _resolve_executable(name: str) -> str | None:
@@ -168,10 +216,15 @@ class McpClient:
         self._version_probe = version_probe
         self._transport_factory = transport_factory
         self._session_factory = session_factory
-        self._stderr = SafeStderrTail(stderr_max_chars)
-        self._stack: AsyncExitStack | None = None
+        self._stderr_max_chars = stderr_max_chars
+        self._stderr: SafeStderrTail | None = None
         self._session: Any | None = None
         self._metadata: ClientMetadata | None = None
+        self._owner_task: asyncio.Task[None] | None = None
+        self._ready: asyncio.Future[ClientMetadata] | None = None
+        self._close_signal: asyncio.Event | None = None
+        self._owner_failure: McpClientError | None = None
+        self._lifecycle_lock = asyncio.Lock()
 
     @property
     def session(self) -> Any | None:
@@ -183,48 +236,124 @@ class McpClient:
 
     @property
     def stderr_summary(self) -> str:
-        return self._stderr.summary
+        return "" if self._stderr is None else self._stderr.summary
 
     async def connect(self) -> ClientMetadata:
-        if self._stack is not None:
-            raise McpClientError("already_connected")
-        candidate = AsyncExitStack()
-        await candidate.__aenter__()
-        started_at = datetime.now(UTC)
-        stage = "preflight"
+        async with self._lifecycle_lock:
+            if self._session is not None and self._metadata is not None:
+                return self._metadata
+            self._discard_finished_owner_locked()
+            if self._owner_task is None:
+                loop = asyncio.get_running_loop()
+                self._stderr = SafeStderrTail(self._stderr_max_chars)
+                self._ready = loop.create_future()
+                self._close_signal = asyncio.Event()
+                self._owner_failure = None
+                self._owner_task = asyncio.create_task(
+                    self._run_lifecycle_owner(
+                        self._ready,
+                        self._close_signal,
+                        self._stderr,
+                    ),
+                    name="mcp-client-lifecycle",
+                )
+            owner = self._owner_task
+            ready = self._ready
+        assert owner is not None
+        assert ready is not None
         try:
-            async with asyncio.timeout(self.initialize_timeout_seconds):
-                node = self._executable_resolver("node")
-                if node is None:
-                    raise McpClientError("node_not_found")
-                npx = self._executable_resolver("npx")
-                if npx is None:
-                    raise McpClientError("npx_not_found")
-                node_version, npx_version = await asyncio.gather(
-                    self._version_probe(node),
-                    self._version_probe(npx),
-                )
-                environment = {
-                    name: os.environ[name]
-                    for name in self.config.env
-                    if name in os.environ
-                }
-                parameters = StdioServerParameters(
-                    command=self.config.command,
-                    args=list(self.config.args),
-                    cwd=self.config.cwd,
-                    env=environment if self.config.env else None,
-                )
-                stage = "transport"
-                read_stream, write_stream = await candidate.enter_async_context(
-                    self._transport_factory(parameters, self._stderr)
-                )
-                stage = "session"
-                session = await candidate.enter_async_context(
-                    self._session_factory(read_stream, write_stream)
-                )
-                stage = "initialize"
-                result = await session.initialize()
+            return await asyncio.shield(ready)
+        except asyncio.CancelledError:
+            await self._cancel_owner(owner)
+            if ready.done() and not ready.cancelled():
+                ready.exception()
+            raise
+
+    async def close(self) -> None:
+        async with self._lifecycle_lock:
+            owner = self._owner_task
+            close_signal = self._close_signal
+            if owner is None:
+                return
+            if close_signal is not None:
+                close_signal.set()
+            if self._session is None and not owner.done():
+                owner.cancel()
+        try:
+            async with asyncio.timeout(self.close_timeout_seconds):
+                await asyncio.shield(owner)
+        except asyncio.CancelledError:
+            await self._cancel_owner(owner)
+            await self._clear_owner(owner)
+            raise
+        except TimeoutError as exc:
+            await self._cancel_owner(owner)
+            await self._clear_owner(owner)
+            raise McpClientError(
+                "close_timeout",
+                "MCP close exceeded its timeout",
+                transport_closed=True,
+            ) from exc
+        failure = self._owner_failure
+        await self._clear_owner(owner)
+        if failure is not None:
+            raise failure
+
+    async def _run_lifecycle_owner(
+        self,
+        ready: asyncio.Future[ClientMetadata],
+        close_signal: asyncio.Event,
+        stderr: SafeStderrTail,
+    ) -> None:
+        stage = "preflight"
+        failure: McpClientError | None = None
+        started_at = datetime.now(UTC)
+        stderr.start()
+        try:
+            async with AsyncExitStack() as stack:
+                try:
+                    async with asyncio.timeout(
+                        self.initialize_timeout_seconds
+                    ):
+                        node = self._executable_resolver("node")
+                        if node is None:
+                            raise McpClientError("node_not_found")
+                        npx = self._executable_resolver("npx")
+                        if npx is None:
+                            raise McpClientError("npx_not_found")
+                        node_version, npx_version = await asyncio.gather(
+                            self._version_probe(node),
+                            self._version_probe(npx),
+                        )
+                        environment = {
+                            name: os.environ[name]
+                            for name in self.config.env
+                            if name in os.environ
+                        }
+                        parameters = StdioServerParameters(
+                            command=self.config.command,
+                            args=list(self.config.args),
+                            cwd=self.config.cwd,
+                            env=environment if self.config.env else None,
+                        )
+                        stage = "transport"
+                        read_stream, write_stream = (
+                            await stack.enter_async_context(
+                                self._transport_factory(parameters, stderr)
+                            )
+                        )
+                        stage = "session"
+                        session = await stack.enter_async_context(
+                            self._session_factory(read_stream, write_stream)
+                        )
+                        stage = "initialize"
+                        result = await session.initialize()
+                except TimeoutError as exc:
+                    raise McpClientError(
+                        "initialize_timeout",
+                        "MCP initialize exceeded its timeout",
+                        transport_closed=stage != "preflight",
+                    ) from exc
                 server_info = result.serverInfo
                 metadata = ClientMetadata(
                     protocol_version=str(result.protocolVersion),
@@ -236,62 +365,76 @@ class McpClient:
                     npx_version=_safe_version(npx_version),
                     started_at=started_at,
                 )
+                self._session = session
+                self._metadata = metadata
+                ready.set_result(metadata)
+                stage = "ready"
+                await close_signal.wait()
         except asyncio.CancelledError:
-            await self._cleanup_candidate(candidate)
-            raise
-        except TimeoutError as exc:
-            await self._cleanup_candidate(candidate)
-            raise McpClientError(
-                "initialize_timeout",
-                "MCP initialize exceeded its timeout",
+            failure = McpClientError(
+                "connect_closed",
+                "MCP lifecycle closed before initialize completed",
                 transport_closed=stage != "preflight",
-            ) from exc
-        except McpClientError:
-            await self._cleanup_candidate(candidate)
-            raise
+            )
+        except McpClientError as exc:
+            failure = exc
         except BaseException as exc:
-            await self._cleanup_candidate(candidate)
-            code = "transport_error" if stage == "transport" else "initialize_error"
-            raise McpClientError(
+            if ready.done():
+                code = "close_error"
+            else:
+                code = (
+                    "transport_error"
+                    if stage == "transport"
+                    else "initialize_error"
+                )
+            failure = McpClientError(
                 code,
                 redact_runtime_text(str(exc), max_chars=500),
                 transport_closed=stage != "preflight",
-            ) from exc
-        self._stack = candidate
-        self._session = session
-        self._metadata = metadata
-        return metadata
+            )
+        finally:
+            self._session = None
+            try:
+                await stderr.close()
+            except BaseException as exc:
+                failure = failure or McpClientError(
+                    "close_error",
+                    redact_runtime_text(str(exc), max_chars=500),
+                    transport_closed=True,
+                )
+            if failure is not None:
+                if not ready.done():
+                    ready.set_exception(failure)
+                else:
+                    self._owner_failure = failure
+            elif not ready.done():
+                ready.set_exception(
+                    McpClientError(
+                        "connect_closed",
+                        transport_closed=stage != "preflight",
+                    )
+                )
 
-    async def close(self) -> None:
-        stack = self._stack
-        self._stack = None
-        self._session = None
-        if stack is None:
-            return
+    async def _cancel_owner(self, owner: asyncio.Task[None]) -> None:
+        if not owner.done():
+            owner.cancel()
         try:
             async with asyncio.timeout(self.close_timeout_seconds):
-                await stack.aclose()
-        except asyncio.CancelledError:
-            raise
-        except TimeoutError as exc:
-            raise McpClientError(
-                "close_timeout",
-                "MCP close exceeded its timeout",
-                transport_closed=True,
-            ) from exc
-        except BaseException as exc:
-            raise McpClientError(
-                "close_error",
-                redact_runtime_text(str(exc), max_chars=500),
-                transport_closed=True,
-            ) from exc
-
-    async def _cleanup_candidate(self, stack: AsyncExitStack) -> None:
-        self._session = None
-        try:
-            async with asyncio.timeout(self.close_timeout_seconds):
-                await stack.aclose()
-        except BaseException:
-            # The original connect error remains authoritative. AsyncExitStack
-            # still invokes remaining callbacks when one callback fails.
+                await asyncio.shield(owner)
+        except (asyncio.CancelledError, TimeoutError):
             pass
+
+    async def _clear_owner(self, owner: asyncio.Task[None]) -> None:
+        async with self._lifecycle_lock:
+            if self._owner_task is owner:
+                self._owner_task = None
+                self._ready = None
+                self._close_signal = None
+                self._owner_failure = None
+
+    def _discard_finished_owner_locked(self) -> None:
+        if self._owner_task is not None and self._owner_task.done():
+            self._owner_task = None
+            self._ready = None
+            self._close_signal = None
+            self._owner_failure = None

@@ -12,6 +12,29 @@ from starter_agent.tools.policy import ToolPolicy
 from starter_agent.tools.registry import ToolRegistry
 
 
+class ControlledMcpManager:
+    def __init__(self) -> None:
+        self.start_count = 0
+        self.shutdown_count = 0
+
+    async def start(self) -> dict[str, object]:
+        self.start_count += 1
+        return {}
+
+    async def shutdown(self) -> dict[str, str]:
+        self.shutdown_count += 1
+        return {}
+
+
+@pytest.fixture(autouse=True)
+def mcp_test_manager(monkeypatch) -> ControlledMcpManager:
+    from starter_agent.interfaces import api as api_module
+
+    manager = ControlledMcpManager()
+    monkeypatch.setattr(api_module, "create_mcp_manager", lambda: manager)
+    return manager
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> AgentSettings:
     loaded = load_settings("config/config.example.yaml")

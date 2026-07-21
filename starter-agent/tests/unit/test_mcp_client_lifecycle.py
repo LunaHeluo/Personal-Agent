@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+import sys
 
 import pytest
 from mcp import StdioServerParameters
@@ -7,6 +8,11 @@ from mcp.types import Implementation, InitializeResult, ServerCapabilities
 
 from starter_agent.mcp.client import McpClient, McpClientError
 from starter_agent.mcp.config import McpServerConfig
+
+
+FIXTURE_SERVER = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "mcp" / "stdio_server.py"
+)
 
 
 class _Transport:
@@ -216,3 +222,23 @@ async def test_missing_runtime_has_stable_error_code(
         await client.connect()
 
     assert raised.value.code == expected_code
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_stdio_lifecycle_closes_in_its_owner_task() -> None:
+    client = McpClient(
+        McpServerConfig(command=sys.executable, args=(str(FIXTURE_SERVER),)),
+        initialize_timeout_seconds=10,
+        close_timeout_seconds=5,
+        executable_resolver=_resolver,
+        version_probe=_version_probe,
+    )
+
+    metadata = await asyncio.wait_for(
+        asyncio.create_task(client.connect()), timeout=12
+    )
+
+    assert metadata.runtime_name == "fixture-mcp"
+    assert client.session is not None
+    await asyncio.wait_for(asyncio.create_task(client.close()), timeout=7)
+    assert client.session is None
