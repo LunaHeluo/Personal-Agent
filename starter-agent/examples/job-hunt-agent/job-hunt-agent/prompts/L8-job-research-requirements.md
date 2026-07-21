@@ -11,6 +11,7 @@
 - Browser MCP 负责访问允许的公开链接，读取完整 JD 页面内容。
 - 现有 RAG 检索能力负责从用户简历中取回可引用证据。
 - `job-research` Skill 负责规定何时调用这些能力、按什么顺序工作、怎样验证以及失败时怎样停下。
+- 对于获取完整JD内容后，用户确认之后，需要进入知识库
 
 Browser MCP 明确使用 Playwright MCP，项目需要兼容并接入以下配置：
 
@@ -32,6 +33,7 @@ MCP 管理与 Tool 权限必须满足以下规则：
 - 支持按 Server 级别单独刷新。刷新某一个 MCP Server 时，重新发现该 Server 的 Tools / Resources / Prompts、Schema、版本与健康状态；不得要求刷新全部 Server，也不得影响其他 Server 的连接和运行中任务。
 - Server 与 Tool 都有明确的启用状态。关闭的 Server、关闭的 Tool 只能在模型可见的轻量能力目录中保留名称和启用状态，不得作为 callable tool 暴露，也不得把完整 Description、Input Schema 或其他全量定义加入模型 Context。
 - 只有已连接、已启用且通过审查的 Tool，才允许把完整 Name、Description 和 Input Schema 放入模型可调用工具列表。启停或刷新后，下一轮模型请求必须使用最新快照。
+- 对于没有通过评审的，则需要在pre tool call阶段进行用户确认(在用户chat界面出现确认按钮确认，用户确认之前，chat阻塞等待)
 - Tool Call 真正发往 MCP Server 之前必须经过统一的 Pre-Tool-Call Gate。Gate 至少检查 Server / Tool 启用状态、参数 Schema、域名或资源范围、权限策略、白名单、强制人工确认规则和待外发数据。
 - 白名单内且没有命中强制确认规则的调用可以自动执行；不在白名单的调用必须暂停，在对话中显示确认卡片，用户点击后才允许执行。
 - 确认卡至少提供「仅本次执行」「执行并加入白名单」「取消」；若调用属于强制人工确认动作，则不得通过加入白名单绕过，以后每次仍需确认。
