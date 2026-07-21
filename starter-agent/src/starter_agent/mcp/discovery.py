@@ -283,6 +283,23 @@ async def discover_and_activate(
     server_id: str,
     reserved_model_names: Iterable[str] = (),
 ) -> Snapshot:
+    snapshot = await discover_candidate(
+        store,
+        session,
+        server_id=server_id,
+        reserved_model_names=reserved_model_names,
+    )
+    return store.activate_snapshot(server_id, snapshot.id)
+
+
+async def discover_candidate(
+    store: CapabilityStore,
+    session: Any,
+    *,
+    server_id: str,
+    reserved_model_names: Iterable[str] = (),
+) -> Snapshot:
+    """Validate and persist an inactive snapshot for a candidate client."""
     version = store.next_snapshot_version(server_id)
     bundle = await collect_capabilities(
         session,
@@ -297,4 +314,4 @@ async def discover_and_activate(
         resources=bundle.resources,
         prompts=bundle.prompts,
     )
-    return store.activate_snapshot(server_id, bundle.snapshot.id)
+    return bundle.snapshot

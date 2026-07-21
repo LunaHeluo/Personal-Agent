@@ -451,6 +451,156 @@ class CapabilityStore:
             db.commit()
             return selected
 
+    def activate_refreshed_snapshot(
+        self,
+        server_id: str,
+        snapshot_id: str,
+    ) -> Snapshot:
+        """Activate a candidate and invalidate governance for changed identities."""
+        now = datetime.now(UTC)
+        with Session(self.engine) as db:
+            target = db.get(CapabilitySnapshotRow, snapshot_id)
+            if target is None or target.server_id != server_id:
+                raise RecordNotFoundError(
+                    f"Snapshot not found for server {server_id}: {snapshot_id}"
+                )
+            current = db.scalar(
+                select(CapabilitySnapshotRow).where(
+                    CapabilitySnapshotRow.server_id == server_id,
+                    CapabilitySnapshotRow.active.is_(True),
+                )
+            )
+            old_tools: dict[str, Tool] = {}
+            if current is not None:
+                old_rows = db.scalars(
+                    select(McpToolRow).where(
+                        McpToolRow.snapshot_id == current.id
+                    )
+                ).all()
+                old_tools = {
+                    row.upstream_name: Tool.model_validate_json(row.payload_json)
+                    for row in old_rows
+                }
+            new_rows = db.scalars(
+                select(McpToolRow).where(McpToolRow.snapshot_id == snapshot_id)
+            ).all()
+            new_hashes = {row.upstream_name: row.schema_hash for row in new_rows}
+            changed_names = {
+                name
+                for name, old_tool in old_tools.items()
+                if new_hashes.get(name) != old_tool.schema_hash
+            }
+            for row in new_rows:
+                tool = Tool.model_validate_json(row.payload_json)
+                old_tool = old_tools.get(tool.upstream_name)
+                if old_tool is not None and old_tool.schema_hash == tool.schema_hash:
+                    tool = tool.model_copy(
+                        update={
+                            "enabled": old_tool.enabled,
+                            "review_state": old_tool.review_state,
+                        }
+                    )
+                elif old_tool is not None:
+                    tool = tool.model_copy(
+                        update={"enabled": False, "review_state": "review_required"}
+                    )
+                row.enabled = tool.enabled
+                row.review_state = tool.review_state
+                row.payload_json = tool.model_dump_json()
+
+            if changed_names:
+                rule_rows = db.scalars(
+                    select(PolicyRuleRow).where(
+                        PolicyRuleRow.server_id == server_id,
+                        PolicyRuleRow.tool_name.in_(changed_names),
+                        PolicyRuleRow.effect == "allowlist_auto",
+                    )
+                ).all()
+                for row in rule_rows:
+                    rule = PolicyRule.model_validate_json(row.payload_json)
+                    if not rule.enabled:
+                        continue
+                    rule = rule.model_copy(
+                        update={"enabled": False, "revision": rule.revision + 1}
+                    )
+                    row.enabled = False
+                    row.revision = rule.revision
+                    row.payload_json = rule.model_dump_json()
+
+                confirmation_rows = db.scalars(
+                    select(ConfirmationRow).where(
+                        ConfirmationRow.server_id == server_id,
+                        ConfirmationRow.tool_name.in_(changed_names),
+                        ConfirmationRow.status.notin_(("invalidated", "expired")),
+                    )
+                ).all()
+                invalidated_ids: list[str] = []
+                for row in confirmation_rows:
+                    confirmation = Confirmation.model_validate_json(row.payload_json)
+                    confirmation = confirmation.model_copy(
+                        update={
+                            "status": "invalidated",
+                            "decision": None,
+                            "idempotency_key_hash": None,
+                            "decided_at": now,
+                            "revision": confirmation.revision + 1,
+                        }
+                    )
+                    row.status = confirmation.status
+                    row.decision = None
+                    row.idempotency_key_hash = None
+                    row.revision = confirmation.revision
+                    row.payload_json = confirmation.model_dump_json()
+                    invalidated_ids.append(confirmation.id)
+                if invalidated_ids:
+                    permit_rows = db.scalars(
+                        select(ExecutionPermitRow).where(
+                            ExecutionPermitRow.confirmation_id.in_(invalidated_ids),
+                            ExecutionPermitRow.consumed_at.is_(None),
+                        )
+                    ).all()
+                    for row in permit_rows:
+                        permit = ExecutionPermit.model_validate_json(row.payload_json)
+                        permit = permit.model_copy(update={"consumed_at": now})
+                        row.consumed_at = now
+                        row.payload_json = permit.model_dump_json()
+
+            if current is not None:
+                current_snapshot = Snapshot.model_validate_json(current.payload_json)
+                inactive = current_snapshot.model_copy(update={"active": False})
+                current.active = False
+                current.payload_json = inactive.model_dump_json()
+                db.flush()
+            candidate = Snapshot.model_validate_json(target.payload_json)
+            selected = candidate.model_copy(update={"active": True})
+            target.active = True
+            target.payload_json = selected.model_dump_json()
+            db.flush()
+            db.commit()
+            return selected
+
+    def mark_active_snapshot_stale(
+        self,
+        server_id: str,
+        *,
+        error: str,
+    ) -> Snapshot | None:
+        with Session(self.engine) as db:
+            row = db.scalar(
+                select(CapabilitySnapshotRow).where(
+                    CapabilitySnapshotRow.server_id == server_id,
+                    CapabilitySnapshotRow.active.is_(True),
+                )
+            )
+            if row is None:
+                return None
+            current = Snapshot.model_validate_json(row.payload_json)
+            stale = current.model_copy(update={"stale": True, "error": error})
+            row.stale = True
+            row.payload_json = stale.model_dump_json()
+            db.commit()
+            return stale
+
     def list_tools(self, snapshot_id: str) -> list[Tool]:
         with Session(self.engine) as db:
             rows = db.scalars(
