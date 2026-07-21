@@ -4,9 +4,10 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from collections.abc import Awaitable, Callable, Iterable
+from typing import Any, Protocol, TypeVar
 
-from starter_agent.capabilities.models import Server
+from starter_agent.capabilities.models import Server, Snapshot
 from starter_agent.capabilities.store import (
     CapabilityStore,
     RecordAlreadyExistsError,
@@ -18,6 +19,13 @@ from starter_agent.mcp.client import (
     redact_runtime_text,
 )
 from starter_agent.mcp.config import McpConfiguration, McpServerConfig
+from starter_agent.mcp.discovery import (
+    DiscoveryError,
+    discover_and_activate,
+)
+
+
+_CommandResult = TypeVar("_CommandResult")
 
 
 class ManagedClient(Protocol):
@@ -29,6 +37,11 @@ class ManagedClient(Protocol):
     async def connect(self) -> ClientMetadata: ...
 
     async def close(self) -> None: ...
+
+    async def run_session_command(
+        self,
+        operation: Callable[[Any], Awaitable[_CommandResult]],
+    ) -> _CommandResult: ...
 
 
 class McpManagerError(RuntimeError):
@@ -118,6 +131,87 @@ class McpManager:
             server_id: handle.status
             for server_id, handle in self._handles.items()
         }
+
+    def get_snapshot_summary(self, server_id: str) -> Snapshot | None:
+        self.get_handle(server_id)
+        if self.store is None:
+            return None
+        return self.store.get_snapshot_summary(server_id)
+
+    async def discover(
+        self,
+        server_id: str,
+        *,
+        reserved_model_names: Iterable[str] = (),
+    ) -> Snapshot:
+        handle = self.get_handle(server_id)
+        if self.store is None:
+            raise McpManagerError("capability_store_unavailable")
+        async with handle.refresh_lock:
+            async with self.lease(server_id):
+                self._update(handle, operation_state="discovering")
+                try:
+                    snapshot = await handle.client.run_session_command(
+                        lambda session: discover_and_activate(
+                            self.store,
+                            session,
+                            server_id=server_id,
+                            reserved_model_names=reserved_model_names,
+                        )
+                    )
+                except asyncio.CancelledError:
+                    self._update(handle, operation_state="ready")
+                    raise
+                except DiscoveryError as exc:
+                    self._update(
+                        handle,
+                        operation_state="ready",
+                        error_code=exc.code,
+                        last_error=exc.code,
+                    )
+                    raise
+                except BaseException as exc:
+                    self._update(
+                        handle,
+                        operation_state="ready",
+                        error_code="discovery_failed",
+                        last_error="discovery_failed",
+                    )
+                    raise McpManagerError("discovery_failed") from exc
+                self._update(
+                    handle,
+                    operation_state="ready",
+                    error_code=None,
+                    last_error=None,
+                )
+                return snapshot
+
+    async def ping(self, server_id: str) -> Server:
+        handle = self.get_handle(server_id)
+        async with handle.refresh_lock:
+            async with self.lease(server_id):
+                try:
+                    await handle.client.run_session_command(
+                        lambda session: session.send_ping()
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as exc:
+                    self._update(
+                        handle,
+                        health_state="unhealthy",
+                        error_code="ping_failed",
+                        last_error="ping_failed",
+                        last_checked_at=datetime.now(UTC),
+                    )
+                    raise McpManagerError("ping_failed") from exc
+                return self._update(
+                    handle,
+                    health_state="healthy",
+                    error_code=None,
+                    last_error=None,
+                    last_checked_at=datetime.now(UTC),
+                )
 
     async def start(self) -> dict[str, Server]:
         self._accepting = True

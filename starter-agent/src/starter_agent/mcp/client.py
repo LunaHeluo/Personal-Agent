@@ -10,7 +10,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol, TextIO
+from typing import Any, Awaitable, Callable, Protocol, TextIO, TypeVar
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -49,6 +49,15 @@ class McpClientError(RuntimeError):
         self.code = code
         self.exit_code = exit_code
         self.transport_closed = transport_closed
+
+
+_CommandResult = TypeVar("_CommandResult")
+
+
+@dataclass(slots=True)
+class _SessionCommand:
+    operation: Callable[[Any], Awaitable[Any]]
+    result: asyncio.Future[Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +233,7 @@ class McpClient:
         self._ready: asyncio.Future[ClientMetadata] | None = None
         self._close_signal: asyncio.Event | None = None
         self._owner_failure: McpClientError | None = None
+        self._command_queue: asyncio.Queue[_SessionCommand] | None = None
         self._lifecycle_lock = asyncio.Lock()
 
     @property
@@ -249,6 +259,7 @@ class McpClient:
                 self._ready = loop.create_future()
                 self._close_signal = asyncio.Event()
                 self._owner_failure = None
+                self._command_queue = asyncio.Queue()
                 self._owner_task = asyncio.create_task(
                     self._run_lifecycle_owner(
                         self._ready,
@@ -268,6 +279,26 @@ class McpClient:
             if ready.done() and not ready.cancelled():
                 ready.exception()
             raise
+
+    async def run_session_command(
+        self,
+        operation: Callable[[Any], Awaitable[_CommandResult]],
+    ) -> _CommandResult:
+        async with self._lifecycle_lock:
+            queue = self._command_queue
+            owner = self._owner_task
+            if (
+                self._session is None
+                or queue is None
+                or owner is None
+                or owner.done()
+            ):
+                raise McpClientError("session_not_ready")
+            result: asyncio.Future[_CommandResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            queue.put_nowait(_SessionCommand(operation=operation, result=result))
+        return await asyncio.shield(result)
 
     async def close(self) -> None:
         async with self._lifecycle_lock:
@@ -369,7 +400,7 @@ class McpClient:
                 self._metadata = metadata
                 ready.set_result(metadata)
                 stage = "ready"
-                await close_signal.wait()
+                await self._serve_commands(session, close_signal)
         except asyncio.CancelledError:
             failure = McpClientError(
                 "connect_closed",
@@ -414,6 +445,64 @@ class McpClient:
                         transport_closed=stage != "preflight",
                     )
                 )
+            self._fail_pending_commands(
+                failure or McpClientError("connect_closed")
+            )
+
+    async def _serve_commands(
+        self,
+        session: Any,
+        close_signal: asyncio.Event,
+    ) -> None:
+        queue = self._command_queue
+        assert queue is not None
+        while not close_signal.is_set():
+            close_waiter = asyncio.create_task(close_signal.wait())
+            command_waiter = asyncio.create_task(queue.get())
+            done, _ = await asyncio.wait(
+                {close_waiter, command_waiter},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if close_waiter in done:
+                if command_waiter in done:
+                    command = command_waiter.result()
+                    if not command.result.done():
+                        command.result.set_exception(
+                            McpClientError("session_closed")
+                        )
+                else:
+                    command_waiter.cancel()
+                    await asyncio.gather(
+                        command_waiter,
+                        return_exceptions=True,
+                    )
+                return
+            close_waiter.cancel()
+            await asyncio.gather(close_waiter, return_exceptions=True)
+            command = command_waiter.result()
+            try:
+                value = await command.operation(session)
+            except asyncio.CancelledError:
+                if not command.result.done():
+                    command.result.set_exception(
+                        McpClientError("session_closed")
+                    )
+                raise
+            except BaseException as exc:
+                if not command.result.done():
+                    command.result.set_exception(exc)
+            else:
+                if not command.result.done():
+                    command.result.set_result(value)
+
+    def _fail_pending_commands(self, error: BaseException) -> None:
+        queue = self._command_queue
+        if queue is None:
+            return
+        while not queue.empty():
+            command = queue.get_nowait()
+            if not command.result.done():
+                command.result.set_exception(error)
 
     async def _cancel_owner(self, owner: asyncio.Task[None]) -> None:
         if not owner.done():
@@ -431,6 +520,7 @@ class McpClient:
                 self._ready = None
                 self._close_signal = None
                 self._owner_failure = None
+                self._command_queue = None
 
     def _discard_finished_owner_locked(self) -> None:
         if self._owner_task is not None and self._owner_task.done():
@@ -438,3 +528,4 @@ class McpClient:
             self._ready = None
             self._close_signal = None
             self._owner_failure = None
+            self._command_queue = None

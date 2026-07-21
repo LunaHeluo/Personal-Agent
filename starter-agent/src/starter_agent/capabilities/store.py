@@ -392,7 +392,33 @@ class CapabilityStore:
     def get_snapshot(self, snapshot_id: str) -> Snapshot | None:
         with Session(self.engine) as db:
             row = db.get(CapabilitySnapshotRow, snapshot_id)
+            return (
+                None
+                if row is None
+                else Snapshot.model_validate_json(row.payload_json)
+            )
+
+    def get_active_snapshot(self, server_id: str) -> Snapshot | None:
+        with Session(self.engine) as db:
+            row = db.scalar(
+                select(CapabilitySnapshotRow).where(
+                    CapabilitySnapshotRow.server_id == server_id,
+                    CapabilitySnapshotRow.active.is_(True),
+                )
+            )
             return None if row is None else Snapshot.model_validate_json(row.payload_json)
+
+    def get_snapshot_summary(self, server_id: str) -> Snapshot | None:
+        return self.get_active_snapshot(server_id)
+
+    def next_snapshot_version(self, server_id: str) -> int:
+        with Session(self.engine) as db:
+            versions = db.scalars(
+                select(CapabilitySnapshotRow.version).where(
+                    CapabilitySnapshotRow.server_id == server_id
+                )
+            ).all()
+            return max(versions, default=0) + 1
 
     def activate_snapshot(self, server_id: str, snapshot_id: str) -> Snapshot:
         with Session(self.engine) as db:
