@@ -85,7 +85,7 @@ async def test_refresh_is_per_server_and_leases_pin_client_generation(
         client = _Client(
             server_id,
             generation,
-            blocked=server_id == "alpha" and generation == 2,
+            blocked=server_id == "alpha" and generation in {2, 3},
         )
         created[server_id].append(client)
         return client
@@ -106,13 +106,19 @@ async def test_refresh_is_per_server_and_leases_pin_client_generation(
         shutdown_timeout_seconds=0.05,
     )
     await manager.start()
-    await asyncio.gather(manager.discover("alpha"), manager.discover("beta"))
+    alpha_initial, beta_initial = await asyncio.gather(
+        manager.discover("alpha"), manager.discover("beta")
+    )
     alpha_revision = manager.get_status("alpha").revision
     beta_revision = manager.get_status("beta").revision
     alpha_old_lease = manager.lease("alpha")
     beta_old_lease = manager.lease("beta")
-    alpha_old_session = await alpha_old_lease.__aenter__()
-    beta_old_session = await beta_old_lease.__aenter__()
+    alpha_old_binding = await alpha_old_lease.__aenter__()
+    beta_old_binding = await beta_old_lease.__aenter__()
+    assert alpha_old_binding.session is created["alpha"][0].session
+    assert alpha_old_binding.client is created["alpha"][0]
+    assert alpha_old_binding.snapshot_id == alpha_initial.id
+    assert beta_old_binding.snapshot_id == beta_initial.id
 
     alpha_refresh = asyncio.create_task(
         manager.refresh_server("alpha", alpha_revision)
@@ -138,9 +144,14 @@ async def test_refresh_is_per_server_and_leases_pin_client_generation(
         if manager.get_handle("alpha").client is created["alpha"][1]:
             break
         await asyncio.sleep(0)
-    async with manager.lease("alpha") as alpha_new_session:
-        assert alpha_new_session is created["alpha"][1].session
-        assert alpha_new_session is not alpha_old_session
+    async with manager.lease("alpha") as alpha_new_binding:
+        assert alpha_new_binding.session is created["alpha"][1].session
+        assert alpha_new_binding.client is created["alpha"][1]
+        assert alpha_new_binding.snapshot_id != alpha_old_binding.snapshot_id
+        assert (
+            alpha_new_binding.snapshot_id
+            == manager.store.get_active_snapshot("alpha").id
+        )
     assert created["alpha"][0].closed is False
     await alpha_old_lease.__aexit__(None, None, None)
     alpha_snapshot = await alpha_refresh
@@ -148,6 +159,25 @@ async def test_refresh_is_per_server_and_leases_pin_client_generation(
     assert alpha_snapshot.server_id == "alpha"
     assert created["alpha"][0].closed is True
     assert manager.get_status("alpha").error_code is None
-    assert beta_old_session is created["beta"][0]._session
+    assert beta_old_binding.session is created["beta"][0]._session
     await beta_old_lease.__aexit__(None, None, None)
-    await manager.shutdown()
+
+    active_before_shutdown = manager.store.get_active_snapshot("alpha")
+    shutdown_race = asyncio.create_task(
+        manager.refresh_server("alpha", manager.get_status("alpha").revision)
+    )
+    while len(created["alpha"]) < 3:
+        await asyncio.sleep(0)
+    await created["alpha"][2].discovery_started.wait()
+    shutdown = asyncio.create_task(manager.shutdown())
+    await asyncio.sleep(0)
+    created["alpha"][2].discovery_release.set()
+    with pytest.raises(McpManagerError) as draining:
+        await shutdown_race
+    assert draining.value.code == "manager_draining"
+    await shutdown
+    assert created["alpha"][2].closed is True
+    assert created["alpha"][2].session is None
+    assert manager.store.get_active_snapshot("alpha") == active_before_shutdown
+    assert manager.get_status("alpha").connection_state == "closed"
+    assert manager.get_status("alpha").operation_state != "ready"

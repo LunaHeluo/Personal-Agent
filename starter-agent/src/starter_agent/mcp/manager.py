@@ -62,6 +62,13 @@ class ClientSlot:
         self.drain_event.set()
 
 
+@dataclass(frozen=True, slots=True)
+class ClientLease:
+    client: ManagedClient
+    session: Any
+    snapshot_id: str | None
+
+
 @dataclass(slots=True)
 class ServerHandle:
     server_id: str
@@ -176,10 +183,10 @@ class McpManager:
         if self.store is None:
             raise McpManagerError("capability_store_unavailable")
         async with handle.refresh_lock:
-            async with self.lease(server_id):
+            async with self.lease(server_id) as lease:
                 self._update(handle, operation_state="discovering")
                 try:
-                    snapshot = await handle.client.run_session_command(
+                    snapshot = await lease.client.run_session_command(
                         lambda session: discover_and_activate(
                             self.store,
                             session,
@@ -254,12 +261,38 @@ class McpManager:
                         server_id=server_id,
                     )
                 )
-                self._update(handle, operation_state="validating_snapshot")
-                activated = self.store.activate_refreshed_snapshot(
-                    server_id,
-                    candidate_snapshot.id,
-                )
+                async with handle.connect_lock:
+                    if not self._accepting or not handle.accepting:
+                        raise McpManagerError("manager_draining")
+                    self._update(handle, operation_state="validating_snapshot")
+                    activated = self.store.activate_refreshed_snapshot(
+                        server_id,
+                        candidate_snapshot.id,
+                    )
+                    candidate_slot.snapshot_id = activated.id
+                    handle.active = candidate_slot
+                    self._update(
+                        handle,
+                        connection_state="ready",
+                        health_state="healthy",
+                        operation_state="ready",
+                        protocol_version=metadata.protocol_version,
+                        runtime_name=metadata.runtime_name,
+                        runtime_version=metadata.runtime_version or "unknown",
+                        node_version=metadata.node_version,
+                        npx_version=metadata.npx_version,
+                        started_at=metadata.started_at,
+                        exit_code=metadata.exit_code,
+                        transport_closed=metadata.transport_closed,
+                        stderr_summary=candidate.stderr_summary,
+                        error_code=None,
+                        last_error=None,
+                        last_checked_at=datetime.now(UTC),
+                    )
             except asyncio.CancelledError:
+                await self._close_candidate(candidate)
+                raise
+            except McpManagerError:
                 await self._close_candidate(candidate)
                 raise
             except TimeoutError as exc:
@@ -279,26 +312,6 @@ class McpManager:
                 self._record_refresh_failure(handle, "refresh_failed")
                 raise McpManagerError("refresh_failed") from exc
 
-            candidate_slot.snapshot_id = activated.id
-            handle.active = candidate_slot
-            self._update(
-                handle,
-                connection_state="ready",
-                health_state="healthy",
-                operation_state="ready",
-                protocol_version=metadata.protocol_version,
-                runtime_name=metadata.runtime_name,
-                runtime_version=metadata.runtime_version or "unknown",
-                node_version=metadata.node_version,
-                npx_version=metadata.npx_version,
-                started_at=metadata.started_at,
-                exit_code=metadata.exit_code,
-                transport_closed=metadata.transport_closed,
-                stderr_summary=candidate.stderr_summary,
-                error_code=None,
-                last_error=None,
-                last_checked_at=datetime.now(UTC),
-            )
             drain_error = await self._drain_client_slot(old_slot)
             if drain_error is not None:
                 self._update(
@@ -311,9 +324,9 @@ class McpManager:
     async def ping(self, server_id: str) -> Server:
         handle = self.get_handle(server_id)
         async with handle.refresh_lock:
-            async with self.lease(server_id):
+            async with self.lease(server_id) as lease:
                 try:
-                    await handle.client.run_session_command(
+                    await lease.client.run_session_command(
                         lambda session: session.send_ping()
                     )
                 except asyncio.CancelledError:
@@ -445,10 +458,17 @@ class McpManager:
         if handle.status.connection_state != "ready" or handle.session is None:
             raise McpManagerError("server_not_ready")
         slot = handle.active
+        session = slot.client.session
+        if session is None:
+            raise McpManagerError("server_not_ready")
         slot.in_flight += 1
         slot.drain_event.clear()
         try:
-            yield slot.client.session
+            yield ClientLease(
+                client=slot.client,
+                session=session,
+                snapshot_id=slot.snapshot_id,
+            )
         finally:
             slot.in_flight -= 1
             if slot.in_flight == 0:
