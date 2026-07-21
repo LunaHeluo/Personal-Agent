@@ -20,6 +20,11 @@ from starter_agent.capabilities.models import (
 
 
 HASH = "a" * 64
+HIGH_CONFIDENCE_SECRETS = (
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature",
+    "AIza" + "A" * 35,
+    "xoxb-" + "A" * 10,
+)
 
 
 def _json_hash(value: object) -> str:
@@ -217,6 +222,63 @@ def test_confirmation_secret_detection_propagates_through_nested_containers() ->
             risk="external",
             destination="example.test",
             expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        )
+
+
+@pytest.mark.parametrize("secret_value", HIGH_CONFIDENCE_SECRETS)
+def test_confirmation_summary_rejects_mcp_high_confidence_secret_shapes(
+    secret_value: str,
+) -> None:
+    with pytest.raises(ValidationError, match="secret"):
+        Confirmation(
+            id="confirmation-secret-shape",
+            principal="local-user",
+            session_id="session-1",
+            turn_id="turn-1",
+            call_id="call-1",
+            request_hash=HASH,
+            server_id="playwright",
+            tool_name="browser_navigate",
+            schema_hash=HASH,
+            arguments_summary={"details": {"value": secret_value}},
+            risk="external",
+            destination="example.test",
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        )
+
+
+@pytest.mark.parametrize("secret_value", HIGH_CONFIDENCE_SECRETS)
+def test_audit_event_text_rejects_mcp_high_confidence_secret_shapes(
+    secret_value: str,
+) -> None:
+    with pytest.raises(ValidationError, match="secret"):
+        AuditEvent(
+            event_id="event-secret-shape",
+            actor="local-admin",
+            action="server.created",
+            target=f"server:playwright:{secret_value}",
+            after_hash=HASH,
+            decision="allow",
+            reason_code="initial_configuration",
+            created_at=datetime.now(UTC),
+        )
+
+
+@pytest.mark.parametrize("secret_value", HIGH_CONFIDENCE_SECRETS)
+def test_audit_event_payload_rejects_mcp_high_confidence_secret_shapes(
+    secret_value: str,
+) -> None:
+    with pytest.raises(ValidationError, match="secret"):
+        AuditEvent(
+            event_id="event-secret-payload",
+            actor="local-admin",
+            action="server.created",
+            target="server:playwright",
+            after_hash=HASH,
+            decision="allow",
+            reason_code="initial_configuration",
+            payload={"details": {"value": secret_value}},
+            created_at=datetime.now(UTC),
         )
 
 

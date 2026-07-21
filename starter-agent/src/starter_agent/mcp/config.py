@@ -65,6 +65,11 @@ class McpConfigError(ConfigurationError):
     """Raised when an MCP launch configuration violates its trust boundary."""
 
 
+def contains_high_confidence_secret(value: str) -> bool:
+    """Return whether text contains a known high-confidence secret shape."""
+    return _SECRET_VALUE.search(value) is not None
+
+
 def _contains_control_characters(value: str) -> bool:
     return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
@@ -85,7 +90,9 @@ class McpServerConfig(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("MCP command must not be blank")
-        if _SECRET_ARGUMENT.search(normalized) or _SECRET_VALUE.search(normalized):
+        if _SECRET_ARGUMENT.search(normalized) or contains_high_confidence_secret(
+            normalized
+        ):
             raise ValueError("MCP command must not contain inline secrets")
         return normalized
 
@@ -97,7 +104,9 @@ class McpServerConfig(BaseModel):
                 raise ValueError("MCP arguments must be non-empty and bounded")
             if _contains_control_characters(value):
                 raise ValueError("MCP arguments contain control characters")
-            if _SECRET_ARGUMENT.search(value) or _SECRET_VALUE.search(value):
+            if _SECRET_ARGUMENT.search(value) or contains_high_confidence_secret(
+                value
+            ):
                 raise ValueError("MCP arguments must not contain inline secrets")
         return values
 

@@ -17,6 +17,8 @@ from pydantic import (
     model_validator,
 )
 
+from starter_agent.mcp.config import contains_high_confidence_secret
+
 
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
@@ -204,13 +206,6 @@ _SENSITIVE_KEY = re.compile(
 _SECRET_TEXT = re.compile(
     r"(?:"
     r"bearer\s+\S+"
-    r"|sk-(?:proj-)?[A-Za-z0-9_-]{8,}"
-    r"|gh[pousr]_[A-Za-z0-9]{20,}"
-    r"|github_pat_[A-Za-z0-9_]{20,}"
-    r"|(?:AKIA|ASIA)[A-Z0-9]{16}"
-    r"|(?:https?|wss?)://[^/\s:@]+:[^/\s@]+@"
-    r"|\bbasic\s+[A-Za-z0-9+/]{8,}={0,2}"
-    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
     r"|(?:api[_-]?key|authorization|cookie|password|secret|token)\s*[=:]\s*\S+"
     r")",
     flags=re.IGNORECASE,
@@ -234,7 +229,7 @@ def _validate_safe_summary(value: dict[str, Any]) -> dict[str, Any]:
         if isinstance(node, str):
             if sensitive and node.casefold() not in _REDACTED_VALUES:
                 raise ValueError("capability summaries must not contain secrets")
-            if _SECRET_TEXT.search(node):
+            if _SECRET_TEXT.search(node) or contains_high_confidence_secret(node):
                 raise ValueError("capability summaries must not contain secrets")
 
     visit(value)
