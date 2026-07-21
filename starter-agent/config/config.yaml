@@ -57,6 +57,9 @@ runtime:
   tool_timeout_seconds: 35
   max_tool_result_chars: 8000
 
+mcp:
+  config_path: config/mcp.json
+
 context:
   max_total_tokens: 128000
   warning_ratio: 0.8

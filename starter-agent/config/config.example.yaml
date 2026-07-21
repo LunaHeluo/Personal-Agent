@@ -50,6 +50,9 @@ runtime:
   tool_timeout_seconds: 35
   max_tool_result_chars: 8000
 
+mcp:
+  config_path: config/mcp.json
+
 knowledge:
   # 仅配置容量和行为参数；不要在 YAML 中放入秘密或私人文档正文。
   enabled: true

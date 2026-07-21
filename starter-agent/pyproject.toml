@@ -19,6 +19,8 @@ dependencies = [
     "tzdata>=2025.2; platform_system == 'Windows'",
     "typer>=0.15.0,<1",
     "uvicorn>=0.34.0,<1",
+    "mcp>=1.27,<2",
+    "jsonschema>=4.23,<5",
 ]
 
 [project.optional-dependencies]

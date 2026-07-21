@@ -48,6 +48,19 @@ class RuntimeConfig(BaseModel):
     max_tool_result_chars: int = Field(default=8000, ge=100)
 
 
+class McpSettings(BaseModel):
+    config_path: str = Field(
+        default="config/mcp.json",
+        min_length=1,
+        max_length=500,
+    )
+    initialize_timeout_seconds: float = Field(default=20, gt=0, le=120)
+    health_timeout_seconds: float = Field(default=5, gt=0, le=60)
+    call_timeout_seconds: float = Field(default=35, gt=0, le=300)
+    shutdown_timeout_seconds: float = Field(default=10, gt=0, le=60)
+    confirmation_timeout_seconds: float = Field(default=300, gt=0, le=3_600)
+
+
 class ContextConfig(BaseModel):
     max_total_tokens: int = Field(default=128_000, ge=1)
     warning_ratio: float = Field(default=0.8, gt=0, le=1)
@@ -292,6 +305,7 @@ class AgentSettings(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
     providers: dict[str, ProviderConfig]
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    mcp: McpSettings = Field(default_factory=McpSettings)
     context: ContextConfig = Field(default_factory=ContextConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
