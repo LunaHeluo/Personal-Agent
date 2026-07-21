@@ -252,9 +252,15 @@ class Server(CapabilityModel):
     protocol_version: str | None = Field(default=None, max_length=100)
     runtime_name: str | None = Field(default=None, max_length=200)
     runtime_version: str | None = Field(default=None, max_length=100)
+    node_version: str | None = Field(default=None, max_length=100)
+    npx_version: str | None = Field(default=None, max_length=100)
     transport: Literal["stdio"] = "stdio"
     pid: int | None = Field(default=None, ge=1)
     exit_code: int | None = None
+    transport_closed: bool = False
+    started_at: UtcDateTime | None = None
+    stderr_summary: str | None = Field(default=None, max_length=2_000)
+    error_code: str | None = Field(default=None, max_length=100)
     last_error: str | None = Field(default=None, max_length=2_000)
     last_checked_at: UtcDateTime | None = None
     revision: int = Field(default=0, ge=0)

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from starter_agent.bootstrap import (
     create_application,
     create_knowledge_service,
+    create_mcp_manager,
     get_settings,
 )
 from starter_agent.domain.errors import AgentError
@@ -243,8 +244,27 @@ def _summary_text(value: str | None, limit: int = 80) -> str | None:
 
 @asynccontextmanager
 async def _api_lifespan(_api: FastAPI):
-    yield
-    await create_application().wait_for_background_tasks()
+    manager = None
+    try:
+        manager = create_mcp_manager()
+        await manager.start()
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        get_logger(error_type=type(error).__name__).error("mcp.startup_failed")
+    try:
+        yield
+    finally:
+        if manager is not None:
+            try:
+                await manager.shutdown()
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                get_logger(error_type=type(error).__name__).error(
+                    "mcp.shutdown_failed"
+                )
+        await create_application().wait_for_background_tasks()
 
 
 def create_api() -> FastAPI:
