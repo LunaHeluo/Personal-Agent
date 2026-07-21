@@ -101,6 +101,34 @@ def _upload_comparison_documents(
     )
 
 
+def _upload_unlabelled_comparison_documents(
+    service: KnowledgeApplicationService,
+) -> None:
+    base_id = service.default_knowledge_base_id
+    service.upload(
+        knowledge_base_id=base_id,
+        filename="candidate-profile.md",
+        content=(
+            "# 教育背景\n\n"
+            "## 科研项目\n\n"
+            "使用 Python 完成实验数据分析与论文复现。"
+        ).encode(),
+        document_type="resume",
+        confirmed_authorized=True,
+    )
+    service.upload(
+        knowledge_base_id=base_id,
+        filename="research-opening.md",
+        content=(
+            "# 科研助理\n\n"
+            "## 任职条件\n\n"
+            "使用 Python 开展实验数据分析与论文复现。"
+        ).encode(),
+        document_type="job_description",
+        confirmed_authorized=True,
+    )
+
+
 def test_natural_chinese_comparison_retrieves_resume_and_job_description() -> None:
     service = _service()
     _upload_comparison_documents(service)
@@ -119,6 +147,22 @@ def test_natural_chinese_comparison_retrieves_resume_and_job_description() -> No
         range(1, len(matches) + 1)
     )
     assert {match.mapping_version for match in matches} == {"builtin-v1"}
+
+
+def test_comparison_retrieves_typed_documents_without_generic_labels() -> None:
+    service = _service()
+    _upload_unlabelled_comparison_documents(service)
+
+    matches = service.retrieve(
+        service.default_knowledge_base_id,
+        "我的简历匹配什么岗位",
+        top_k=5,
+    )
+
+    assert {match.document_type for match in matches} >= {
+        "resume",
+        "job_description",
+    }
 
 
 def test_comparison_coverage_respects_filters_and_top_k() -> None:

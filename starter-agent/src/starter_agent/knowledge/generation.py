@@ -86,9 +86,19 @@ def _build_messages(
 ) -> list[Message]:
     retry_instruction = ""
     if retry_reason is not None:
-        retry_instruction = (
-            "\n上一次输出未通过结构校验，错误类型为 "
-            f"{retry_reason}。请重新生成，不要解释错误。"
+        if retry_reason == "citation_validation_failed":
+            retry_instruction = (
+                "\n上一次输出未通过引用校验。请重新生成，不要解释错误。"
+                "每个 evidence_id 必须来自下方 Evidence；每个 quote 必须"
+                "从对应 Evidence 逐字复制非空连续原文，不得概括、改写或"
+                "跨 Evidence 拼接。"
+            )
+        else:
+            retry_instruction = (
+                "\n上一次输出未通过结构校验，错误类型为 "
+                f"{retry_reason}。请重新生成，不要解释错误。"
+            )
+        retry_instruction += (
             "\n只输出一个 JSON 对象，格式示例："
             f"\n{json.dumps(_RETRY_EXAMPLE, ensure_ascii=False)}"
             "\n不得同时输出旧格式 evidence_ids/quote。"
@@ -136,43 +146,45 @@ class RagGenerator:
                 refusal_reason="no_evidence",
             )
         messages = _build_messages(question, evidence)
-        response = await self.provider.complete(
-            messages, self.model, tools=[]
-        )
-        try:
-            payload = _validate_payload(response.content or "")
-        except (
-            ValidationError,
-            ValueError,
-            json.JSONDecodeError,
-        ) as first_error:
-            retry_messages = _build_messages(
-                question,
-                evidence,
-                retry_reason=_retry_reason(first_error),
-            )
-            retry_response = await self.provider.complete(
-                retry_messages,
-                self.model,
-                tools=[],
+        for attempt in range(2):
+            response = await self.provider.complete(
+                messages, self.model, tools=[]
             )
             try:
-                payload = _validate_payload(
-                    retry_response.content or ""
-                )
+                payload = _validate_payload(response.content or "")
             except (
                 ValidationError,
                 ValueError,
                 json.JSONDecodeError,
-            ) as second_error:
-                raise KnowledgeError(
-                    "generation_invalid_output"
-                ) from second_error
-
-        citations = assemble_citations(payload.claims, evidence)
-        return RagAnswer(
-            status=payload.status,
-            answer=payload.answer,
-            claims=payload.claims,
-            citations=citations,
-        )
+            ) as structure_error:
+                if attempt == 1:
+                    raise KnowledgeError(
+                        "generation_invalid_output"
+                    ) from structure_error
+                messages = _build_messages(
+                    question,
+                    evidence,
+                    retry_reason=_retry_reason(structure_error),
+                )
+                continue
+            try:
+                citations = assemble_citations(payload.claims, evidence)
+            except KnowledgeError as citation_error:
+                if (
+                    citation_error.code != "citation_validation_failed"
+                    or attempt == 1
+                ):
+                    raise
+                messages = _build_messages(
+                    question,
+                    evidence,
+                    retry_reason="citation_validation_failed",
+                )
+                continue
+            return RagAnswer(
+                status=payload.status,
+                answer=payload.answer,
+                claims=payload.claims,
+                citations=citations,
+            )
+        raise AssertionError("unreachable")

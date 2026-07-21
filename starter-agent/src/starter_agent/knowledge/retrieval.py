@@ -65,6 +65,19 @@ class KnowledgeRetriever:
                     versions=versions,
                 )
             )
+        if query.comparison_intent:
+            candidates.extend(
+                self._comparison_candidates(
+                    scope,
+                    knowledge_base_id,
+                    query,
+                    limit=candidate_limit,
+                    document_ids=document_ids,
+                    document_types=document_types,
+                    filenames=filenames,
+                    versions=versions,
+                )
+            )
 
         candidates = self._deduplicate(candidates)
         candidates = [
@@ -144,7 +157,6 @@ class KnowledgeRetriever:
             filenames=filenames,
             versions=versions,
         )
-        minimum_hits = min(2, len(query.terms))
         return [
             self._match(
                 chunk,
@@ -152,9 +164,47 @@ class KnowledgeRetriever:
                 query,
                 bm25_score=None,
             )
-            for chunk, document_type, hit_count in rows
-            if hit_count >= minimum_hits
+            for chunk, document_type, _hit_count in rows
         ]
+
+    def _comparison_candidates(
+        self,
+        scope: KnowledgeScope,
+        knowledge_base_id: UUID,
+        query: NormalizedQuery,
+        *,
+        limit: int,
+        document_ids: list[UUID] | None,
+        document_types: list[str] | None,
+        filenames: list[str] | None,
+        versions: list[int] | None,
+    ) -> list[RetrievalMatch]:
+        allowed_types = ["resume", "job_description"]
+        if document_types is not None:
+            allowed_types = [
+                value for value in allowed_types if value in document_types
+            ]
+        matches: list[RetrievalMatch] = []
+        for document_type in allowed_types:
+            rows = self.store.list_active_chunks_for_retrieval(
+                scope,
+                knowledge_base_id,
+                limit=limit,
+                document_ids=document_ids,
+                document_types=[document_type],
+                filenames=filenames,
+                versions=versions,
+            )
+            matches.extend(
+                self._match(
+                    chunk,
+                    stored_type,
+                    query,
+                    bm25_score=None,
+                )
+                for chunk, stored_type in rows
+            )
+        return matches
 
     @staticmethod
     def _match(

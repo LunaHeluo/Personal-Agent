@@ -314,10 +314,10 @@ async def test_provider_error_is_not_retried() -> None:
         {"evidence_id": "E1", "quote": "改写后的 Python 能力"},
     ],
 )
-async def test_citation_error_is_not_retried(
+async def test_citation_error_retries_once_with_strict_validation(
     reference: dict[str, str],
 ) -> None:
-    payload = json.dumps(
+    invalid_payload = json.dumps(
         {
             "status": "answered",
             "answer": "候选人熟练 Python。",
@@ -330,7 +330,43 @@ async def test_citation_error_is_not_retried(
         },
         ensure_ascii=False,
     )
-    provider = StubProvider(payload)
+    provider = StubProvider(invalid_payload, _valid_payload())
+
+    answer = await RagGenerator(provider, "test").generate(
+        "会 Python 吗？",
+        [_evidence()],
+    )
+
+    assert answer.status == "answered"
+    assert len(provider.calls) == 2
+    retry_prompt = "\n".join(
+        message.content for message in provider.calls[1]["messages"]
+    )
+    assert "引用" in retry_prompt
+    assert "连续原文" in retry_prompt
+
+
+@pytest.mark.asyncio
+async def test_second_citation_error_does_not_call_third_time() -> None:
+    invalid_payload = json.dumps(
+        {
+            "status": "answered",
+            "answer": "候选人熟练 Python。",
+            "claims": [
+                {
+                    "text": "候选人熟练 Python。",
+                    "evidence_refs": [
+                        {
+                            "evidence_id": "E1",
+                            "quote": "改写后的 Python 能力",
+                        }
+                    ],
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    provider = StubProvider(invalid_payload, invalid_payload)
 
     with pytest.raises(KnowledgeError) as error:
         await RagGenerator(provider, "test").generate(
@@ -339,4 +375,4 @@ async def test_citation_error_is_not_retried(
         )
 
     assert error.value.code == "citation_validation_failed"
-    assert len(provider.calls) == 1
+    assert len(provider.calls) == 2

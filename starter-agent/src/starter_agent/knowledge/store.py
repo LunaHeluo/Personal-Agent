@@ -909,6 +909,59 @@ class SQLiteKnowledgeStore:
             for row in rows
         ]
 
+    def list_active_chunks_for_retrieval(
+        self,
+        scope: KnowledgeScope,
+        knowledge_base_id: UUID,
+        *,
+        limit: int,
+        document_ids: list[UUID] | None = None,
+        document_types: list[str] | None = None,
+        filenames: list[str] | None = None,
+        versions: list[int] | None = None,
+    ) -> list[tuple[KnowledgeChunk, str]]:
+        query = (
+            select(
+                KnowledgeChunkRow,
+                KnowledgeDocumentRow.document_type,
+            )
+            .join(
+                KnowledgeDocumentRow,
+                KnowledgeDocumentRow.id == KnowledgeChunkRow.document_id,
+            )
+            .where(
+                *self._scope_filters(scope),
+                KnowledgeChunkRow.knowledge_base_id
+                == str(knowledge_base_id),
+                KnowledgeDocumentRow.active_version_id
+                == KnowledgeChunkRow.version_id,
+            )
+        )
+        if document_ids:
+            query = query.where(
+                KnowledgeChunkRow.document_id.in_(
+                    [str(value) for value in document_ids]
+                )
+            )
+        if document_types:
+            query = query.where(
+                KnowledgeDocumentRow.document_type.in_(document_types)
+            )
+        if filenames:
+            query = query.where(KnowledgeChunkRow.filename.in_(filenames))
+        if versions:
+            query = query.where(KnowledgeChunkRow.version.in_(versions))
+        query = query.order_by(
+            KnowledgeChunkRow.document_id,
+            KnowledgeChunkRow.ordinal,
+        ).limit(min(limit, 100))
+        with Session(self.engine) as db:
+            rows = db.execute(query).all()
+        return [
+            (self._chunk(row[0]), row[1])
+            for row in rows
+        ]
+
     def citation_state(
         self,
         scope: KnowledgeScope,
