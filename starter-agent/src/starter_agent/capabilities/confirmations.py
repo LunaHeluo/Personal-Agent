@@ -12,6 +12,7 @@ from starter_agent.capabilities.gate import (
     PreToolCallGate,
     ToolCallRequest,
     ToolExecutionDenied,
+    _confirmation_allowlist_rule_id,
     _policy_revision,
 )
 from starter_agent.capabilities.models import (
@@ -19,14 +20,12 @@ from starter_agent.capabilities.models import (
     Confirmation,
     ConfirmationDecision,
     PolicyRule,
-    canonical_json_sha256,
 )
 from starter_agent.capabilities.policy import classify_tool
 from starter_agent.capabilities.store import (
     CapabilityStore,
     RecordAlreadyExistsError,
     RecordNotFoundError,
-    RevisionConflictError,
 )
 
 
@@ -442,7 +441,7 @@ class TurnCoordinator:
             else "read"
         )
         rule = PolicyRule(
-            id=f"confirm-allow-{canonical_json_sha256({'id': confirmation.id})[:32]}",
+            id=_confirmation_allowlist_rule_id(confirmation.id),
             server_id=request.server_id,
             tool_name=request.tool_name,
             effect="allowlist_auto",

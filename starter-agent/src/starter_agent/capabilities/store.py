@@ -969,8 +969,6 @@ class CapabilityStore:
             if current.expires_at <= consumed_at:
                 raise ConfirmationExecutionError("confirmation_expired")
             if current.status == "consumed":
-                if current.execution_idempotency_key_hash == key_hash:
-                    return current
                 raise ConfirmationExecutionError("confirmation_consumed")
             if current.status != "approved":
                 raise ConfirmationExecutionError("confirmation_not_approved")

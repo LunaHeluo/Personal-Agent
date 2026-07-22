@@ -774,28 +774,55 @@ def create_api() -> FastAPI:
             if (
                 capability_confirmation is not None
                 and capability_confirmation.status == "consumed"
-                and capability_confirmation.execution_idempotency_key_hash
-                != execution_key_hash
             ):
-                raise EmailError(
-                    EmailErrorCode.APPROVAL_CONSUMED,
-                    "email approval has already been consumed",
+                if (
+                    capability_confirmation.execution_idempotency_key_hash
+                    != execution_key_hash
+                ):
+                    raise EmailError(
+                        EmailErrorCode.APPROVAL_CONSUMED,
+                        "email approval has already been consumed",
+                    )
+                receipt = manager.store.find_receipt(
+                    draft.draft_id, request.idempotency_key
                 )
-            result = await application.runtime.execute_tool(
-                tool_name=tool.name,
-                arguments={
-                    "profile": approval.profile,
-                    "draft_id": draft.draft_id,
-                    "expected_content_sha256": draft.content_sha256,
-                    "approval_id": approval.approval_id,
-                    "idempotency_key": request.idempotency_key,
-                },
-                session_id=request.session_id,
-                turn_id=_email_turn_id(approval.approval_id),
-                call_id=f"api-email-send-{approval.approval_id}",
-                principal=approval.user_ref or "local-user",
-                confirmation_id=f"email-{approval.approval_id}",
-            )
+                if receipt is None:
+                    raise EmailError(
+                        EmailErrorCode.APPROVAL_CONSUMED,
+                        "email approval receipt is unavailable",
+                    )
+                result = ToolResult(
+                    ok=True,
+                    data=receipt.model_dump(mode="json"),
+                    display=(
+                        "Mock 发送流程已完成；没有邮件对外发送"
+                        if not receipt.external_delivery
+                        else "邮件已由 SMTP provider 确认发送"
+                    ),
+                    metadata={
+                        "profile": approval.profile,
+                        "delivery_mode": receipt.delivery_mode,
+                        "external_delivery": receipt.external_delivery,
+                        "status": receipt.status,
+                        "source_ref": receipt.source_ref,
+                    },
+                )
+            else:
+                result = await application.runtime.execute_tool(
+                    tool_name=tool.name,
+                    arguments={
+                        "profile": approval.profile,
+                        "draft_id": draft.draft_id,
+                        "expected_content_sha256": draft.content_sha256,
+                        "approval_id": approval.approval_id,
+                        "idempotency_key": request.idempotency_key,
+                    },
+                    session_id=request.session_id,
+                    turn_id=_email_turn_id(approval.approval_id),
+                    call_id=f"api-email-send-{approval.approval_id}",
+                    principal=approval.user_ref or "local-user",
+                    confirmation_id=f"email-{approval.approval_id}",
+                )
         except EmailError as error:
             raise _email_http_error(error) from error
         except AgentError as error:

@@ -148,3 +148,46 @@ async def test_always_confirm_rejects_allowlist_without_creating_rule(tmp_path) 
         for rule in store.list_policy_rules(request.server_id, request.tool_name)
         if rule.enabled
     )
+
+
+@pytest.mark.parametrize("policy_change", ["revision", "always_confirm"])
+async def test_approved_confirmation_is_invalid_after_policy_change(
+    tmp_path, policy_change
+) -> None:
+    store, gate = _confirmation_gate(tmp_path)
+    service = ConfirmationService(store, gate)
+    request = _request()
+    pending = service.create_pending(request, await gate.evaluate(request))
+    approved = service.decide(
+        pending.id,
+        expected_revision=0,
+        idempotency_key=f"decision-{policy_change}",
+        decision="once",
+    )
+
+    if policy_change == "revision":
+        rule = store.get_policy_rule("allow-nav")
+        assert rule is not None
+        store.update_policy_rule(
+            rule.id,
+            expected_revision=rule.revision,
+            created_by="changed-admin",
+        )
+    else:
+        store.create_policy_rule(
+            PolicyRule(
+                id="new-always-confirm",
+                server_id=request.server_id,
+                tool_name=request.tool_name,
+                effect="always_confirm",
+                schema_hash=request.schema_hash,
+                created_by="admin",
+            )
+        )
+
+    result = await gate.evaluate_approved(request, confirmation_id=approved.id)
+
+    assert (result.outcome, result.reason_code) == (
+        "deny",
+        "confirmation_policy_changed",
+    )

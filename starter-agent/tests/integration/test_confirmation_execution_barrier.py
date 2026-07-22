@@ -116,6 +116,17 @@ async def test_runtime_waits_without_calling_tool_then_executes_once_after_appro
     assert result.ok is True
     assert tool.calls == 1
 
+    with pytest.raises(ToolExecutionDenied, match="confirmation_consumed"):
+        await runtime.execute_tool(
+            tool_name=tool.name,
+            arguments={"value": 7},
+            session_id=session_id,
+            turn_id=turn_id,
+            call_id="call-once",
+            confirmation_id=pending.id,
+        )
+    assert tool.calls == 1
+
     service.decide(
         pending.id,
         expected_revision=pending.revision,

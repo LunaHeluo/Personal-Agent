@@ -338,14 +338,20 @@ class PreToolCallGate:
         if decision.outcome == "deny":
             return decision
         confirmation = self.store.get_confirmation(confirmation_id)
+        if confirmation is not None and confirmation.status == "consumed":
+            return self._decision("deny", "confirmation_consumed", canonical)
         if not self._confirmation_matches(canonical, confirmation):
             return self._decision(
                 "deny", "confirmation_binding_mismatch", canonical
             )
-        if decision.outcome != "require_confirmation":
-            rules = self.store.list_policy_rules(
-                canonical.server_id, canonical.tool_name
+        rules = self.store.list_policy_rules(
+            canonical.server_id, canonical.tool_name
+        )
+        if not _confirmation_policy_matches(confirmation, rules, canonical):
+            return self._decision(
+                "deny", "confirmation_policy_changed", canonical
             )
+        if decision.outcome != "require_confirmation":
             return self._finalize(
                 canonical,
                 PolicyDecision("allow", "verified_confirmation"),
@@ -353,9 +359,6 @@ class PreToolCallGate:
                 rules,
                 confirmation_id=confirmation_id,
             )
-        rules = self.store.list_policy_rules(
-            canonical.server_id, canonical.tool_name
-        )
         return self._finalize(
             canonical,
             PolicyDecision("allow", "verified_confirmation"),
@@ -367,7 +370,7 @@ class PreToolCallGate:
     def _confirmation_matches(self, request: ToolCallRequest, confirmation: Any) -> bool:
         if confirmation is None:
             return False
-        if confirmation.status not in {"approved", "consumed"}:
+        if confirmation.status != "approved":
             return False
         if confirmation.expires_at <= self._now():
             return False
@@ -758,6 +761,39 @@ def _policy_revision(rules) -> int:
         [rule.model_dump(mode="json") for rule in sorted(rules, key=lambda item: item.id)]
     )
     return int(fingerprint[:15], 16)
+
+
+def _confirmation_allowlist_rule_id(confirmation_id: str) -> str:
+    digest = canonical_json_sha256({"id": confirmation_id})
+    return f"confirm-allow-{digest[:32]}"
+
+
+def _confirmation_policy_matches(
+    confirmation: Any,
+    rules,
+    request: ToolCallRequest,
+) -> bool:
+    if confirmation.policy_revision is None:
+        return True
+    if _policy_revision(rules) == confirmation.policy_revision:
+        return True
+    if confirmation.decision != "allowlist":
+        return False
+    generated_id = _confirmation_allowlist_rule_id(confirmation.id)
+    generated = next((rule for rule in rules if rule.id == generated_id), None)
+    if generated is None or not (
+        generated.enabled
+        and generated.effect == "allowlist_auto"
+        and generated.server_id == request.server_id
+        and generated.tool_name == request.tool_name
+        and generated.schema_hash == request.schema_hash
+        and generated.created_by == confirmation.principal
+        and generated.data_classes == (confirmation.data_classes or ())
+        and generated.roles == (request.role,)
+    ):
+        return False
+    prior_rules = [rule for rule in rules if rule.id != generated_id]
+    return _policy_revision(prior_rules) == confirmation.policy_revision
 
 
 def _safe_arguments_summary(arguments: Mapping[str, Any]) -> dict[str, Any]:
