@@ -347,6 +347,7 @@ class PolicyRule(CapabilityModel):
     actions: tuple[str, ...] = Field(default_factory=tuple, max_length=100)
     parameter_constraints: BoundedJsonObject = Field(default_factory=dict)
     data_classes: tuple[str, ...] = Field(default_factory=tuple, max_length=100)
+    roles: tuple[str, ...] = Field(default_factory=tuple, max_length=100)
     schema_hash: Sha256 | None = None
     expires_at: UtcDateTime | None = None
     enabled: bool = True
@@ -464,6 +465,15 @@ class ExecutionPermit(CapabilityModel):
     policy_revision: int = Field(ge=0)
     expires_at: UtcDateTime
     consumed_at: UtcDateTime | None = None
+    caller: ShortText | None = None
+    session_id: Identifier | None = None
+    turn_id: Identifier | None = None
+    server_id: Identifier | None = None
+    tool_name: ShortText | None = None
+    snapshot_id: Identifier | None = None
+    schema_hash: Sha256 | None = None
+    arguments_hash: Sha256 | None = None
+    decision: Literal["allow"] | None = None
 
 
 class SkillRecord(CapabilityModel):

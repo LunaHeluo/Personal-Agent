@@ -353,6 +353,11 @@ class SafeWebFetcher:
         if self._owns_client:
             await self.client.aclose()
 
+    async def validate_public_url(self, url: str) -> _ValidatedUrl:
+        """Apply the same DNS and URL checks used immediately before fetches."""
+
+        return await self._validate_url(url)
+
     async def fetch(self, url: str) -> FetchedPage:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.timeout

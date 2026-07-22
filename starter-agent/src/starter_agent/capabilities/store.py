@@ -53,6 +53,12 @@ class RevisionConflictError(CapabilityStoreError):
     pass
 
 
+class ExecutionPermitError(CapabilityStoreError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 class CapabilityBase(DeclarativeBase):
     pass
 
@@ -646,6 +652,18 @@ class CapabilityStore:
             row = db.get(PolicyRuleRow, rule_id)
             return None if row is None else PolicyRule.model_validate_json(row.payload_json)
 
+    def list_policy_rules(self, server_id: str, tool_name: str) -> list[PolicyRule]:
+        with Session(self.engine) as db:
+            rows = db.scalars(
+                select(PolicyRuleRow)
+                .where(
+                    PolicyRuleRow.server_id == server_id,
+                    PolicyRuleRow.tool_name == tool_name,
+                )
+                .order_by(PolicyRuleRow.id)
+            ).all()
+            return [PolicyRule.model_validate_json(row.payload_json) for row in rows]
+
     def update_policy_rule(
         self,
         rule_id: str,
@@ -836,6 +854,50 @@ class CapabilityStore:
                 if row is None
                 else ExecutionPermit.model_validate_json(row.payload_json)
             )
+
+    def consume_execution_permit(
+        self,
+        permit_id: str,
+        *,
+        expected: dict[str, Any],
+        now: datetime | None = None,
+    ) -> ExecutionPermit:
+        """Validate every binding and atomically consume a live permit."""
+
+        consumed_at = now or datetime.now(UTC)
+        with Session(self.engine) as db:
+            row = db.get(ExecutionPermitRow, permit_id)
+            if row is None:
+                raise ExecutionPermitError("permit_not_found")
+            current = ExecutionPermit.model_validate_json(row.payload_json)
+            if current.expires_at <= consumed_at:
+                raise ExecutionPermitError("permit_expired")
+            if current.consumed_at is not None:
+                raise ExecutionPermitError("permit_consumed")
+            if current.decision != "allow" or any(
+                getattr(current, field, None) != value
+                for field, value in expected.items()
+            ):
+                raise ExecutionPermitError("permit_binding_mismatch")
+            candidate = current.model_copy(update={"consumed_at": consumed_at})
+            result = db.execute(
+                update(ExecutionPermitRow)
+                .where(
+                    ExecutionPermitRow.id == permit_id,
+                    ExecutionPermitRow.consumed_at.is_(None),
+                    ExecutionPermitRow.expires_at > consumed_at,
+                )
+                .values(
+                    consumed_at=consumed_at,
+                    payload_json=candidate.model_dump_json(),
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                db.rollback()
+                raise ExecutionPermitError("permit_consumed")
+            db.commit()
+            return candidate
 
     def create_skill(self, skill: SkillRecord) -> SkillRecord:
         row = SkillRecordRow(
