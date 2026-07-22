@@ -167,13 +167,18 @@ def test_token_calibration_uses_model_specific_safe_coefficient(application) -> 
     ) == 1.0
 
 
-async def test_disabling_tool_governance_skips_result_guard(
+async def test_disabling_tool_governance_is_ignored_and_guard_still_runs(
     application, monkeypatch
 ) -> None:
-    def fail_if_called(*args, **kwargs):
-        raise AssertionError("ToolResultGuard must not run when governance is off")
+    calls = 0
+    original = ToolResultGuard.guard
 
-    monkeypatch.setattr(ToolResultGuard, "guard", fail_if_called)
+    def track_guard(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(ToolResultGuard, "guard", track_guard)
 
     result = await application.chat(
         "执行时间工具",
@@ -183,7 +188,8 @@ async def test_disabling_tool_governance_skips_result_guard(
     )
 
     assert result.tool_calls == 1
-    assert result.tool_governance_enabled is False
+    assert result.tool_governance_enabled is True
+    assert calls == 1
 
 
 async def test_max_model_calls_returns_recoverable_continuation(

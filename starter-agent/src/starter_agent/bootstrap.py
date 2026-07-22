@@ -70,20 +70,29 @@ def create_application() -> ApplicationService:
         settings.resolve_path(settings.app.identity_path),
         settings.project_root / "config/prompts/system.md",
     )
-    return ApplicationService(
+    application = ApplicationService(
         settings=settings,
         store=store,
         providers=providers,
         runtime=runtime,
         context=context,
     )
+    application.configure_job_description_ingestion(
+        KnowledgeApplicationService(
+            settings,
+            SQLiteKnowledgeStore(
+                settings.app.database_url, settings.project_root
+            ),
+        )
+    )
+    return application
 
 
 @lru_cache
 def create_knowledge_service() -> KnowledgeApplicationService:
-    settings = get_settings()
-    store = SQLiteKnowledgeStore(settings.app.database_url, settings.project_root)
-    return KnowledgeApplicationService(settings, store)
+    service = create_application().job_description_ingestion
+    assert service is not None
+    return service.knowledge
 
 
 @lru_cache

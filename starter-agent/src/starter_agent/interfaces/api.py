@@ -11,7 +11,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from starter_agent.bootstrap import (
     create_application,
@@ -51,6 +51,11 @@ class ChatRequest(BaseModel):
     tool_governance_enabled: bool = True
     knowledge_base_id: UUID | None = None
     knowledge_mode: Literal["off", "required"] = "off"
+
+    @field_validator("tool_governance_enabled", mode="before")
+    @classmethod
+    def enforce_tool_result_governance(cls, _value: object) -> bool:
+        return True
 
 
 class ProviderInfo(BaseModel):

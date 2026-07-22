@@ -33,6 +33,7 @@ from starter_agent.mcp.discovery import (
     discover_and_activate,
 )
 from starter_agent.mcp.tool_adapter import McpToolResultAdapter
+from starter_agent.capabilities.policy import extract_url_targets
 
 
 _CommandResult = TypeVar("_CommandResult")
@@ -528,6 +529,24 @@ class McpManager:
                 lambda session: session.call_tool(tool_name, arguments),
             )
 
+    async def _invoke_tool_bound(
+        self,
+        server_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        expected_snapshot_id: str,
+    ) -> tuple[Any, str]:
+        async with self.lease(server_id) as lease:
+            if lease.snapshot_id != expected_snapshot_id:
+                raise McpManagerError("snapshot_binding_mismatch")
+            result = await self._run_protocol_command(
+                lease,
+                lambda session: session.call_tool(tool_name, arguments),
+            )
+            assert lease.snapshot_id is not None
+            return result, lease.snapshot_id
+
     def _publish_snapshot(self, handle: ServerHandle, snapshot: Snapshot) -> None:
         if self.store is None or self.tool_executor is None:
             return
@@ -547,15 +566,20 @@ class McpManager:
                 _name=tool.upstream_name,
                 _schema_hash=tool.schema_hash,
             ):
-                upstream = await self._invoke_tool(
-                    handle.server_id, _name, dict(arguments)
+                upstream, lease_snapshot_id = await self._invoke_tool_bound(
+                    handle.server_id,
+                    _name,
+                    dict(arguments),
+                    expected_snapshot_id=request.snapshot_id,
                 )
+                targets = extract_url_targets(request.arguments)
                 return result_adapter.adapt(
                     upstream,
                     server_id=handle.server_id,
                     call_id=request.call_id,
-                    snapshot_id=request.snapshot_id,
+                    snapshot_id=lease_snapshot_id,
                     schema_hash=_schema_hash,
+                    requested_url=targets[0] if targets else None,
                 )
 
             self.tool_executor.register_invoker(

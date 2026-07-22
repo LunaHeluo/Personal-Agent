@@ -212,6 +212,8 @@ class AgentRuntime:
         on_tool_artifact: Callable[[dict], Awaitable[None]] | None = None,
         tool_governance_enabled: bool = True,
     ) -> tuple[ModelResponse, list[Message], int]:
+        # Retain the compatibility parameter while making governance mandatory.
+        tool_governance_enabled = True
         started = monotonic()
         model_calls = 0
         tool_calls = 0
@@ -299,13 +301,14 @@ class AgentRuntime:
                         f"Repeated identical tool call detected: {call.name}"
                     )
                 tool = self.tools.get(call.name)
+                capability = self.gate.registry.resolve_execution(call.name)
                 tool_ok = False
                 tool_error_code: str | None = None
                 tool_display = ""
                 tool_retryable = False
                 tool_failure_type: str | None = None
                 tool_metadata: dict[str, object] = {}
-                if tool is None:
+                if tool is None and capability is None:
                     tool_error_code = "unknown_tool"
                     tool_display = "模型请求了未注册的工具"
                     result_text = json.dumps(
@@ -314,11 +317,16 @@ class AgentRuntime:
                     )
                 else:
                     try:
-                        self.policy.check(tool)
+                        if tool is not None:
+                            self.policy.check(tool)
                         logger.info(
                             "tool.requested",
-                            tool=tool.name,
-                            risk_level=tool.risk_level,
+                            tool=call.name,
+                            risk_level=(
+                                tool.risk_level
+                                if tool is not None
+                                else capability.risk_level
+                            ),
                         )
                         result = await asyncio.wait_for(
                             self.execute_tool(
@@ -350,6 +358,14 @@ class AgentRuntime:
                             "recipient_count",
                             "sent_at",
                             "message_ref",
+                            "server_id",
+                            "call_id",
+                            "snapshot_id",
+                            "schema_hash",
+                            "requested_url",
+                            "final_url",
+                            "source_url",
+                            "source_content_sha256",
                         }
                         tool_metadata = {
                             key: value
@@ -358,7 +374,7 @@ class AgentRuntime:
                         }
                         logger.info(
                             "tool.completed",
-                            tool=tool.name,
+                            tool=call.name,
                             ok=result.ok,
                             error_code=result.error_code,
                             tool_governance_enabled=tool_governance_enabled,
@@ -397,54 +413,45 @@ class AgentRuntime:
                             error_type=type(exc).__name__,
                         )
                 raw_source_ref = f"tool:{call.name}:{turn_id}:{call.id}"
-                if tool_governance_enabled:
-                    remaining_tool_tokens = max(
-                        100,
-                        self.context_config.all_tool_results_tokens
-                        - tool_result_tokens,
-                    )
-                    guard = ToolResultGuard(
-                        self.token_counter,
-                        min(
-                            self.context_config.per_tool_result_tokens,
-                            remaining_tool_tokens,
-                        ),
-                    )
-                    guarded = guard.guard(
-                        result_text,
-                        call.name,
-                        call.id,
-                        raw_source_ref,
-                    )
-                else:
-                    raw_tokens = self.token_counter.tool_message(
-                        result_text,
-                        call.name,
-                        call.id,
-                    ).tokens
-                    guarded = GuardedToolResult(
-                        content=result_text,
-                        raw_result_tokens=raw_tokens,
-                        context_result_tokens=raw_tokens,
-                        is_truncated=False,
-                    )
-                if (
-                    tool_governance_enabled
-                    and guarded.is_truncated
-                    and on_tool_artifact
-                ):
+                remaining_tool_tokens = max(
+                    100,
+                    self.context_config.all_tool_results_tokens
+                    - tool_result_tokens,
+                )
+                guard = ToolResultGuard(
+                    self.token_counter,
+                    min(
+                        self.context_config.per_tool_result_tokens,
+                        remaining_tool_tokens,
+                    ),
+                )
+                guarded = guard.guard(
+                    result_text,
+                    call.name,
+                    call.id,
+                    raw_source_ref,
+                )
+                persisted_source_ref = None
+                if on_tool_artifact:
                     await on_tool_artifact(
                         {
                             "source_ref": raw_source_ref,
                             "session_id": session_id,
                             "turn_id": turn_id,
                             "tool_name": call.name,
+                            "call_id": call.id,
                             "content": guarded.redacted_content,
                             "server_id": tool_metadata.get("server_id"),
                             "snapshot_id": tool_metadata.get("snapshot_id"),
                             "schema_hash": tool_metadata.get("schema_hash"),
                             "requested_url": tool_metadata.get("requested_url"),
                             "final_url": tool_metadata.get("final_url"),
+                            "source_url": tool_metadata.get(
+                                "source_url", tool_metadata.get("final_url")
+                            ),
+                            "source_content_sha256": tool_metadata.get(
+                                "source_content_sha256"
+                            ),
                             "content_sha256": guarded.content_sha256,
                             "truncation_summary": {
                                 "reason": guarded.truncation_reason,
@@ -457,6 +464,7 @@ class AgentRuntime:
                             },
                         }
                     )
+                    persisted_source_ref = raw_source_ref
                 tool_message = Message(
                     role="tool",
                     content=guarded.content,
@@ -489,10 +497,18 @@ class AgentRuntime:
                             "source_url": tool_metadata.get(
                                 "source_url", tool_metadata.get("final_url")
                             ),
+                            "server_id": tool_metadata.get("server_id"),
+                            "requested_url": tool_metadata.get("requested_url"),
+                            "final_url": tool_metadata.get("final_url"),
+                            "source_content_sha256": tool_metadata.get(
+                                "source_content_sha256"
+                            ),
                             "snapshot_id": tool_metadata.get("snapshot_id"),
                             "schema_hash": tool_metadata.get("schema_hash"),
                             "truncation_reason": guarded.truncation_reason,
-                            "raw_source_ref": guarded.raw_source_ref,
+                            "raw_source_ref": (
+                                persisted_source_ref or guarded.raw_source_ref
+                            ),
                             "tool_governance_enabled": tool_governance_enabled,
                             "display": tool_display,
                             "retryable": tool_retryable,

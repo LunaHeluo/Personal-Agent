@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -20,7 +21,7 @@ from starter_agent.domain.models import ToolResult
 
 
 _SAFE_UPSTREAM_METADATA = frozenset(
-    {"requested_url", "final_url", "source_url", "content_sha256"}
+    {"final_url", "source_url", "content_sha256"}
 )
 _SENSITIVE_QUERY_NAMES = frozenset(
     {
@@ -48,6 +49,7 @@ class McpToolResultAdapter:
         call_id: str,
         snapshot_id: str,
         schema_hash: str,
+        requested_url: str | None = None,
     ) -> ToolResult:
         structured = dict(result.structuredContent or {})
         blocks = [self._content_block(block) for block in result.content]
@@ -63,22 +65,32 @@ class McpToolResultAdapter:
             "snapshot_id": snapshot_id,
             "schema_hash": schema_hash,
         }
-        for key in ("requested_url", "final_url", "source_url"):
+        if requested_url:
+            metadata["requested_url"] = _sanitize_url(requested_url)
+        for key in ("final_url", "source_url"):
             value = upstream.get(key, structured.get(key))
             if isinstance(value, str) and value:
                 metadata[key] = _sanitize_url(value)
         final_url = metadata.get("final_url")
         if "source_url" not in metadata and isinstance(final_url, str):
             metadata["source_url"] = final_url
-        content_hash = upstream.get(
+        source_content_hash = upstream.get(
             "content_sha256", structured.get("content_sha256")
         )
         if (
-            isinstance(content_hash, str)
-            and len(content_hash) == 64
-            and all(character in "0123456789abcdefABCDEF" for character in content_hash)
+            isinstance(source_content_hash, str)
+            and len(source_content_hash) == 64
+            and all(character in "0123456789abcdefABCDEF" for character in source_content_hash)
         ):
-            metadata["content_sha256"] = content_hash.casefold()
+            metadata["source_content_sha256"] = source_content_hash.casefold()
+        metadata["content_sha256"] = hashlib.sha256(
+            json.dumps(
+                {"content": blocks, "structured_content": structured},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
 
         return ToolResult(
             ok=not result.isError,

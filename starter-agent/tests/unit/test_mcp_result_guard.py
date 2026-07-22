@@ -4,6 +4,7 @@ from uuid import uuid4
 from starter_agent.agent.token_counter import TokenCounter
 from starter_agent.agent.tool_result_guard import ToolResultGuard
 from starter_agent.infrastructure.session_store import SQLiteSessionStore
+from starter_agent.interfaces.api import ChatRequest
 
 
 def test_guard_redacts_before_truncation_and_reports_complete_measurements() -> None:
@@ -85,3 +86,44 @@ def test_tool_artifact_store_is_restricted_and_never_persists_unredacted_content
     assert "TOP-SECRET" not in artifact["content"]
     assert artifact["snapshot_id"] == "snapshot-7"
     assert artifact["truncation_summary"]["reason"] == "token_budget"
+
+
+def test_api_client_cannot_disable_real_tool_result_governance() -> None:
+    request = ChatRequest(message="run tool", tool_governance_enabled=False)
+
+    assert request.tool_governance_enabled is True
+
+
+def test_nested_sensitive_containers_are_redacted_in_context_and_artifact(
+    tmp_path,
+) -> None:
+    secrets = ("COOKIE-VALUE", "AUTH-VALUE", "person@example.com", "Person Name", "FORM-VALUE")
+    raw = json.dumps(
+        {
+            "cookies": [{"name": "sid", "value": secrets[0]}],
+            "authorization": {"value": secrets[1]},
+            "form": {
+                "email": secrets[2],
+                "name": secrets[3],
+                "value": secrets[4],
+            },
+        }
+    )
+    guarded = ToolResultGuard(
+        TokenCounter(safety_ratio=1), max_result_tokens=2_000
+    ).guard(raw, "jobs", "call-deep", "artifact:call-deep")
+    assert all(secret not in guarded.content for secret in secrets)
+
+    store = SQLiteSessionStore("sqlite:///deep-artifact.db", tmp_path)
+    session_id = store.create_session()
+    store.save_tool_artifact(
+        source_ref="artifact:call-deep",
+        session_id=session_id,
+        turn_id=uuid4(),
+        call_id="call-deep",
+        tool_name="jobs",
+        content=raw,
+    )
+    artifact = store.get_tool_artifact("artifact:call-deep")
+    assert artifact is not None
+    assert all(secret not in artifact["content"] for secret in secrets)

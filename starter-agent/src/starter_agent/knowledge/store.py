@@ -573,6 +573,40 @@ class SQLiteKnowledgeStore:
             )
         return self._document(row, version) if row else None
 
+    def find_job_description_by_source_identity(
+        self,
+        scope: KnowledgeScope,
+        knowledge_base_id: UUID,
+        *,
+        source_url: str,
+        source_content_sha256: str,
+    ) -> tuple[str, KnowledgeDocument] | None:
+        """Find active JD source markers independent of its URL-derived filename."""
+
+        with Session(self.engine) as db:
+            rows = list(
+                db.scalars(
+                    select(KnowledgeDocumentRow).where(
+                        *self._scope_filters(scope),
+                        KnowledgeDocumentRow.knowledge_base_id
+                        == str(knowledge_base_id),
+                        KnowledgeDocumentRow.document_type == "job_description",
+                        KnowledgeDocumentRow.active_version_id.is_not(None),
+                    )
+                )
+            )
+            for row in rows:
+                version = db.get(DocumentVersionRow, row.active_version_id)
+                if version is None:
+                    continue
+                lines = set(version.source_text.splitlines())
+                document = self._document(row, version)
+                if f"- Source content SHA-256: {source_content_sha256}" in lines:
+                    return "source_hash", document
+                if f"- Source URL: {source_url}" in lines:
+                    return "source_url", document
+        return None
+
     def get_job(
         self,
         scope: KnowledgeScope,

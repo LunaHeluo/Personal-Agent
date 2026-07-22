@@ -327,15 +327,14 @@ async def test_selection_text_uses_the_matching_previous_result(
     assert payload["metadata"]["is_untrusted_external_content"] is True
 
 
-async def test_disabling_governance_keeps_the_full_job_result() -> None:
+async def test_disabling_governance_is_ignored_for_job_results() -> None:
     _, events, generated, _, _ = await _search_then_select(False)
 
     completed = events[-1]
-    assert completed["tool_governance_enabled"] is False
-    assert completed["is_truncated"] is False
-    assert completed["raw_result_tokens"] == completed["context_result_tokens"]
+    assert completed["tool_governance_enabled"] is True
+    assert completed["is_truncated"] is True
+    assert completed["raw_result_tokens"] > completed["context_result_tokens"]
     payload = json.loads(next(message for message in generated if message.role == "tool").content)
-    assert len(payload["data"]["raw_text"]) > 10_000
     assert payload["metadata"]["is_untrusted_external_content"] is True
 
 

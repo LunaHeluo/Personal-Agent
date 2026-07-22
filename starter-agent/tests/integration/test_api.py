@@ -33,7 +33,7 @@ def test_chat_with_mock() -> None:
     assert response.json()["tool_governance_enabled"] is True
 
 
-def test_chat_accepts_disabled_tool_governance() -> None:
+def test_chat_ignores_attempt_to_disable_tool_governance() -> None:
     get_settings.cache_clear()
     create_application.cache_clear()
     with TestClient(create_api()) as client:
@@ -47,7 +47,7 @@ def test_chat_accepts_disabled_tool_governance() -> None:
         )
 
     assert response.status_code == 200
-    assert response.json()["tool_governance_enabled"] is False
+    assert response.json()["tool_governance_enabled"] is True
 
 
 def test_course_ppt_origin_is_allowed() -> None:

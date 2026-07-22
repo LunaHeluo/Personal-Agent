@@ -51,6 +51,53 @@ class ApplicationService:
         )
         self.memory_writer = AutoMemoryWriter(store, settings.memory)
         self._background_tasks: set[asyncio.Task] = set()
+        self.job_description_ingestion = None
+
+    def configure_job_description_ingestion(self, knowledge) -> None:
+        from starter_agent.job_research.jd import JobDescriptionIngestionService
+
+        self.job_description_ingestion = JobDescriptionIngestionService(
+            knowledge, self.store
+        )
+
+    def prepare_job_description_ingestion(
+        self, *, source_ref: str, principal: str, session_id: UUID
+    ):
+        if self.job_description_ingestion is None:
+            raise RuntimeError("job_description_ingestion_unavailable")
+        return self.job_description_ingestion.prepare(
+            source_ref=source_ref,
+            principal=principal,
+            session_id=session_id,
+        )
+
+    def approve_job_description_ingestion(
+        self, approval_id: UUID, *, principal: str, session_id: UUID
+    ):
+        if self.job_description_ingestion is None:
+            raise RuntimeError("job_description_ingestion_unavailable")
+        return self.job_description_ingestion.approve(
+            approval_id,
+            principal=principal,
+            session_id=session_id,
+        )
+
+    def ingest_job_description(
+        self,
+        approval_id: UUID,
+        *,
+        principal: str,
+        session_id: UUID,
+        knowledge_base_id: UUID | None = None,
+    ):
+        if self.job_description_ingestion is None:
+            raise RuntimeError("job_description_ingestion_unavailable")
+        return self.job_description_ingestion.ingest(
+            approval_id,
+            principal=principal,
+            session_id=session_id,
+            knowledge_base_id=knowledge_base_id,
+        )
 
     def list_pending_confirmations(self, *, session_id: UUID | None = None):
         return self.turn_coordinator.confirmations.list_pending(
@@ -83,6 +130,8 @@ class ApplicationService:
         on_tool_event: Callable[[dict], Awaitable[None]] | None = None,
         tool_governance_enabled: bool = True,
     ) -> ChatResult:
+        # Tool-result governance is a server safety invariant, not a client option.
+        tool_governance_enabled = True
         session_id = self.store.ensure_session(session_id)
         turn_id = uuid4()
         provider_name = provider_name or self.settings.model.default_provider

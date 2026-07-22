@@ -21,14 +21,21 @@ _SAFE_TRACE_METADATA = frozenset(
         "schema_hash",
         "server_id",
         "snapshot_id",
+        "source_content_sha256",
         "source_url",
     }
 )
 _URL_METADATA = frozenset({"final_url", "requested_url", "source_url"})
-_HASH_METADATA = frozenset({"content_sha256", "schema_hash"})
+_HASH_METADATA = frozenset(
+    {"content_sha256", "schema_hash", "source_content_sha256"}
+)
 _SENSITIVE_KEY = re.compile(
     r"(?:api[_-]?key|authorization|auth[_-]?code|cookie|credential|csrf|"
     r"pass(?:word|wd)?|secret|session|token)",
+    re.IGNORECASE,
+)
+_SENSITIVE_CONTAINER_KEY = re.compile(
+    r"^(?:authorization|cookies?|form(?:_data|_fields)?|headers?)$",
     re.IGNORECASE,
 )
 _SENSITIVE_ASSIGNMENT = re.compile(
@@ -329,7 +336,14 @@ def redact_tool_result_content(content: str) -> str:
 def _redact_value(value: Any, *, sensitive: bool = False) -> Any:
     if isinstance(value, dict):
         return {
-            key: _redact_value(item, sensitive=bool(_SENSITIVE_KEY.search(str(key))))
+            key: _redact_value(
+                item,
+                sensitive=(
+                    sensitive
+                    or bool(_SENSITIVE_KEY.search(str(key)))
+                    or bool(_SENSITIVE_CONTAINER_KEY.fullmatch(str(key)))
+                ),
+            )
             for key, item in value.items()
         }
     if isinstance(value, list):

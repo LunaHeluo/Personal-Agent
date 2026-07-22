@@ -1,10 +1,12 @@
+import json
+
 import pytest
 
 from starter_agent.job_research.jd import JobDescriptionNormalizer
 
 
-def _complete_payload() -> dict:
-    return {
+def _artifact(**updates) -> dict:
+    data = {
         "title": "Agent Engineer",
         "company": "Example Corp",
         "location": "Shanghai",
@@ -13,46 +15,77 @@ def _complete_payload() -> dict:
         "final_url": "https://jobs.example/roles/42",
         "content_sha256": "a" * 64,
     }
+    data.update(updates.pop("data", {}))
+    artifact = {
+        "source_ref": "tool:jobs:turn-real:call-real",
+        "content": json.dumps(
+            {
+                "ok": True,
+                "data": data,
+                "metadata": {
+                    "call_id": "forged-call",
+                    "snapshot_id": "forged-snapshot",
+                    "schema_hash": "f" * 64,
+                },
+            }
+        ),
+        "restricted": True,
+        "server_id": "jobs",
+        "call_id": "call-real",
+        "snapshot_id": "snapshot-real",
+        "schema_hash": "b" * 64,
+        "final_url": data.get("final_url"),
+        "source_content_sha256": data.get("content_sha256"),
+        "content_sha256": "c" * 64,
+        "truncation_summary": {"reason": "token_budget"},
+    }
+    artifact.update(updates)
+    return artifact
 
 
-def test_normalizer_marks_complete_jd_and_builds_field_level_source_refs() -> None:
-    normalized = JobDescriptionNormalizer().normalize(
-        _complete_payload(),
-        call_id="call-42",
-        snapshot_id="snapshot-7",
-        schema_hash="b" * 64,
-    )
+def test_normalizer_uses_restricted_artifact_provenance_for_field_source_refs() -> None:
+    normalized = JobDescriptionNormalizer().normalize_artifact(_artifact())
 
     assert normalized.is_complete is True
     assert normalized.completeness_reasons == ()
     assert set(normalized.field_source_refs) == {
         "title", "company", "location", "responsibilities", "requirements"
     }
-    assert normalized.field_source_refs["title"].source_url == normalized.source_url
-    assert normalized.field_source_refs["title"].call_id == "call-42"
+    source = normalized.field_source_refs["title"]
+    assert source.source_url == "https://jobs.example/roles/42"
+    assert source.call_id == "call-real"
+    assert source.snapshot_id == "snapshot-real"
+    assert source.schema_hash == "b" * 64
+    assert source.artifact_ref == "tool:jobs:turn-real:call-real"
 
 
 @pytest.mark.parametrize(
-    ("updates", "reason"),
+    ("artifact", "reason"),
     [
-        ({"final_url": ""}, "missing_final_url"),
-        ({"requirements": []}, "missing_requirements"),
-        ({"is_truncated": True}, "truncated_source"),
-        ({"page_type": "listing"}, "listing_page"),
-        ({"page_type": "login"}, "login_wall"),
+        (_artifact(final_url=""), "missing_final_url"),
+        (_artifact(data={"requirements": []}), "missing_requirements"),
+        (_artifact(data={"page_type": "listing"}), "listing_page"),
+        (_artifact(data={"page_type": "login"}), "login_wall"),
         (
-            {"final_url": "https://jobs.example/42?access_token=private"},
+            _artifact(final_url="https://jobs.example/42?access_token=private"),
             "missing_final_url",
         ),
     ],
 )
-def test_normalizer_fails_closed_for_unverifiable_sources(
-    updates: dict, reason: str
+def test_normalizer_fails_closed_for_unverifiable_artifacts(
+    artifact: dict, reason: str
 ) -> None:
-    payload = _complete_payload()
-    payload.update(updates)
-
-    normalized = JobDescriptionNormalizer().normalize(payload)
+    normalized = JobDescriptionNormalizer().normalize_artifact(artifact)
 
     assert normalized.is_complete is False
     assert reason in normalized.completeness_reasons
+
+
+def test_unrestricted_or_caller_claimed_truncation_recovery_is_rejected() -> None:
+    untrusted = _artifact(
+        restricted=False,
+        data={"requirements": [], "truncation_recovered": True},
+    )
+
+    with pytest.raises(ValueError, match="restricted_artifact_required"):
+        JobDescriptionNormalizer().normalize_artifact(untrusted)

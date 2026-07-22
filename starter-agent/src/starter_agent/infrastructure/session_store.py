@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, create_engine, delete, func, inspect, select, text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, create_engine, delete, func, inspect, select, text, update
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
 from starter_agent.domain.models import (
@@ -94,13 +94,18 @@ class ToolArtifactRow(Base):
     session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), index=True)
     turn_id: Mapped[str] = mapped_column(String(36), index=True)
     tool_name: Mapped[str] = mapped_column(String(120))
+    call_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     content: Mapped[str] = mapped_column(Text)
     server_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     snapshot_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     schema_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     requested_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     final_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_content_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
     truncation_summary_json: Mapped[str] = mapped_column(Text, default="{}")
     restricted: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -124,6 +129,32 @@ class MemoryItemRow(Base):
     status: Mapped[str] = mapped_column(String(20), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class JobDescriptionApprovalRow(Base):
+    __tablename__ = "job_description_ingestion_approvals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    principal: Mapped[str] = mapped_column(String(200), index=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), index=True)
+    turn_id: Mapped[str] = mapped_column(String(36), index=True)
+    call_id: Mapped[str] = mapped_column(String(160))
+    artifact_ref: Mapped[str] = mapped_column(String(500), unique=True)
+    server_id: Mapped[str] = mapped_column(String(160))
+    snapshot_id: Mapped[str] = mapped_column(String(160))
+    schema_hash: Mapped[str] = mapped_column(String(64))
+    source_url: Mapped[str] = mapped_column(Text)
+    source_content_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    artifact_content_sha256: Mapped[str] = mapped_column(String(64))
+    gate_reason_code: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class SQLiteSessionStore:
@@ -156,11 +187,14 @@ class SQLiteSessionStore:
         }
         artifact_additions = {
             "server_id": "VARCHAR(160)",
+            "call_id": "VARCHAR(160)",
             "snapshot_id": "VARCHAR(160)",
             "schema_hash": "VARCHAR(64)",
             "requested_url": "TEXT",
             "final_url": "TEXT",
+            "source_url": "TEXT",
             "content_sha256": "VARCHAR(64)",
+            "source_content_sha256": "VARCHAR(64)",
             "truncation_summary_json": "TEXT NOT NULL DEFAULT '{}'",
             "restricted": "INTEGER NOT NULL DEFAULT 1",
         }
@@ -624,12 +658,15 @@ class SQLiteSessionStore:
         turn_id: UUID,
         tool_name: str,
         content: str,
+        call_id: str | None = None,
         server_id: str | None = None,
         snapshot_id: str | None = None,
         schema_hash: str | None = None,
         requested_url: str | None = None,
         final_url: str | None = None,
+        source_url: str | None = None,
         content_sha256: str | None = None,
+        source_content_sha256: str | None = None,
         truncation_summary: dict[str, object] | None = None,
     ) -> None:
         from starter_agent.agent.tool_result_guard import (
@@ -643,6 +680,7 @@ class SQLiteSessionStore:
                     {
                         "requested_url": requested_url,
                         "final_url": final_url,
+                        "source_url": source_url,
                     },
                     ensure_ascii=False,
                 )
@@ -660,13 +698,16 @@ class SQLiteSessionStore:
                     session_id=str(session_id),
                     turn_id=str(turn_id),
                     tool_name=tool_name,
+                    call_id=call_id,
                     content=safe_content,
                     server_id=server_id,
                     snapshot_id=snapshot_id,
                     schema_hash=schema_hash,
                     requested_url=safe_urls.get("requested_url"),
                     final_url=safe_urls.get("final_url"),
+                    source_url=safe_urls.get("source_url"),
                     content_sha256=content_sha256,
+                    source_content_sha256=source_content_sha256,
                     truncation_summary_json=json.dumps(
                         safe_summary, ensure_ascii=False, separators=(",", ":")
                     ),
@@ -686,19 +727,156 @@ class SQLiteSessionStore:
                 "session_id": UUID(row.session_id),
                 "turn_id": UUID(row.turn_id),
                 "tool_name": row.tool_name,
+                "call_id": row.call_id,
                 "content": row.content,
                 "server_id": row.server_id,
                 "snapshot_id": row.snapshot_id,
                 "schema_hash": row.schema_hash,
                 "requested_url": row.requested_url,
                 "final_url": row.final_url,
+                "source_url": row.source_url,
                 "content_sha256": row.content_sha256,
+                "source_content_sha256": row.source_content_sha256,
                 "truncation_summary": json.loads(
                     row.truncation_summary_json or "{}"
                 ),
                 "restricted": bool(row.restricted),
                 "created_at": row.created_at,
             }
+
+    @staticmethod
+    def _job_description_approval(row: JobDescriptionApprovalRow) -> dict[str, object]:
+        return {
+            "id": UUID(row.id),
+            "principal": row.principal,
+            "session_id": UUID(row.session_id),
+            "turn_id": UUID(row.turn_id),
+            "call_id": row.call_id,
+            "artifact_ref": row.artifact_ref,
+            "server_id": row.server_id,
+            "snapshot_id": row.snapshot_id,
+            "schema_hash": row.schema_hash,
+            "source_url": row.source_url,
+            "source_content_sha256": row.source_content_sha256,
+            "artifact_content_sha256": row.artifact_content_sha256,
+            "gate_reason_code": row.gate_reason_code,
+            "status": row.status,
+            "created_at": row.created_at,
+            "approved_at": row.approved_at,
+            "consumed_at": row.consumed_at,
+        }
+
+    def create_job_description_approval(
+        self,
+        *,
+        principal: str,
+        session_id: UUID,
+        turn_id: UUID,
+        call_id: str,
+        artifact_ref: str,
+        server_id: str,
+        snapshot_id: str,
+        schema_hash: str,
+        source_url: str,
+        source_content_sha256: str,
+        artifact_content_sha256: str,
+        gate_reason_code: str,
+    ) -> dict[str, object]:
+        row = JobDescriptionApprovalRow(
+            id=str(uuid4()),
+            principal=principal,
+            session_id=str(session_id),
+            turn_id=str(turn_id),
+            call_id=call_id,
+            artifact_ref=artifact_ref,
+            server_id=server_id,
+            snapshot_id=snapshot_id,
+            schema_hash=schema_hash,
+            source_url=source_url,
+            source_content_sha256=source_content_sha256,
+            artifact_content_sha256=artifact_content_sha256,
+            gate_reason_code=gate_reason_code,
+            status="pending",
+            created_at=datetime.now(UTC),
+        )
+        with Session(self.engine) as db:
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return self._job_description_approval(row)
+
+    def get_job_description_approval(
+        self, approval_id: UUID
+    ) -> dict[str, object] | None:
+        with Session(self.engine) as db:
+            row = db.get(JobDescriptionApprovalRow, str(approval_id))
+            return None if row is None else self._job_description_approval(row)
+
+    def approve_job_description_ingestion(
+        self,
+        approval_id: UUID,
+        *,
+        principal: str,
+        session_id: UUID,
+    ) -> dict[str, object]:
+        now = datetime.now(UTC)
+        with Session(self.engine) as db, db.begin():
+            row = db.get(JobDescriptionApprovalRow, str(approval_id))
+            if row is None:
+                raise ValueError("confirmation_not_found")
+            if row.principal != principal or row.session_id != str(session_id):
+                raise ValueError("confirmation_binding_mismatch")
+            if row.status == "consumed":
+                raise ValueError("confirmation_consumed")
+            if row.status == "approved":
+                return self._job_description_approval(row)
+            result = db.execute(
+                update(JobDescriptionApprovalRow)
+                .where(
+                    JobDescriptionApprovalRow.id == str(approval_id),
+                    JobDescriptionApprovalRow.status == "pending",
+                )
+                .values(status="approved", approved_at=now)
+            )
+            if result.rowcount != 1:
+                raise ValueError("confirmation_state_conflict")
+            db.flush()
+            refreshed = db.get(JobDescriptionApprovalRow, str(approval_id))
+            assert refreshed is not None
+            return self._job_description_approval(refreshed)
+
+    def consume_job_description_approval(
+        self,
+        approval_id: UUID,
+        *,
+        principal: str,
+        session_id: UUID,
+    ) -> dict[str, object]:
+        now = datetime.now(UTC)
+        with Session(self.engine) as db, db.begin():
+            row = db.get(JobDescriptionApprovalRow, str(approval_id))
+            if row is None:
+                raise ValueError("confirmation_not_found")
+            if row.principal != principal or row.session_id != str(session_id):
+                raise ValueError("confirmation_binding_mismatch")
+            if row.status == "consumed":
+                raise ValueError("confirmation_consumed")
+            if row.status != "approved":
+                raise ValueError("confirmation_not_approved")
+            result = db.execute(
+                update(JobDescriptionApprovalRow)
+                .where(
+                    JobDescriptionApprovalRow.id == str(approval_id),
+                    JobDescriptionApprovalRow.status == "approved",
+                )
+                .values(status="consumed", consumed_at=now)
+            )
+            if result.rowcount != 1:
+                raise ValueError("confirmation_consumed")
+            db.flush()
+            refreshed = db.get(JobDescriptionApprovalRow, str(approval_id))
+            assert refreshed is not None
+            return self._job_description_approval(refreshed)
 
     def session_exists(self, session_id: UUID) -> bool:
         with Session(self.engine) as db:

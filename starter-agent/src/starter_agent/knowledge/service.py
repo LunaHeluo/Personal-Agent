@@ -107,6 +107,20 @@ class KnowledgeApplicationService:
             raise KnowledgeError("document_not_found")
         return document
 
+    def find_job_description_by_source_identity(
+        self,
+        knowledge_base_id: UUID,
+        *,
+        source_url: str,
+        source_content_sha256: str,
+    ) -> tuple[str, KnowledgeDocument] | None:
+        return self.store.find_job_description_by_source_identity(
+            self.scope,
+            knowledge_base_id,
+            source_url=source_url,
+            source_content_sha256=source_content_sha256,
+        )
+
     def get_job(
         self, knowledge_base_id: UUID, job_id: UUID
     ) -> IngestionJob:
