@@ -91,8 +91,38 @@ class KnowledgeApplicationService:
             source_text=validated.text,
             content_sha256=validated.content_sha256,
         )
-        self.ingestion.run(self.scope, upload)
+        try:
+            self.ingestion.run(self.scope, upload)
+        except Exception:
+            try:
+                self.store.discard_upload(self.scope, upload)
+            except Exception as cleanup_error:
+                raise KnowledgeError(
+                    "document_ingestion_cleanup_failed"
+                ) from cleanup_error
+            raise
         return upload
+
+    def require_upload_succeeded(self, upload: UploadBundle) -> None:
+        job = self.store.get_job(
+            self.scope, upload.document.knowledge_base_id, upload.job.id
+        )
+        document = self.store.get_document(
+            self.scope, upload.document.knowledge_base_id, upload.document.id
+        )
+        if (
+            job is None
+            or document is None
+            or job.status != "succeeded"
+            or document.status != "indexed"
+            or document.active_version_id != upload.version.id
+        ):
+            raise KnowledgeError(
+                job.error_code if job and job.error_code else "document_ingestion_failed"
+            )
+
+    def discard_upload(self, upload: UploadBundle) -> bool:
+        return self.store.discard_upload(self.scope, upload)
 
     def list_documents(self, knowledge_base_id: UUID) -> list[KnowledgeDocument]:
         return self.store.list_documents(self.scope, knowledge_base_id)

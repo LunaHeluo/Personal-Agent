@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -34,6 +35,62 @@ from starter_agent.knowledge.models import (
     KnowledgeScope,
     UploadBundle,
 )
+
+
+_SENSITIVE_SOURCE_QUERY_KEYS = frozenset(
+    {
+        "access_token",
+        "api_key",
+        "apikey",
+        "auth",
+        "authorization",
+        "cookie",
+        "password",
+        "secret",
+        "token",
+    }
+)
+
+
+def _legacy_source_identity(source_text: str) -> tuple[str, str]:
+    markers: dict[str, str] = {}
+    for line in source_text.splitlines():
+        for label in ("Source URL", "Source content SHA-256"):
+            prefix = f"- {label}: "
+            if line.startswith(prefix) and label not in markers:
+                markers[label] = line.removeprefix(prefix).strip()
+    source_hash = markers.get("Source content SHA-256", "").casefold()
+    if len(source_hash) != 64 or any(
+        character not in "0123456789abcdef" for character in source_hash
+    ):
+        source_hash = ""
+    return _canonical_source_url(markers.get("Source URL", "")), source_hash
+
+
+def _canonical_source_url(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme.casefold() not in {"http", "https"} or not parsed.hostname:
+            return ""
+        port = f":{parsed.port}" if parsed.port is not None else ""
+    except ValueError:
+        return ""
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    if any(
+        key.casefold() in _SENSITIVE_SOURCE_QUERY_KEYS for key, _ in query_items
+    ):
+        return ""
+    return urlunsplit(
+        (
+            parsed.scheme.casefold(),
+            f"{parsed.hostname.casefold()}{port}",
+            parsed.path or "/",
+            urlencode(query_items),
+            "",
+        )
+    )
 
 
 class KnowledgeBaseSql(DeclarativeBase):
@@ -178,6 +235,20 @@ class JobDescriptionSourceIdentityRow(KnowledgeBaseSql):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class JobDescriptionSourceIdentityConflictRow(KnowledgeBaseSql):
+    __tablename__ = "knowledge_job_description_source_identity_conflicts"
+
+    conflicting_document_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True
+    )
+    canonical_document_id: Mapped[str] = mapped_column(String(36), index=True)
+    knowledge_base_id: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(120), index=True)
+    project_id: Mapped[str] = mapped_column(String(120), index=True)
+    reason: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class InvalidatedCitationRow(KnowledgeBaseSql):
     __tablename__ = "invalidated_citations"
 
@@ -212,6 +283,7 @@ class SQLiteKnowledgeStore:
                 cursor.execute("PRAGMA secure_delete=ON")
                 cursor.close()
         KnowledgeBaseSql.metadata.create_all(self.engine)
+        self._backfill_job_description_source_identities()
         from starter_agent.knowledge.index import SQLiteFtsIndex
 
         self.index = SQLiteFtsIndex(self.engine)
@@ -764,6 +836,127 @@ class SQLiteKnowledgeStore:
                 JobDescriptionSourceIdentityRow.status == "reserved",
             ).delete()
 
+    def list_job_description_source_identity_conflicts(
+        self, scope: KnowledgeScope
+    ) -> list[dict[str, object]]:
+        with Session(self.engine) as db:
+            rows = list(
+                db.scalars(
+                    select(JobDescriptionSourceIdentityConflictRow)
+                    .where(
+                        JobDescriptionSourceIdentityConflictRow.user_id
+                        == scope.user_id,
+                        JobDescriptionSourceIdentityConflictRow.project_id
+                        == scope.project_id,
+                    )
+                    .order_by(
+                        JobDescriptionSourceIdentityConflictRow.created_at,
+                        JobDescriptionSourceIdentityConflictRow.conflicting_document_id,
+                    )
+                )
+            )
+        return [
+            {
+                "canonical_document_id": UUID(row.canonical_document_id),
+                "conflicting_document_id": UUID(row.conflicting_document_id),
+                "reason": row.reason,
+            }
+            for row in rows
+        ]
+
+    def _backfill_job_description_source_identities(self) -> None:
+        """Idempotently migrate active legacy JD source markers into identities."""
+
+        with Session(self.engine) as db, db.begin():
+            legacy_rows = db.execute(
+                select(KnowledgeDocumentRow, DocumentVersionRow)
+                .join(
+                    DocumentVersionRow,
+                    DocumentVersionRow.id
+                    == KnowledgeDocumentRow.active_version_id,
+                )
+                .where(
+                    KnowledgeDocumentRow.document_type == "job_description",
+                    KnowledgeDocumentRow.status == "indexed",
+                    DocumentVersionRow.status == "indexed",
+                )
+                .order_by(
+                    KnowledgeDocumentRow.created_at,
+                    KnowledgeDocumentRow.id,
+                )
+            ).all()
+            for document, version in legacy_rows:
+                already_migrated = db.scalar(
+                    select(JobDescriptionSourceIdentityRow).where(
+                        JobDescriptionSourceIdentityRow.document_id == document.id
+                    )
+                )
+                if already_migrated is not None:
+                    continue
+                source_url, source_hash = _legacy_source_identity(
+                    version.source_text
+                )
+                if not source_url or not source_hash:
+                    continue
+                url_hash = sha256(source_url.encode("utf-8")).hexdigest()
+                hash_conflict = db.scalar(
+                    select(JobDescriptionSourceIdentityRow).where(
+                        JobDescriptionSourceIdentityRow.user_id == document.user_id,
+                        JobDescriptionSourceIdentityRow.project_id
+                        == document.project_id,
+                        JobDescriptionSourceIdentityRow.knowledge_base_id
+                        == document.knowledge_base_id,
+                        JobDescriptionSourceIdentityRow.source_content_sha256
+                        == source_hash,
+                    )
+                )
+                url_conflict = db.scalar(
+                    select(JobDescriptionSourceIdentityRow).where(
+                        JobDescriptionSourceIdentityRow.user_id == document.user_id,
+                        JobDescriptionSourceIdentityRow.project_id
+                        == document.project_id,
+                        JobDescriptionSourceIdentityRow.knowledge_base_id
+                        == document.knowledge_base_id,
+                        JobDescriptionSourceIdentityRow.source_url_sha256
+                        == url_hash,
+                    )
+                )
+                conflict = hash_conflict or url_conflict
+                if conflict is not None:
+                    db.merge(
+                        JobDescriptionSourceIdentityConflictRow(
+                            conflicting_document_id=document.id,
+                            canonical_document_id=conflict.document_id,
+                            knowledge_base_id=document.knowledge_base_id,
+                            user_id=document.user_id,
+                            project_id=document.project_id,
+                            reason=(
+                                "source_hash"
+                                if hash_conflict is not None
+                                else "source_url"
+                            ),
+                            created_at=datetime.now(UTC),
+                        )
+                    )
+                    continue
+                now = datetime.now(UTC)
+                db.add(
+                    JobDescriptionSourceIdentityRow(
+                        reservation_id=document.id,
+                        knowledge_base_id=document.knowledge_base_id,
+                        user_id=document.user_id,
+                        project_id=document.project_id,
+                        source_url=source_url,
+                        source_url_sha256=url_hash,
+                        source_content_sha256=source_hash,
+                        status="committed",
+                        document_id=document.id,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+                db.flush()
+
     def get_job(
         self,
         scope: KnowledgeScope,
@@ -780,6 +973,41 @@ class SQLiteKnowledgeStore:
                 )
             )
         return self._job(row) if row else None
+
+    def discard_upload(self, scope: KnowledgeScope, upload: UploadBundle) -> bool:
+        """Delete only rows created for one new upload attempt."""
+
+        document_id = str(upload.document.id)
+        version_id = str(upload.version.id)
+        job_id = str(upload.job.id)
+        with Session(self.engine) as db, db.begin():
+            document = db.scalar(
+                select(KnowledgeDocumentRow).where(
+                    *self._scope_filters(scope),
+                    KnowledgeDocumentRow.id == document_id,
+                    KnowledgeDocumentRow.knowledge_base_id
+                    == str(upload.document.knowledge_base_id),
+                )
+            )
+            if document is None:
+                return False
+            db.query(KnowledgeChunkRow).filter(
+                KnowledgeChunkRow.document_id == document_id,
+                KnowledgeChunkRow.version_id == version_id,
+            ).delete()
+            db.query(IngestionJobRow).filter(
+                IngestionJobRow.id == job_id,
+                IngestionJobRow.document_id == document_id,
+                IngestionJobRow.version_id == version_id,
+            ).delete()
+            db.query(DocumentVersionRow).filter(
+                DocumentVersionRow.id == version_id,
+                DocumentVersionRow.document_id == document_id,
+            ).delete()
+            db.delete(document)
+            db.flush()
+            self.index.rebuild(db.connection())
+        return True
 
     def mark_job_running(
         self,

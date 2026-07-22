@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from starter_agent.infrastructure.session_store import SQLiteSessionStore
 from starter_agent.knowledge.errors import KnowledgeError
+from starter_agent.knowledge.models import UploadBundle
 from starter_agent.knowledge.service import KnowledgeApplicationService
 
 
@@ -331,6 +332,7 @@ class JobDescriptionIngestionService:
                 reservation_id=approval.id
             )
             raise JobDescriptionIngestionError(str(exc)) from exc
+        upload = None
         try:
             upload = self.knowledge.upload(
                 knowledge_base_id=base_id,
@@ -339,13 +341,18 @@ class JobDescriptionIngestionService:
                 document_type="job_description",
                 confirmed_authorized=True,
             )
+            self.knowledge.require_upload_succeeded(upload)
         except Exception as exc:
-            self.knowledge.release_job_description_source_identity(
-                reservation_id=approval.id
-            )
-            self.artifact_store.restore_job_description_approval(
-                approval_id, principal=principal, session_id=session_id
-            )
+            if not (
+                isinstance(exc, KnowledgeError)
+                and exc.code == "document_ingestion_cleanup_failed"
+            ):
+                self._rollback_ingestion_attempt(
+                    approval,
+                    principal=principal,
+                    session_id=session_id,
+                    upload=upload,
+                )
             code = (
                 "duplicate_content_hash"
                 if isinstance(exc, KnowledgeError)
@@ -363,16 +370,12 @@ class JobDescriptionIngestionService:
                 document_id=upload.document.id,
             )
         except KnowledgeError as exc:
-            # The document is deleted before releasing its identity. If cleanup
-            # cannot complete, the reservation remains closed to prevent a
-            # second approval from writing the same source.
-            if self.knowledge.delete_document(base_id, upload.document.id):
-                self.knowledge.release_job_description_source_identity(
-                    reservation_id=approval.id
-                )
-                self.artifact_store.restore_job_description_approval(
-                    approval_id, principal=principal, session_id=session_id
-                )
+            self._rollback_ingestion_attempt(
+                approval,
+                principal=principal,
+                session_id=session_id,
+                upload=upload,
+            )
             raise JobDescriptionIngestionError(exc.code) from exc
         confirmed = JobDescriptionApproval.model_validate(consumed)
         trace = JobDescriptionTrace(
@@ -397,6 +400,32 @@ class JobDescriptionIngestionService:
             version_id=upload.version.id,
             job_id=upload.job.id,
             trace=trace,
+        )
+
+    def _rollback_ingestion_attempt(
+        self,
+        approval: JobDescriptionApproval,
+        *,
+        principal: str,
+        session_id: UUID,
+        upload: UploadBundle | None,
+    ) -> None:
+        """Reopen approval only after this attempt's partial rows are gone."""
+
+        try:
+            if upload is not None:
+                self.knowledge.discard_upload(upload)
+        except Exception as exc:
+            # Keep the consumed approval and reservation closed when cleanup is
+            # uncertain; this is safer than allowing a duplicate retry.
+            raise JobDescriptionIngestionError(
+                "document_ingestion_cleanup_failed"
+            ) from exc
+        self.knowledge.release_job_description_source_identity(
+            reservation_id=approval.id
+        )
+        self.artifact_store.restore_job_description_approval(
+            approval.id, principal=principal, session_id=session_id
         )
 
     def _approval(
