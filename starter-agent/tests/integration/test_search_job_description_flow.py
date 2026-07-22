@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from starter_agent.agent.context import ContextBuilder
 from starter_agent.agent.runtime import AgentRuntime
+from starter_agent.capabilities.gate import NetworkGuardAttestation
 from starter_agent.application import ApplicationService
 from starter_agent.domain.models import Message, ModelResponse, ToolCall, ToolResult
 from starter_agent.infrastructure.session_store import SQLiteSessionStore
@@ -125,7 +126,32 @@ class _SelectionProvider(Provider):
 
 
 class _AppleListingFetcher:
+    def __init__(self) -> None:
+        self.security_events: list[tuple[str, object]] = []
+
+    async def attest_network_guard(
+        self, targets: tuple[str, ...]
+    ) -> NetworkGuardAttestation:
+        self.security_events.append(
+            (
+                "guard",
+                {
+                    "targets": targets,
+                    "dns_pinned": True,
+                    "redirects_enforced": True,
+                    "peer_verified": True,
+                },
+            )
+        )
+        return NetworkGuardAttestation(
+            targets=targets,
+            dns_pinned=True,
+            redirects_enforced=True,
+            peer_verified=True,
+        )
+
     async def fetch(self, url: str) -> FetchedPage:
+        self.security_events.append(("fetch", url))
         return FetchedPage(
             source_url=url,
             final_url=url,
@@ -176,7 +202,32 @@ class _DirectUrlProvider(Provider):
 
 
 class _RobotsBlockedFetcher:
+    def __init__(self) -> None:
+        self.security_events: list[tuple[str, object]] = []
+
+    async def attest_network_guard(
+        self, targets: tuple[str, ...]
+    ) -> NetworkGuardAttestation:
+        self.security_events.append(
+            (
+                "guard",
+                {
+                    "targets": targets,
+                    "dns_pinned": True,
+                    "redirects_enforced": True,
+                    "peer_verified": True,
+                },
+            )
+        )
+        return NetworkGuardAttestation(
+            targets=targets,
+            dns_pinned=True,
+            redirects_enforced=True,
+            peer_verified=True,
+        )
+
     async def fetch(self, url: str) -> FetchedPage:
+        self.security_events.append(("fetch", url))
         raise FetchFailure(
             "robots_blocked",
             "目标网站的 robots.txt 明确禁止自动读取该岗位页面",
@@ -289,8 +340,9 @@ async def test_disabling_governance_keeps_the_full_job_result() -> None:
 
 
 async def test_apple_listing_failure_is_visible_and_chat_can_continue() -> None:
+    fetcher = _AppleListingFetcher()
     job_tool = SearchJobDescriptionTool(
-        _AppleListingFetcher(),  # type: ignore[arg-type]
+        fetcher,  # type: ignore[arg-type]
         JobDescriptionExtractor(),
     )
     runtime = AgentRuntime(
@@ -314,6 +366,18 @@ async def test_apple_listing_failure_is_visible_and_chat_can_continue() -> None:
     )
 
     assert calls == 1
+    assert fetcher.security_events == [
+        (
+            "guard",
+            {
+                "targets": (APPLE_SEARCH_URL,),
+                "dns_pinned": True,
+                "redirects_enforced": True,
+                "peer_verified": True,
+            },
+        ),
+        ("fetch", APPLE_SEARCH_URL),
+    ]
     assert result.content == "这是搜索结果页，请选择一个具体岗位链接。"
     completed = next(
         event for event in events if event["type"] == "tool_completed"
@@ -325,8 +389,9 @@ async def test_apple_listing_failure_is_visible_and_chat_can_continue() -> None:
 
 
 async def test_aijobs_robots_block_is_visible_and_chat_can_continue() -> None:
+    fetcher = _RobotsBlockedFetcher()
     job_tool = SearchJobDescriptionTool(
-        _RobotsBlockedFetcher(),  # type: ignore[arg-type]
+        fetcher,  # type: ignore[arg-type]
         JobDescriptionExtractor(),
     )
     runtime = AgentRuntime(
@@ -350,6 +415,18 @@ async def test_aijobs_robots_block_is_visible_and_chat_can_continue() -> None:
     )
 
     assert calls == 1
+    assert fetcher.security_events == [
+        (
+            "guard",
+            {
+                "targets": (AIJOBS_JOB_URL,),
+                "dns_pinned": True,
+                "redirects_enforced": True,
+                "peer_verified": True,
+            },
+        ),
+        ("fetch", AIJOBS_JOB_URL),
+    ]
     assert "robots.txt" in result.content
     completed = next(
         event for event in events if event["type"] == "tool_completed"

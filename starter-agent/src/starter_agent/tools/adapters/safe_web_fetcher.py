@@ -358,6 +358,22 @@ class SafeWebFetcher:
 
         return await self._validate_url(url)
 
+    async def attest_network_guard(self, targets: tuple[str, ...]):
+        """Attest the fetch-time DNS pin, redirect, and peer checks."""
+
+        from starter_agent.capabilities.gate import NetworkGuardAttestation
+
+        if not targets or not self.require_peer_metadata or not self._owns_client:
+            return None
+        for target in targets:
+            await self.validate_public_url(target)
+        return NetworkGuardAttestation(
+            targets=targets,
+            dns_pinned=True,
+            redirects_enforced=True,
+            peer_verified=True,
+        )
+
     async def fetch(self, url: str) -> FetchedPage:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.timeout

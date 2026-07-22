@@ -54,20 +54,13 @@ class SearchJobDescriptionTool(Tool):
     async def network_guard_attestation(self, request):
         """Attest the concrete fetcher's enforced network boundary."""
 
-        from starter_agent.capabilities.gate import NetworkGuardAttestation
         from starter_agent.capabilities.policy import extract_url_targets
 
         targets = extract_url_targets(request.arguments)
-        if not targets or not self.fetcher.require_peer_metadata:
+        attest = getattr(self.fetcher, "attest_network_guard", None)
+        if not callable(attest):
             return None
-        for target in targets:
-            await self.fetcher.validate_public_url(target)
-        return NetworkGuardAttestation(
-            targets=targets,
-            dns_pinned=True,
-            redirects_enforced=True,
-            peer_verified=True,
-        )
+        return await attest(targets)
 
     async def execute(
         self,
