@@ -1,5 +1,7 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+from hashlib import sha256
 from threading import Barrier, Lock
 from uuid import uuid4
 
@@ -446,3 +448,56 @@ def test_upgrade_backfills_legacy_jd_identity_and_records_duplicate_canonical(
         application.ingest_job_description(
             challenge.id, principal="local-user", session_id=session_id
         )
+
+
+def test_upgrade_discards_orphan_reservation_before_legacy_backfill(
+    application, settings
+) -> None:
+    legacy = _enable_backend(application, settings)
+    source_url = "https://jobs.example/roles/orphan-reservation"
+    source_hash = "4" * 64
+    historical = legacy.upload(
+        knowledge_base_id=legacy.default_knowledge_base_id,
+        filename="legacy-orphan-reservation.md",
+        content=(
+            "# Legacy Orphan Reservation\n\n"
+            "- Company: Example Corp\n"
+            "- Location: Shanghai\n"
+            f"- Source URL: {source_url}\n"
+            f"- Source content SHA-256: {source_hash}\n\n"
+            "## Responsibilities\n\n- Build agents\n\n"
+            "## Requirements\n\n- Python\n"
+        ).encode("utf-8"),
+        document_type="job_description",
+        confirmed_authorized=True,
+    )
+    orphan_id = uuid4()
+    now = datetime.now(UTC)
+    with Session(legacy.store.engine) as db, db.begin():
+        db.add(
+            JobDescriptionSourceIdentityRow(
+                reservation_id=str(orphan_id),
+                knowledge_base_id=str(legacy.default_knowledge_base_id),
+                user_id=legacy.scope.user_id,
+                project_id=legacy.scope.project_id,
+                source_url=source_url,
+                source_url_sha256=sha256(source_url.encode("utf-8")).hexdigest(),
+                source_content_sha256=source_hash,
+                status="reserved",
+                document_id=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    upgraded = SQLiteKnowledgeStore(
+        settings.app.database_url, settings.project_root
+    )
+    with Session(upgraded.engine) as db:
+        identities = list(db.scalars(select(JobDescriptionSourceIdentityRow)))
+
+    assert [row.reservation_id for row in identities] == [
+        str(historical.document.id)
+    ]
+    assert identities[0].status == "committed"
+    assert identities[0].document_id == str(historical.document.id)

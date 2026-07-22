@@ -868,6 +868,40 @@ class SQLiteKnowledgeStore:
         """Idempotently migrate active legacy JD source markers into identities."""
 
         with Session(self.engine) as db, db.begin():
+            identities = list(
+                db.scalars(
+                    select(JobDescriptionSourceIdentityRow).order_by(
+                        JobDescriptionSourceIdentityRow.reservation_id
+                    )
+                )
+            )
+            for identity in identities:
+                document = (
+                    db.get(KnowledgeDocumentRow, identity.document_id)
+                    if identity.document_id
+                    else None
+                )
+                version = (
+                    db.get(DocumentVersionRow, document.active_version_id)
+                    if document is not None and document.active_version_id
+                    else None
+                )
+                valid_canonical = (
+                    identity.status == "committed"
+                    and document is not None
+                    and document.user_id == identity.user_id
+                    and document.project_id == identity.project_id
+                    and document.knowledge_base_id == identity.knowledge_base_id
+                    and document.document_type == "job_description"
+                    and document.status == "indexed"
+                    and version is not None
+                    and version.document_id == document.id
+                    and version.knowledge_base_id == document.knowledge_base_id
+                    and version.status == "indexed"
+                )
+                if not valid_canonical:
+                    db.delete(identity)
+            db.flush()
             legacy_rows = db.execute(
                 select(KnowledgeDocumentRow, DocumentVersionRow)
                 .join(
@@ -908,6 +942,8 @@ class SQLiteKnowledgeStore:
                         == document.knowledge_base_id,
                         JobDescriptionSourceIdentityRow.source_content_sha256
                         == source_hash,
+                        JobDescriptionSourceIdentityRow.status == "committed",
+                        JobDescriptionSourceIdentityRow.document_id.is_not(None),
                     )
                 )
                 url_conflict = db.scalar(
@@ -919,6 +955,8 @@ class SQLiteKnowledgeStore:
                         == document.knowledge_base_id,
                         JobDescriptionSourceIdentityRow.source_url_sha256
                         == url_hash,
+                        JobDescriptionSourceIdentityRow.status == "committed",
+                        JobDescriptionSourceIdentityRow.document_id.is_not(None),
                     )
                 )
                 conflict = hash_conflict or url_conflict
