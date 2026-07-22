@@ -65,8 +65,8 @@ class ProvidersResponse(BaseModel):
 
 class ToolInfo(BaseModel):
     name: str
-    description: str
-    risk_level: str
+    description: str | None = None
+    risk_level: str | None = None
     source: str = "builtin"
     server: str = "builtin"
     type: str = "builtin"
@@ -320,7 +320,11 @@ def create_api() -> FastAPI:
             providers=infos,
         )
 
-    @api.get("/v1/tools", response_model=ToolsResponse)
+    @api.get(
+        "/v1/tools",
+        response_model=ToolsResponse,
+        response_model_exclude_none=True,
+    )
     async def tools() -> ToolsResponse:
         registry = create_application().runtime.tools
         catalog_reader = getattr(registry, "lightweight_catalog", None)
@@ -333,12 +337,12 @@ def create_api() -> FastAPI:
                         description=(
                             builtin_tools[item.name].description
                             if item.type == "builtin"
-                            else ""
+                            else None
                         ),
                         risk_level=(
                             builtin_tools[item.name].risk_level
                             if item.type == "builtin"
-                            else "external"
+                            else None
                         ),
                         source=item.type,
                         server=item.server,

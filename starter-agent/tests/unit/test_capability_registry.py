@@ -7,6 +7,7 @@ import pytest
 
 from starter_agent.capabilities.models import Server, Snapshot, Tool, canonical_json_sha256
 from starter_agent.capabilities.registry import UnifiedToolRegistry
+from starter_agent import capabilities
 from starter_agent.tools.registry import ToolRegistry
 
 
@@ -38,6 +39,26 @@ def _tool(name: str, marker: int = 0) -> Tool:
         enabled=True,
         review_state="approved",
     )
+
+
+def test_capabilities_package_preserves_model_and_registry_exports() -> None:
+    expected = {
+        "AuditEvent",
+        "Confirmation",
+        "ExecutionPermit",
+        "LightweightCapabilityCatalog",
+        "ModelToolSnapshot",
+        "PolicyRule",
+        "Prompt",
+        "Resource",
+        "Server",
+        "SkillRecord",
+        "Snapshot",
+        "Tool",
+        "UnifiedToolRegistry",
+    }
+    assert set(capabilities.__all__) == expected
+    assert {name: getattr(capabilities, name) for name in expected}
 
 
 def test_registry_keeps_builtin_tools_and_publishes_atomic_revisions() -> None:

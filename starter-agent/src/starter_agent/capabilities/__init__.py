@@ -12,19 +12,6 @@ from starter_agent.capabilities.models import (
     Snapshot,
     Tool,
 )
-
-__all__ = [
-    "AuditEvent",
-    "Confirmation",
-    "ExecutionPermit",
-    "PolicyRule",
-    "Prompt",
-    "Resource",
-    "Server",
-    "SkillRecord",
-    "Snapshot",
-    "Tool",
-]
 from starter_agent.capabilities.registry import (
     LightweightCapabilityCatalog,
     ModelToolSnapshot,
@@ -32,7 +19,17 @@ from starter_agent.capabilities.registry import (
 )
 
 __all__ = [
+    "AuditEvent",
+    "Confirmation",
+    "ExecutionPermit",
     "LightweightCapabilityCatalog",
     "ModelToolSnapshot",
+    "PolicyRule",
+    "Prompt",
+    "Resource",
+    "Server",
+    "SkillRecord",
+    "Snapshot",
+    "Tool",
     "UnifiedToolRegistry",
 ]
