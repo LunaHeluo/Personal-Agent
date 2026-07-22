@@ -5,6 +5,7 @@ import json
 from collections.abc import Awaitable, Callable
 from time import monotonic
 from uuid import UUID
+from pathlib import Path
 
 from starter_agent.domain.errors import (
     RequiredToolNotCalledError,
@@ -22,6 +23,13 @@ from starter_agent.settings import ContextConfig, RuntimeConfig
 from starter_agent.tools.base import ToolContext
 from starter_agent.tools.policy import ToolPolicy
 from starter_agent.tools.registry import ToolRegistry
+from starter_agent.capabilities.gate import (
+    PreToolCallGate,
+    ToolExecutionDenied,
+    UnifiedToolExecutor,
+)
+from starter_agent.capabilities.registry import UnifiedToolRegistry
+from starter_agent.capabilities.store import CapabilityStore
 
 
 class AgentRuntime:
@@ -31,6 +39,9 @@ class AgentRuntime:
         policy: ToolPolicy,
         budget: RuntimeConfig,
         context_config: ContextConfig | None = None,
+        *,
+        gate: PreToolCallGate | None = None,
+        executor: UnifiedToolExecutor | None = None,
     ):
         self.tools = tools
         self.policy = policy
@@ -40,6 +51,70 @@ class AgentRuntime:
         self.tool_result_guard = ToolResultGuard(
             self.token_counter,
             self.context_config.per_tool_result_tokens,
+        )
+        if gate is None or executor is None:
+            boundary_registry = (
+                tools
+                if isinstance(tools, UnifiedToolRegistry)
+                else UnifiedToolRegistry(tools)
+            )
+            capability_store = CapabilityStore("sqlite:///:memory:", Path("."))
+            gate = PreToolCallGate(capability_store, registry=boundary_registry)
+            executor = UnifiedToolExecutor(capability_store, gate=gate)
+        self.gate = gate
+        self.executor = executor
+        for builtin in tools.list():
+            async def invoke(arguments, context, *, _tool=builtin):
+                return await _tool.execute(dict(arguments), context)
+
+            self.executor.register_invoker(
+                server_id="builtin",
+                tool_name=builtin.name,
+                invoker=invoke,
+            )
+
+    async def execute_tool(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict,
+        session_id: UUID,
+        turn_id: UUID,
+        call_id: str,
+        forced: bool = False,
+        retry: bool = False,
+        verified_confirmation_id: str | None = None,
+    ):
+        request = self.gate.request_for_tool(
+            caller="model",
+            session_id=str(session_id),
+            turn_id=str(turn_id),
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+        decision = (
+            await self.gate.evaluate(request)
+            if verified_confirmation_id is None
+            else await self.gate.evaluate_confirmed(
+                request,
+                verified_confirmation_id=verified_confirmation_id,
+            )
+        )
+        if decision.outcome != "allow":
+            code = (
+                "tool_confirmation_required"
+                if decision.outcome == "require_confirmation"
+                else decision.reason_code
+            )
+            raise ToolExecutionDenied(code)
+        assert decision.permit is not None
+        return await self.executor.execute(
+            request,
+            permit_id=decision.permit.id,
+            context=ToolContext(session_id=session_id, turn_id=turn_id),
+            forced=forced,
+            retry=retry,
         )
 
     async def run(
@@ -164,9 +239,14 @@ class AgentRuntime:
                             risk_level=tool.risk_level,
                         )
                         result = await asyncio.wait_for(
-                            tool.execute(
-                                call.arguments,
-                                ToolContext(session_id=session_id, turn_id=turn_id),
+                            self.execute_tool(
+                                tool_name=call.name,
+                                arguments=call.arguments,
+                                session_id=session_id,
+                                turn_id=turn_id,
+                                call_id=call.id,
+                                forced=required_tool_name == call.name,
+                                retry=repeated_calls[signature] > 1,
                             ),
                             timeout=self.budget.tool_timeout_seconds,
                         )
@@ -202,7 +282,7 @@ class AgentRuntime:
                             retryable=result.retryable,
                             failure_type=tool_failure_type,
                         )
-                    except ToolPolicyError as exc:
+                    except (ToolPolicyError, ToolExecutionDenied) as exc:
                         tool_error_code = exc.code
                         tool_display = str(exc)
                         result_text = json.dumps(

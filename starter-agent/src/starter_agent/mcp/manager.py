@@ -5,7 +5,10 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable, Iterable
-from typing import Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+
+if TYPE_CHECKING:
+    from starter_agent.capabilities.gate import ToolCallRequest, UnifiedToolExecutor
 
 from starter_agent.capabilities.models import Server, Snapshot
 from starter_agent.capabilities.store import (
@@ -64,9 +67,15 @@ class ClientSlot:
 
 @dataclass(frozen=True, slots=True)
 class ClientLease:
-    client: ManagedClient
-    session: Any
+    _client: ManagedClient
+    _session: Any
     snapshot_id: str | None
+
+    async def _run_protocol_command(
+        self,
+        operation: Callable[[Any], Awaitable[_CommandResult]],
+    ) -> _CommandResult:
+        return await self._client.run_session_command(operation)
 
 
 @dataclass(slots=True)
@@ -107,11 +116,13 @@ class McpManager:
         client_factory=None,
         initialize_timeout_seconds: float = 20,
         shutdown_timeout_seconds: float = 10,
+        tool_executor: UnifiedToolExecutor | None = None,
     ) -> None:
         self.configuration = configuration
         self.store = store
         self.initialize_timeout_seconds = initialize_timeout_seconds
         self.shutdown_timeout_seconds = shutdown_timeout_seconds
+        self.tool_executor = tool_executor
         self._accepting = True
         if client_factory is None:
             client_factory = lambda _server_id, config: McpClient(
@@ -167,6 +178,22 @@ class McpManager:
             for server_id, handle in self._handles.items()
         }
 
+    async def call_tool(
+        self,
+        request: ToolCallRequest,
+        *,
+        permit_id: str | None,
+    ) -> Any:
+        if not permit_id:
+            raise McpManagerError("permit_required")
+        if self.tool_executor is None:
+            raise McpManagerError("tool_executor_unavailable")
+        try:
+            return await self.tool_executor.execute(request, permit_id=permit_id)
+        except Exception as exc:
+            code = getattr(exc, "code", "tool_execution_denied")
+            raise McpManagerError(code) from exc
+
     def get_snapshot_summary(self, server_id: str) -> Snapshot | None:
         self.get_handle(server_id)
         if self.store is None:
@@ -186,7 +213,7 @@ class McpManager:
             async with self.lease(server_id) as lease:
                 self._update(handle, operation_state="discovering")
                 try:
-                    snapshot = await lease.client.run_session_command(
+                    snapshot = await lease._run_protocol_command(
                         lambda session: discover_and_activate(
                             self.store,
                             session,
@@ -326,7 +353,7 @@ class McpManager:
         async with handle.refresh_lock:
             async with self.lease(server_id) as lease:
                 try:
-                    await lease.client.run_session_command(
+                    await lease._run_protocol_command(
                         lambda session: session.send_ping()
                     )
                 except asyncio.CancelledError:
@@ -465,8 +492,8 @@ class McpManager:
         slot.drain_event.clear()
         try:
             yield ClientLease(
-                client=slot.client,
-                session=session,
+                _client=slot.client,
+                _session=session,
                 snapshot_id=slot.snapshot_id,
             )
         finally:

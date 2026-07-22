@@ -279,6 +279,13 @@ def test_email_approval_send_api_requires_approval_and_is_idempotent() -> None:
                 "idempotency_key": "api-send-key-00000001",
             },
         )
+        changed_replay = client.post(
+            f"/v1/email/approvals/{challenge['approval_id']}/send",
+            json={
+                "session_id": str(session_id),
+                "idempotency_key": "api-send-key-changed-0002",
+            },
+        )
 
     assert rejected.status_code == 400
     assert rejected.json()["detail"]["error_code"] == (
@@ -290,6 +297,10 @@ def test_email_approval_send_api_requires_approval_and_is_idempotent() -> None:
     assert sent.json()["data"]["external_delivery"] is False
     assert repeated.status_code == 200
     assert repeated.json()["data"] == sent.json()["data"]
+    assert changed_replay.status_code == 400
+    assert changed_replay.json()["detail"]["error_code"] == (
+        "email_approval_consumed"
+    )
 
 
 def test_chat_can_force_an_enabled_tool() -> None:

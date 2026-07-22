@@ -33,9 +33,10 @@ from starter_agent.domain.models import (
 from starter_agent.observability.logging import get_logger
 from starter_agent.knowledge.errors import KnowledgeError
 from starter_agent.tools.email.approval import EmailApprovalService
-from starter_agent.tools.email.errors import EmailError
+from starter_agent.tools.email.errors import EmailError, EmailErrorCode
 from starter_agent.tools.email.models import ApprovalChallengeView, SendApproval
 from starter_agent.tools.base import ToolContext
+from starter_agent.capabilities.gate import ToolExecutionDenied
 
 
 class ChatRequest(BaseModel):
@@ -681,23 +682,29 @@ def create_api() -> FastAPI:
                 approval_id,
                 session_id=str(request.session_id),
             )
+            if approval.status not in {"approved", "consumed"}:
+                raise EmailError(
+                    EmailErrorCode.APPROVAL_REQUIRED,
+                    "email approval is required",
+                )
             draft = manager.store.get_draft(
                 approval.draft_id,
                 session_id=str(request.session_id),
                 profile=approval.profile,
             )
-            result = await tool.execute(
-                {
+            result = await application.runtime.execute_tool(
+                tool_name=tool.name,
+                arguments={
                     "profile": approval.profile,
                     "draft_id": draft.draft_id,
                     "expected_content_sha256": draft.content_sha256,
                     "approval_id": approval.approval_id,
                     "idempotency_key": request.idempotency_key,
                 },
-                ToolContext(
-                    session_id=request.session_id,
-                    turn_id=uuid4(),
-                ),
+                session_id=request.session_id,
+                turn_id=uuid4(),
+                call_id=f"api-email-send-{uuid4()}",
+                verified_confirmation_id=approval.approval_id,
             )
         except EmailError as error:
             raise _email_http_error(error) from error
@@ -705,6 +712,11 @@ def create_api() -> FastAPI:
             raise HTTPException(
                 status_code=error.http_status,
                 detail=error.to_public_dict(),
+            ) from error
+        except ToolExecutionDenied as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"error_code": error.code},
             ) from error
         if not result.ok:
             raise HTTPException(

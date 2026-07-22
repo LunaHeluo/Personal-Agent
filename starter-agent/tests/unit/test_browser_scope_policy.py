@@ -50,6 +50,49 @@ async def test_browser_scope_reuses_fail_closed_url_and_redirect_validation() ->
         )
 
 
+async def test_every_nested_url_and_second_target_is_validated() -> None:
+    policy_module = _policy_module()
+    policy = policy_module.BrowserScopePolicy(resolver=_public_resolver)
+    arguments = {
+        "url": "https://jobs.example.com/opening",
+        "nested": {
+            "callback_uri": "http://127.0.0.1/admin",
+        },
+    }
+
+    targets = policy_module.extract_url_targets(arguments)
+    assert targets == (
+        "https://jobs.example.com/opening",
+        "http://127.0.0.1/admin",
+    )
+    with pytest.raises(policy_module.ScopeDenied, match="unsafe_url"):
+        await policy.validate_all(targets)
+
+
+async def test_browser_execution_guard_rechecks_redirect_and_dns_rebinding() -> None:
+    policy_module = _policy_module()
+    resolutions = 0
+
+    async def rebinding_resolver(_host: str):
+        nonlocal resolutions
+        resolutions += 1
+        if resolutions == 1:
+            return [ipaddress.ip_address("93.184.216.34")]
+        return [ipaddress.ip_address("127.0.0.1")]
+
+    policy = policy_module.BrowserScopePolicy(resolver=rebinding_resolver)
+    await policy.validate_all(("https://jobs.example.com/opening",))
+    with pytest.raises(policy_module.ScopeDenied, match="unsafe_url"):
+        await policy.validate_all(("https://jobs.example.com/opening",))
+
+    redirect_policy = policy_module.BrowserScopePolicy(resolver=_public_resolver)
+    with pytest.raises(policy_module.ScopeDenied, match="unsafe_redirect"):
+        await redirect_policy.validate_redirects(
+            "https://jobs.example.com/opening",
+            ("http://127.0.0.1/final",),
+        )
+
+
 def test_browser_sensitive_outbound_and_serpapi_fields_are_denied() -> None:
     policy_module = _policy_module()
     browser = policy_module.BrowserScopePolicy(resolver=_public_resolver)

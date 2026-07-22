@@ -84,3 +84,63 @@ def test_policy_matches_role_data_and_parameter_constraints() -> None:
         .outcome
         == "require_confirmation"
     )
+
+
+def test_policy_rule_schema_hash_must_match_authoritative_request_hash() -> None:
+    policy_module = _policy_module()
+    request = policy_module.PolicyRequest(
+        server_id="playwright",
+        tool_name="browser_navigate",
+        action="navigate",
+        schema_hash="a" * 64,
+        arguments={"url": "https://jobs.example.com/1"},
+        reviewed=True,
+    )
+    rule = PolicyRule(
+        id="schema-bound",
+        server_id="playwright",
+        tool_name="browser_navigate",
+        effect="allowlist_auto",
+        actions=("navigate",),
+        schema_hash="b" * 64,
+        created_by="admin",
+    )
+
+    assert policy_module.ToolPolicy().evaluate(request, (rule,)).outcome == (
+        "require_confirmation"
+    )
+
+
+def test_data_classification_is_inferred_when_caller_claims_no_sensitive_data() -> None:
+    policy_module = _policy_module()
+    inferred = policy_module.infer_data_classes(
+        {
+            "payload": {
+                "resume_text": "Senior product manager with ten years experience",
+                "authorization": "Bearer secret-value",
+            }
+        },
+        schema={"type": "object"},
+        metadata={"data_classes": ["job_keywords"]},
+        claimed=(),
+    )
+
+    assert {"resume", "token", "job_keywords"}.issubset(inferred)
+
+
+def test_serpapi_rejects_secrets_long_text_and_total_budget() -> None:
+    policy_module = _policy_module()
+    for payload in (
+        {"query": "AI PM", "location": "x" * 501},
+        {"keywords": "token=secret", "location": "Shanghai"},
+        {"keywords": "x" * 400, "location": "y" * 400},
+    ):
+        try:
+            policy_module.validate_serpapi_payload(
+                payload,
+                (),
+                max_bytes=600,
+            )
+        except policy_module.ScopeDenied:
+            continue
+        assert False, f"unsafe SerpAPI payload accepted: {payload.keys()}"

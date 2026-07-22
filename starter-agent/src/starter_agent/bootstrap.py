@@ -5,6 +5,7 @@ from starter_agent.agent.runtime import AgentRuntime
 from starter_agent.application import ApplicationService
 from starter_agent.capabilities.store import CapabilityStore
 from starter_agent.capabilities.registry import UnifiedToolRegistry
+from starter_agent.capabilities.gate import PreToolCallGate, UnifiedToolExecutor
 from starter_agent.infrastructure.session_store import SQLiteSessionStore
 from starter_agent.knowledge.service import KnowledgeApplicationService
 from starter_agent.knowledge.store import SQLiteKnowledgeStore
@@ -34,7 +35,20 @@ def create_application() -> ApplicationService:
         allowed_risk_levels=settings.tools.allow_risk_levels,
     )
     policy = ToolPolicy(settings.tools.allow_risk_levels)
-    runtime = AgentRuntime(tools, policy, settings.runtime, settings.context)
+    capability_store = CapabilityStore(
+        settings.app.database_url,
+        settings.project_root,
+    )
+    gate = PreToolCallGate(capability_store, registry=tools)
+    executor = UnifiedToolExecutor(capability_store, gate=gate)
+    runtime = AgentRuntime(
+        tools,
+        policy,
+        settings.runtime,
+        settings.context,
+        gate=gate,
+        executor=executor,
+    )
     context = ContextBuilder(
         settings.resolve_path(settings.app.identity_path),
         settings.project_root / "config/prompts/system.md",
@@ -65,6 +79,7 @@ def create_mcp_manager() -> McpManager:
     return McpManager(
         configuration,
         store=store,
+        tool_executor=create_application().runtime.executor,
         initialize_timeout_seconds=settings.mcp.initialize_timeout_seconds,
         shutdown_timeout_seconds=settings.mcp.shutdown_timeout_seconds,
     )

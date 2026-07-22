@@ -12,6 +12,7 @@ from starter_agent.capabilities.models import (
     CapabilityModel,
     PolicyRule,
 )
+from starter_agent.mcp.config import contains_high_confidence_secret
 from starter_agent.tools.adapters.safe_web_fetcher import (
     FetchFailure,
     Resolver,
@@ -52,6 +53,7 @@ class PolicyRequest(CapabilityModel):
     server_id: str = Field(min_length=1, max_length=160)
     tool_name: str = Field(min_length=1, max_length=200)
     action: str = Field(min_length=1, max_length=100)
+    schema_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     scheme: str | None = None
     domain: str | None = None
     arguments: BoundedJsonObject = Field(default_factory=dict)
@@ -99,6 +101,14 @@ class BrowserScopePolicy:
                 raise ScopeDenied("unsafe_redirect") from exc
         return current
 
+    async def validate_all(self, targets: tuple[str, ...]):
+        if not targets:
+            raise ScopeDenied("unsafe_url")
+        validated = []
+        for target in targets:
+            validated.append(await self.validate_url(target))
+        return tuple(validated)
+
     @staticmethod
     def validate_outbound(
         data_classes: tuple[str, ...],
@@ -115,16 +125,109 @@ class BrowserScopePolicy:
 def validate_serpapi_payload(
     arguments: Mapping[str, Any],
     data_classes: tuple[str, ...],
+    *,
+    max_bytes: int = 2_000,
 ) -> None:
-    allowed_fields = {"keywords", "location"}
+    allowed_fields = {"query", "keywords", "location"}
     allowed_classes = {"job_keywords", "location"}
     if set(arguments) - allowed_fields or set(data_classes) - allowed_classes:
         raise ScopeDenied("serpapi_fields")
-    if not isinstance(arguments.get("keywords"), str):
+    if ("query" in arguments) == ("keywords" in arguments):
+        raise ScopeDenied("serpapi_fields")
+    query = arguments.get("query", arguments.get("keywords"))
+    if not _safe_short_text(query, 300):
         raise ScopeDenied("serpapi_fields")
     location = arguments.get("location")
-    if location is not None and not isinstance(location, str):
+    if location is not None and not _safe_short_text(location, 100):
         raise ScopeDenied("serpapi_fields")
+    encoded = json_bytes(arguments)
+    if len(encoded) > max_bytes:
+        raise ScopeDenied("serpapi_fields")
+
+
+def json_bytes(value: Any) -> bytes:
+    import json
+
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def _safe_short_text(value: Any, limit: int) -> bool:
+    if not isinstance(value, str) or not value.strip() or len(value) > limit:
+        return False
+    lowered = value.casefold()
+    return not (
+        contains_high_confidence_secret(value)
+        or any(
+            marker in lowered
+            for marker in ("bearer ", "token=", "password=", "cookie=", "secret=")
+        )
+    )
+
+
+def extract_url_targets(arguments: Mapping[str, Any]) -> tuple[str, ...]:
+    targets: list[str] = []
+
+    def visit(value: Any, key: str = "") -> None:
+        if isinstance(value, Mapping):
+            for nested_key, nested in value.items():
+                visit(nested, str(nested_key))
+            return
+        if isinstance(value, (list, tuple)):
+            for nested in value:
+                visit(nested, key)
+            return
+        normalized = key.casefold().replace("-", "_")
+        if normalized.endswith(("url", "uri")) or normalized in {
+            "redirect",
+            "redirects",
+            "final_url",
+        }:
+            if not isinstance(value, str):
+                raise ScopeDenied("unsafe_url")
+            targets.append(value)
+
+    visit(arguments)
+    return tuple(targets)
+
+
+def infer_data_classes(
+    arguments: Mapping[str, Any],
+    *,
+    schema: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+    claimed: tuple[str, ...],
+) -> frozenset[str]:
+    classes = {item.casefold() for item in claimed}
+    annotated = metadata.get("data_classes", ())
+    if isinstance(annotated, (list, tuple)):
+        classes.update(str(item).casefold() for item in annotated)
+
+    def visit(value: Any, key: str = "") -> None:
+        normalized = key.casefold().replace("-", "_")
+        if "resume" in normalized or normalized in {"cv", "cv_text"}:
+            classes.add("resume")
+        if any(part in normalized for part in ("cookie", "token", "authorization")):
+            classes.add("token")
+        if any(part in normalized for part in ("password", "credential", "secret")):
+            classes.add("credentials")
+        if "email" in normalized and "auth" in normalized:
+            classes.add("email_authorization")
+        if isinstance(value, Mapping):
+            for child_key, child in value.items():
+                visit(child, str(child_key))
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child, key)
+        elif isinstance(value, str):
+            lowered = value.casefold()
+            if contains_high_confidence_secret(value) or "bearer " in lowered:
+                classes.add("token")
+
+    visit(arguments)
+    visit(schema)
+    return frozenset(classes)
 
 
 def classify_tool(metadata: Mapping[str, Any], risk_level: str) -> str:
@@ -201,10 +304,8 @@ class ToolPolicy:
             return False
         if rule.server_id != request.server_id or rule.tool_name != request.tool_name:
             return False
-        if rule.schema_hash is not None:
-            schema_hash = request.arguments.get("__schema_hash")
-            if schema_hash is not None and schema_hash != rule.schema_hash:
-                return False
+        if rule.schema_hash is not None and rule.schema_hash != request.schema_hash:
+            return False
         if rule.actions and request.action.casefold() not in {
             item.casefold() for item in rule.actions
         }:

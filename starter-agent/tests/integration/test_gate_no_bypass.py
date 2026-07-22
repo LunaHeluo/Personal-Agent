@@ -8,6 +8,8 @@ import pytest
 
 from starter_agent.capabilities.models import ExecutionPermit, canonical_json_sha256
 from starter_agent.capabilities.store import CapabilityStore
+from starter_agent.bootstrap import create_application
+from starter_agent.domain.models import ToolResult
 
 
 def _gate_module():
@@ -47,6 +49,7 @@ def _permit(request, *, permit_id: str, expires_at: datetime) -> ExecutionPermit
         schema_hash=request.schema_hash,
         arguments_hash=canonical_json_sha256(request.arguments),
         decision="allow",
+        invoker_id=f"{request.server_id}:{request.tool_name}",
     )
 
 
@@ -54,13 +57,13 @@ def _permit(request, *, permit_id: str, expires_at: datetime) -> ExecutionPermit
 async def test_builtin_and_mcp_paths_refuse_calls_without_permit(server_id: str) -> None:
     gate_module = _gate_module()
     store = CapabilityStore("sqlite:///:memory:", project_root=__file__)
-    executor = gate_module.UnifiedToolExecutor(store)
+    gate = gate_module.PreToolCallGate(store)
+    executor = gate_module.UnifiedToolExecutor(store, gate=gate)
 
     with pytest.raises(gate_module.ToolExecutionDenied, match="permit_required"):
         await executor.execute(
             _request(gate_module, server_id=server_id),
             permit_id=None,
-            invoker=lambda _arguments: "bypassed",
             forced=True,
             retry=True,
         )
@@ -68,48 +71,143 @@ async def test_builtin_and_mcp_paths_refuse_calls_without_permit(server_id: str)
 
 async def test_permit_is_ttl_bound_single_use_and_atomically_consumed() -> None:
     gate_module = _gate_module()
-    store = CapabilityStore("sqlite:///:memory:", project_root=__file__)
-    executor = gate_module.UnifiedToolExecutor(store)
-    request = _request(gate_module)
-    permit = _permit(
-        request,
-        permit_id="permit-1",
-        expires_at=datetime.now(UTC) + timedelta(seconds=30),
+    from tests.unit.test_pre_tool_call_gate import _public_resolver, _request as gate_request, _store
+    policy_module = import_module("starter_agent.capabilities.policy")
+    store = _store()
+    gate = gate_module.PreToolCallGate(
+        store,
+        browser_policy=policy_module.BrowserScopePolicy(resolver=_public_resolver),
     )
-    store.create_execution_permit(permit)
+    executor = gate_module.UnifiedToolExecutor(store, gate=gate)
+    request = gate_request(gate_module)
+    permit = (await gate.evaluate(request)).permit
+    assert permit is not None
 
     entered = 0
 
-    async def invoke(arguments):
+    async def invoke(arguments, _context):
         nonlocal entered
         entered += 1
         await asyncio.sleep(0)
-        return arguments["value"]
+        return 1
+
+    executor.register_invoker(
+        server_id=request.server_id,
+        tool_name=request.tool_name,
+        invoker=invoke,
+    )
 
     results = await asyncio.gather(
-        executor.execute(request, permit_id=permit.id, invoker=invoke),
-        executor.execute(request, permit_id=permit.id, invoker=invoke),
+        executor.execute(request, permit_id=permit.id),
+        executor.execute(request, permit_id=permit.id),
         return_exceptions=True,
     )
     assert results.count(1) == 1
     assert sum(isinstance(item, gate_module.ToolExecutionDenied) for item in results) == 1
     assert entered == 1
 
-    expired = _permit(
-        request,
-        permit_id="expired",
-        expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    expired = permit.model_copy(
+        update={
+            "id": "expired",
+            "expires_at": datetime.now(UTC) - timedelta(seconds=1),
+            "consumed_at": None,
+        }
     )
     store.create_execution_permit(expired)
     with pytest.raises(gate_module.ToolExecutionDenied, match="permit_expired"):
-        await executor.execute(request, permit_id=expired.id, invoker=invoke)
+        await executor.execute(request, permit_id=expired.id)
 
-    rebound = _permit(
-        request,
-        permit_id="bound",
-        expires_at=datetime.now(UTC) + timedelta(seconds=30),
+    rebound = permit.model_copy(
+        update={
+            "id": "bound",
+            "expires_at": datetime.now(UTC) + timedelta(seconds=30),
+            "consumed_at": None,
+        }
     )
     store.create_execution_permit(rebound)
     changed = request.model_copy(update={"turn_id": "turn-2"})
     with pytest.raises(gate_module.ToolExecutionDenied, match="permit_binding_mismatch"):
-        await executor.execute(changed, permit_id=rebound.id, invoker=invoke)
+        await executor.execute(changed, permit_id=rebound.id)
+
+
+async def test_real_agent_runtime_forced_builtin_uses_gate_and_bound_executor(
+    monkeypatch,
+) -> None:
+    create_application.cache_clear()
+    application = create_application()
+    runtime = application.runtime
+    assert runtime.gate is not None
+    assert runtime.executor is not None
+    tool = runtime.tools.get("get_current_time")
+    assert tool is not None
+    executed = 0
+
+    async def execute(arguments, context):
+        nonlocal executed
+        executed += 1
+        return ToolResult(ok=True, data={"time": "00:00"}, display="00:00")
+
+    monkeypatch.setattr(tool, "execute", execute)
+    result = await application.chat(
+        "run the time tool",
+        provider_name="mock",
+        required_tool_name="get_current_time",
+    )
+
+    assert result.tool_calls == 1
+    assert executed == 1
+
+
+async def test_executor_revalidates_and_cannot_accept_arbitrary_invoker() -> None:
+    gate_module = _gate_module()
+    from tests.unit.test_pre_tool_call_gate import _public_resolver, _request, _store
+
+    policy_module = import_module("starter_agent.capabilities.policy")
+    store = _store()
+    gate = gate_module.PreToolCallGate(
+        store,
+        browser_policy=policy_module.BrowserScopePolicy(resolver=_public_resolver),
+    )
+    executor = gate_module.UnifiedToolExecutor(store, gate=gate)
+    request = _request(gate_module)
+    decision = await gate.evaluate(request)
+    assert decision.permit is not None
+
+    with pytest.raises(TypeError):
+        await executor.execute(
+            request,
+            permit_id=decision.permit.id,
+            invoker=lambda _arguments: "bypass",
+        )
+
+    executor.register_invoker(
+        server_id="playwright",
+        tool_name="different_tool",
+        invoker=lambda _arguments, _context: "wrong",
+    )
+    with pytest.raises(gate_module.ToolExecutionDenied, match="invoker_unavailable"):
+        await executor.execute(request, permit_id=decision.permit.id)
+
+
+async def test_mcp_manager_business_call_requires_executor_permit_and_lease_is_opaque(
+    tmp_path,
+) -> None:
+    gate_module = _gate_module()
+    from starter_agent.mcp.config import McpConfiguration
+    from starter_agent.mcp.manager import ClientLease, McpManager, McpManagerError
+
+    manager = McpManager(
+        McpConfiguration(
+            source_path=tmp_path / "mcp.json",
+            servers={},
+            config_hash="a" * 64,
+        ),
+        store=CapabilityStore("sqlite:///:memory:", tmp_path),
+    )
+    with pytest.raises(McpManagerError, match="permit_required"):
+        await manager.call_tool(
+            _request(gate_module, server_id="playwright"),
+            permit_id=None,
+        )
+    assert "client" not in ClientLease.__dataclass_fields__
+    assert "session" not in ClientLease.__dataclass_fields__

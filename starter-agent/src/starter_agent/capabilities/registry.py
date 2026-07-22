@@ -4,7 +4,12 @@ from dataclasses import dataclass, replace
 from threading import Lock
 from typing import Any, Iterable, Literal, Mapping
 
-from starter_agent.capabilities.models import FrozenJsonDict, Server, Snapshot
+from starter_agent.capabilities.models import (
+    FrozenJsonDict,
+    Server,
+    Snapshot,
+    canonical_json_sha256,
+)
 from starter_agent.capabilities.models import Tool as McpTool
 from starter_agent.tools.base import Tool as BuiltinTool
 from starter_agent.tools.registry import ToolRegistry
@@ -60,6 +65,22 @@ class ModelToolSnapshot:
 
     def provider_tools(self) -> list[dict[str, Any]]:
         return [_thaw(item) for item in self.tools]
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionCapability:
+    server_id: str
+    canonical_name: str
+    model_alias: str
+    snapshot_id: str
+    schema_hash: str
+    input_schema: Mapping[str, Any]
+    metadata: Mapping[str, Any]
+    risk_level: str
+    enabled: bool
+    connected: bool
+    review_state: str
+    browser: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +162,53 @@ class UnifiedToolRegistry:
             for alias, adapter in server.adapters:
                 if alias == model_alias:
                     return adapter
+        return None
+
+    def resolve_execution(self, name: str) -> ExecutionCapability | None:
+        state = self._state
+        for record in state.builtins:
+            if record.tool.name == name:
+                schema_hash = canonical_json_sha256(record.tool.input_schema)
+                return ExecutionCapability(
+                    server_id="builtin",
+                    canonical_name=record.tool.name,
+                    model_alias=record.tool.name,
+                    snapshot_id=f"builtin-{state.context_revision}",
+                    schema_hash=schema_hash,
+                    input_schema=record.tool.input_schema,
+                    metadata={"builtin_reviewed": True},
+                    risk_level=record.tool.risk_level,
+                    enabled=record.enabled and record.policy_allowed,
+                    connected=True,
+                    review_state="approved",
+                    browser=any(
+                        key.casefold().endswith(("url", "uri"))
+                        for key in record.tool.input_schema.get("properties", {})
+                    ),
+                )
+        for server_record in state.servers:
+            for tool in server_record.tools:
+                if name not in {tool.model_alias, tool.upstream_name}:
+                    continue
+                return ExecutionCapability(
+                    server_id=server_record.server.id,
+                    canonical_name=tool.upstream_name,
+                    model_alias=tool.model_alias,
+                    snapshot_id=(
+                        server_record.snapshot.id
+                        if server_record.snapshot is not None
+                        else tool.snapshot_id
+                    ),
+                    schema_hash=tool.schema_hash,
+                    input_schema=tool.input_schema,
+                    metadata=tool.metadata,
+                    risk_level=tool.risk_level,
+                    enabled=server_record.server.enabled and tool.enabled,
+                    connected=server_record.server.connection_state == "ready",
+                    review_state=tool.review_state,
+                    browser=bool(tool.metadata.get("browser"))
+                    or "public_url" in tool.outbound_scope,
+                )
         return None
 
     def refresh_server(

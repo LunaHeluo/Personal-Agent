@@ -19,6 +19,7 @@ from starter_agent.capabilities.models import (
     Tool,
     canonical_json_sha256,
 )
+from starter_agent.capabilities.registry import ExecutionCapability, UnifiedToolRegistry
 from starter_agent.capabilities.policy import (
     BrowserScopePolicy,
     PolicyDecision,
@@ -26,6 +27,8 @@ from starter_agent.capabilities.policy import (
     ScopeDenied,
     ToolPolicy,
     classify_tool,
+    extract_url_targets,
+    infer_data_classes,
     validate_serpapi_payload,
 )
 from starter_agent.capabilities.store import (
@@ -33,6 +36,7 @@ from starter_agent.capabilities.store import (
     ExecutionPermitError,
 )
 from starter_agent.tools.adapters.safe_web_fetcher import sanitize_public_url
+from starter_agent.tools.base import ToolContext
 
 
 class ToolCallRequest(CapabilityModel):
@@ -85,6 +89,7 @@ class PreToolCallGate:
         self,
         store: CapabilityStore,
         *,
+        registry: UnifiedToolRegistry | None = None,
         policy: ToolPolicy | None = None,
         browser_policy: BrowserScopePolicy | None = None,
         permit_ttl_seconds: float = 30,
@@ -94,6 +99,7 @@ class PreToolCallGate:
         if permit_ttl_seconds <= 0 or permit_ttl_seconds > 300:
             raise ValueError("permit_ttl_seconds must be within (0, 300]")
         self.store = store
+        self.registry = registry
         self.policy = policy or ToolPolicy()
         self.browser_policy = browser_policy or BrowserScopePolicy()
         self.permit_ttl_seconds = permit_ttl_seconds
@@ -102,7 +108,13 @@ class PreToolCallGate:
         self._lock = Lock()
         self._decisions: dict[tuple[str, str, str], tuple[str, GateDecision]] = {}
 
-    async def evaluate(self, request: ToolCallRequest) -> GateDecision:
+    async def evaluate(
+        self,
+        request: ToolCallRequest,
+        *,
+        issue_permit: bool = True,
+    ) -> GateDecision:
+        request = self.canonicalize(request)
         denial = self._resolve_tool(request)
         if isinstance(denial, GateDecision):
             return denial
@@ -122,25 +134,40 @@ class PreToolCallGate:
                 "utf-8"
             )
         )
+        inferred_classes = tuple(
+            sorted(
+                infer_data_classes(
+                    request.arguments,
+                    schema=tool.input_schema,
+                    metadata=tool.metadata,
+                    claimed=request.data_classes,
+                )
+            )
+        )
         if _is_browser_tool(tool):
             try:
                 self.browser_policy.validate_outbound(
-                    request.data_classes,
+                    inferred_classes,
                     outbound_size,
                     max_bytes=self.max_outbound_bytes,
                 )
-                urls = _url_arguments(request.arguments)
-                if not urls:
-                    raise ScopeDenied("unsafe_url")
-                target = await self.browser_policy.validate_url(urls[0])
+                urls = extract_url_targets(request.arguments)
+                targets = await self.browser_policy.validate_all(urls)
+                target = targets[0]
             except ScopeDenied as exc:
                 return self._decision("deny", exc.code, request)
             scheme = target.scheme
             domain = target.hostname
             destination = target.hostname
-        elif request.server_id.casefold() == "serpapi":
+        elif request.server_id.casefold() == "serpapi" or request.tool_name == (
+            "search_jobs_serpapi"
+        ):
             try:
-                validate_serpapi_payload(request.arguments, request.data_classes)
+                validate_serpapi_payload(
+                    request.arguments,
+                    inferred_classes,
+                    max_bytes=self.max_outbound_bytes,
+                )
             except ScopeDenied as exc:
                 return self._decision("deny", exc.code, request)
             destination = "serpapi"
@@ -153,19 +180,145 @@ class PreToolCallGate:
                 server_id=request.server_id,
                 tool_name=request.tool_name,
                 action=action,
+                schema_hash=request.schema_hash,
                 scheme=scheme,
                 domain=domain,
                 arguments=request.arguments,
                 role=request.role,
-                data_classes=request.data_classes,
+                data_classes=inferred_classes,
                 reviewed=tool.review_state == "approved",
                 enabled=tool.enabled,
             ),
             rules,
         )
+        if request.server_id == "builtin" and action in {"read", "snapshot", "navigate"}:
+            policy_decision = PolicyDecision("allow", "builtin_reviewed")
+        if policy_decision.outcome == "allow" and not issue_permit:
+            return GateDecision(
+                "allow",
+                policy_decision.reason_code,
+                _safe_arguments_summary(request.arguments),
+                destination,
+            )
         return self._finalize(request, policy_decision, destination, rules)
 
-    def _resolve_tool(self, request: ToolCallRequest) -> Tool | GateDecision:
+    def request_for_tool(
+        self,
+        *,
+        caller: str,
+        session_id: str,
+        turn_id: str,
+        call_id: str,
+        tool_name: str,
+        arguments: Mapping[str, Any],
+        role: str = "user",
+    ) -> ToolCallRequest:
+        if self.registry is None:
+            raise ValueError("registry_required")
+        capability = self.registry.resolve_execution(tool_name)
+        if capability is None:
+            raise ValueError("tool_not_found")
+        return ToolCallRequest(
+            caller=caller,
+            session_id=session_id,
+            turn_id=turn_id,
+            call_id=call_id,
+            server_id=capability.server_id,
+            tool_name=capability.canonical_name,
+            snapshot_id=capability.snapshot_id,
+            schema_hash=capability.schema_hash,
+            arguments=dict(arguments),
+            role=role,
+        )
+
+    def canonicalize(self, request: ToolCallRequest) -> ToolCallRequest:
+        if self.registry is not None:
+            capability = self.registry.resolve_execution(request.tool_name)
+            if capability is not None:
+                return request.model_copy(
+                    update={
+                        "server_id": capability.server_id,
+                        "tool_name": capability.canonical_name,
+                        "snapshot_id": capability.snapshot_id,
+                        "schema_hash": capability.schema_hash,
+                    }
+                )
+        if request.server_id != "builtin":
+            snapshot = self.store.get_active_snapshot(request.server_id)
+            if snapshot is not None:
+                tool = next(
+                    (
+                        item
+                        for item in self.store.list_tools(snapshot.id)
+                        if request.tool_name in {item.upstream_name, item.model_alias}
+                    ),
+                    None,
+                )
+                if tool is not None:
+                    return request.model_copy(
+                        update={
+                            "tool_name": tool.upstream_name,
+                            "snapshot_id": snapshot.id,
+                            "schema_hash": tool.schema_hash,
+                        }
+                    )
+        return request
+
+    async def revalidate(
+        self, request: ToolCallRequest, permit: ExecutionPermit
+    ) -> ToolCallRequest:
+        canonical = self.canonicalize(request)
+        decision = await self.evaluate(canonical, issue_permit=False)
+        confirmed = bool(permit.confirmation_id)
+        if decision.outcome == "deny" or (
+            decision.outcome == "require_confirmation" and not confirmed
+        ):
+            raise ToolExecutionDenied(decision.reason_code)
+        rules = self.store.list_policy_rules(canonical.server_id, canonical.tool_name)
+        revision = _policy_revision(rules)
+        if revision != permit.policy_revision:
+            raise ToolExecutionDenied("policy_revision_mismatch")
+        return canonical
+
+    async def evaluate_confirmed(
+        self,
+        request: ToolCallRequest,
+        *,
+        verified_confirmation_id: str,
+    ) -> GateDecision:
+        if not verified_confirmation_id or len(verified_confirmation_id) > 160:
+            return self._decision("deny", "confirmation_invalid", request)
+        canonical = self.canonicalize(request)
+        decision = await self.evaluate(canonical)
+        if decision.outcome != "require_confirmation":
+            return decision
+        rules = self.store.list_policy_rules(
+            canonical.server_id, canonical.tool_name
+        )
+        return self._finalize(
+            canonical,
+            PolicyDecision("allow", "verified_confirmation"),
+            decision.destination_summary,
+            rules,
+            confirmation_id=verified_confirmation_id,
+        )
+
+    def _resolve_tool(
+        self, request: ToolCallRequest
+    ) -> Tool | ExecutionCapability | GateDecision:
+        if request.server_id == "builtin":
+            capability = (
+                None
+                if self.registry is None
+                else self.registry.resolve_execution(request.tool_name)
+            )
+            if capability is None:
+                return self._decision("deny", "tool_not_found", request)
+            if not capability.enabled:
+                return self._decision("deny", "tool_disabled", request)
+            if capability.schema_hash != request.schema_hash:
+                return self._decision("deny", "schema_hash_mismatch", request)
+            return capability
         server = self.store.get_server(request.server_id)
         if server is None:
             return self._decision("deny", "server_not_found", request)
@@ -204,6 +357,8 @@ class PreToolCallGate:
         policy: PolicyDecision,
         destination: str,
         rules,
+        *,
+        confirmation_id: str | None = None,
     ) -> GateDecision:
         summary = _safe_arguments_summary(request.arguments)
         if policy.outcome != "allow":
@@ -223,8 +378,9 @@ class PreToolCallGate:
                 return GateDecision("deny", "duplicate_call", summary, destination)
             permit = ExecutionPermit(
                 id=f"permit-{uuid4().hex}",
+                confirmation_id=confirmation_id,
                 request_hash=request.request_hash,
-                policy_revision=max((rule.revision for rule in rules), default=0),
+                policy_revision=_policy_revision(rules),
                 expires_at=self._now() + timedelta(seconds=self.permit_ttl_seconds),
                 caller=request.caller,
                 session_id=request.session_id,
@@ -235,6 +391,7 @@ class PreToolCallGate:
                 schema_hash=request.schema_hash,
                 arguments_hash=request.arguments_hash,
                 decision="allow",
+                invoker_id=_invoker_id(request.server_id, request.tool_name),
             )
             self.store.create_execution_permit(permit)
             decision = GateDecision(
@@ -271,25 +428,53 @@ class UnifiedToolExecutor:
         self,
         store: CapabilityStore,
         *,
-        builtin_invoker: Invoker | None = None,
-        mcp_invoker: Invoker | None = None,
+        gate: PreToolCallGate,
     ) -> None:
         self.store = store
-        self.builtin_invoker = builtin_invoker
-        self.mcp_invoker = mcp_invoker
+        self.gate = gate
+        self._invokers: dict[str, Callable[[Mapping[str, Any], Any], Any]] = {}
+
+    def register_invoker(
+        self,
+        *,
+        server_id: str,
+        tool_name: str,
+        invoker: Callable[[Mapping[str, Any], Any], Any],
+    ) -> None:
+        self._invokers[_invoker_id(server_id, tool_name)] = invoker
 
     async def execute(
         self,
         request: ToolCallRequest,
         *,
         permit_id: str | None,
-        invoker: Invoker | None = None,
+        context: Any = None,
         forced: bool = False,
         retry: bool = False,
     ) -> Any:
         del forced, retry
         if not permit_id:
             raise ToolExecutionDenied("permit_required")
+        permit = self.store.get_execution_permit(permit_id)
+        if permit is None:
+            raise ToolExecutionDenied("permit_not_found")
+        if permit.expires_at <= datetime.now(UTC):
+            raise ToolExecutionDenied("permit_expired")
+        request = await self.gate.revalidate(request, permit)
+        invoker_id = _invoker_id(request.server_id, request.tool_name)
+        if permit.invoker_id != invoker_id:
+            raise ToolExecutionDenied("permit_binding_mismatch")
+        selected = self._invokers.get(invoker_id)
+        if selected is None:
+            raise ToolExecutionDenied("invoker_unavailable")
+        capability = (
+            None
+            if self.gate.registry is None
+            else self.gate.registry.resolve_execution(request.tool_name)
+        )
+        if capability is not None and capability.browser:
+            targets = extract_url_targets(request.arguments)
+            await self.gate.browser_policy.validate_all(targets)
         expected = {
             "request_hash": request.request_hash,
             "caller": request.caller,
@@ -300,19 +485,13 @@ class UnifiedToolExecutor:
             "snapshot_id": request.snapshot_id,
             "schema_hash": request.schema_hash,
             "arguments_hash": request.arguments_hash,
+            "invoker_id": invoker_id,
         }
         try:
             self.store.consume_execution_permit(permit_id, expected=expected)
         except ExecutionPermitError as exc:
             raise ToolExecutionDenied(exc.code) from exc
-        selected = invoker or (
-            self.builtin_invoker
-            if request.server_id == "builtin"
-            else self.mcp_invoker
-        )
-        if selected is None:
-            raise ToolExecutionDenied("invoker_unavailable")
-        result = selected(request.arguments)
+        result = selected(request.arguments, context)
         return await result if inspect.isawaitable(result) else result
 
     async def execute_builtin(self, request: ToolCallRequest, **kwargs: Any) -> Any:
@@ -327,6 +506,8 @@ class UnifiedToolExecutor:
 
 
 def _is_browser_tool(tool: Tool) -> bool:
+    if isinstance(tool, ExecutionCapability):
+        return tool.browser
     return bool(tool.metadata.get("browser")) or "public_url" in tool.outbound_scope
 
 
@@ -336,6 +517,17 @@ def _url_arguments(arguments: Mapping[str, Any]) -> list[str]:
         for key, value in arguments.items()
         if "url" in key.casefold() and isinstance(value, str)
     ]
+
+
+def _invoker_id(server_id: str, tool_name: str) -> str:
+    return f"{server_id}:{tool_name}"
+
+
+def _policy_revision(rules) -> int:
+    fingerprint = canonical_json_sha256(
+        [rule.model_dump(mode="json") for rule in sorted(rules, key=lambda item: item.id)]
+    )
+    return int(fingerprint[:15], 16)
 
 
 def _safe_arguments_summary(arguments: Mapping[str, Any]) -> dict[str, Any]:

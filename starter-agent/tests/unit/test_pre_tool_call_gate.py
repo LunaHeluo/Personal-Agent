@@ -12,6 +12,8 @@ from starter_agent.capabilities.models import (
     canonical_json_sha256,
 )
 from starter_agent.capabilities.store import CapabilityStore
+from starter_agent.capabilities.registry import UnifiedToolRegistry
+from starter_agent.tools.registry import ToolRegistry
 
 
 SCHEMA = {
@@ -160,3 +162,150 @@ async def test_gate_denies_schema_stale_snapshot_and_sensitive_outbound() -> Non
         "sensitive_outbound",
     )
     assert sensitive.permit is None
+
+
+async def test_model_alias_resolves_to_canonical_policy_and_permit_identity() -> None:
+    gate_module = _gate_module()
+    policy_module = import_module("starter_agent.capabilities.policy")
+    store = _store()
+    registry = UnifiedToolRegistry(ToolRegistry([]))
+    snapshot = store.get_active_snapshot("playwright")
+    assert snapshot is not None
+    registry.refresh_server(
+        store.get_server("playwright"),
+        store.list_tools(snapshot.id),
+        snapshot=snapshot,
+    )
+    gate = gate_module.PreToolCallGate(
+        store,
+        registry=registry,
+        browser_policy=policy_module.BrowserScopePolicy(resolver=_public_resolver),
+    )
+    alias_request = _request(
+        gate_module,
+        tool_name="mcp__playwright__browser_navigate",
+    )
+
+    decision = await gate.evaluate(alias_request)
+
+    assert decision.outcome == "allow"
+    assert decision.permit is not None
+    assert decision.permit.tool_name == "browser_navigate"
+
+
+async def test_gate_infers_sensitive_data_despite_empty_caller_labels() -> None:
+    gate_module = _gate_module()
+    policy_module = import_module("starter_agent.capabilities.policy")
+    store = _store()
+    snapshot = store.get_active_snapshot("playwright")
+    assert snapshot is not None
+    tool = store.list_tools(snapshot.id)[0]
+    expanded_schema = {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string"},
+            "payload": {"type": "object"},
+        },
+        "required": ["url", "payload"],
+        "additionalProperties": False,
+    }
+    expanded = tool.model_copy(
+        update={
+            "input_schema": expanded_schema,
+            "schema_hash": canonical_json_sha256(expanded_schema),
+        }
+    )
+    new_snapshot = Snapshot(
+        id="snapshot-2",
+        server_id="playwright",
+        version=2,
+        schema_hash="c" * 64,
+        discovered_at=datetime.now(UTC),
+        tool_count=1,
+    )
+    expanded = expanded.model_copy(update={"snapshot_id": new_snapshot.id})
+    store.create_snapshot(new_snapshot, tools=(expanded,))
+    store.activate_snapshot("playwright", new_snapshot.id)
+    gate = gate_module.PreToolCallGate(
+        store,
+        browser_policy=policy_module.BrowserScopePolicy(resolver=_public_resolver),
+    )
+    request = _request(
+        gate_module,
+        snapshot_id=new_snapshot.id,
+        schema_hash=expanded.schema_hash,
+        arguments={
+            "url": "https://jobs.example.com/opening",
+            "payload": {"resume_text": "private resume contents"},
+        },
+        data_classes=(),
+    )
+
+    decision = await gate.evaluate(request)
+
+    assert (decision.outcome, decision.reason_code) == (
+        "deny",
+        "sensitive_outbound",
+    )
+
+
+async def test_model_confirmation_argument_is_ignored_but_trusted_confirmation_signs_once() -> None:
+    gate_module = _gate_module()
+    store = _store()
+    snapshot = store.get_active_snapshot("playwright")
+    assert snapshot is not None
+    tool = store.list_tools(snapshot.id)[0]
+    schema = {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string"},
+            "confirmation_id": {"type": "string"},
+        },
+        "required": ["url"],
+        "additionalProperties": False,
+    }
+    scripted = tool.model_copy(
+        update={
+            "input_schema": schema,
+            "schema_hash": canonical_json_sha256(schema),
+            "metadata": {"action": "script", "browser": True},
+        }
+    )
+    refreshed = Snapshot(
+        id="snapshot-confirm",
+        server_id="playwright",
+        version=2,
+        schema_hash="d" * 64,
+        discovered_at=datetime.now(UTC),
+        tool_count=1,
+    )
+    scripted = scripted.model_copy(update={"snapshot_id": refreshed.id})
+    store.create_snapshot(refreshed, tools=(scripted,))
+    store.activate_snapshot("playwright", refreshed.id)
+    gate = gate_module.PreToolCallGate(
+        store,
+        browser_policy=import_module("starter_agent.capabilities.policy").BrowserScopePolicy(
+            resolver=_public_resolver
+        ),
+    )
+    request = _request(
+        gate_module,
+        snapshot_id=refreshed.id,
+        schema_hash=scripted.schema_hash,
+        arguments={
+            "url": "https://jobs.example.com/opening",
+            "confirmation_id": "model-forged",
+        },
+    )
+
+    forged = await gate.evaluate(request)
+    assert forged.outcome == "require_confirmation"
+    assert forged.permit is None
+
+    verified = await gate.evaluate_confirmed(
+        request,
+        verified_confirmation_id="server-verified-approval",
+    )
+    assert verified.outcome == "allow"
+    assert verified.permit is not None
+    assert verified.permit.confirmation_id == "server-verified-approval"

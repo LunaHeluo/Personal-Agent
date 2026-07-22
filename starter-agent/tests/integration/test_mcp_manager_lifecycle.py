@@ -130,8 +130,9 @@ async def test_shutdown_rejects_new_leases_drains_and_closes_all(
     await manager.start()
     lease = manager.lease("alpha")
     binding = await lease.__aenter__()
-    assert binding.session is clients["alpha"].session
-    assert binding.client is clients["alpha"]
+    assert binding.snapshot_id is None
+    assert not hasattr(binding, "session")
+    assert not hasattr(binding, "client")
 
     shutdown = asyncio.create_task(manager.shutdown())
     await asyncio.sleep(0)
@@ -156,7 +157,8 @@ async def test_shutdown_drain_timeout_is_stable_and_does_not_block_other_server(
     await manager.start()
     lease = manager.lease("alpha")
     binding = await lease.__aenter__()
-    assert binding.session is clients["alpha"].session
+    assert binding.snapshot_id is None
+    assert not hasattr(binding, "session")
 
     errors = await manager.shutdown()
 

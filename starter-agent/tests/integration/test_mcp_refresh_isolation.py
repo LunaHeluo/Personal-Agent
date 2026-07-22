@@ -115,8 +115,6 @@ async def test_refresh_is_per_server_and_leases_pin_client_generation(
     beta_old_lease = manager.lease("beta")
     alpha_old_binding = await alpha_old_lease.__aenter__()
     beta_old_binding = await beta_old_lease.__aenter__()
-    assert alpha_old_binding.session is created["alpha"][0].session
-    assert alpha_old_binding.client is created["alpha"][0]
     assert alpha_old_binding.snapshot_id == alpha_initial.id
     assert beta_old_binding.snapshot_id == beta_initial.id
 
@@ -145,8 +143,6 @@ async def test_refresh_is_per_server_and_leases_pin_client_generation(
             break
         await asyncio.sleep(0)
     async with manager.lease("alpha") as alpha_new_binding:
-        assert alpha_new_binding.session is created["alpha"][1].session
-        assert alpha_new_binding.client is created["alpha"][1]
         assert alpha_new_binding.snapshot_id != alpha_old_binding.snapshot_id
         assert (
             alpha_new_binding.snapshot_id
@@ -159,7 +155,7 @@ async def test_refresh_is_per_server_and_leases_pin_client_generation(
     assert alpha_snapshot.server_id == "alpha"
     assert created["alpha"][0].closed is True
     assert manager.get_status("alpha").error_code is None
-    assert beta_old_binding.session is created["beta"][0]._session
+    assert beta_old_binding.snapshot_id == beta_initial.id
     await beta_old_lease.__aexit__(None, None, None)
 
     active_before_shutdown = manager.store.get_active_snapshot("alpha")

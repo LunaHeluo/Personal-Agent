@@ -474,6 +474,7 @@ class ExecutionPermit(CapabilityModel):
     schema_hash: Sha256 | None = None
     arguments_hash: Sha256 | None = None
     decision: Literal["allow"] | None = None
+    invoker_id: ShortText | None = None
 
 
 class SkillRecord(CapabilityModel):
