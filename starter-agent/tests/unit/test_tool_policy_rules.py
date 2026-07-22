@@ -267,3 +267,35 @@ def test_serpapi_rejects_history_dates_and_non_job_intent(query: str) -> None:
 )
 def test_serpapi_accepts_short_job_role_or_skill_search(query: str) -> None:
     _policy_module().validate_serpapi_payload({"query": query}, (), max_bytes=600)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Senior Product Manager led global teams and delivered growth",
+        "Product manager led teams",
+        "Backend engineer built and managed payment systems",
+        "Data scientist achieved revenue growth",
+        "Software engineer responsible for platform delivery",
+        "产品经理主导全球团队并交付增长",
+        "后端工程师负责支付平台开发",
+        "曾任数据科学家从事推荐系统",
+    ],
+)
+def test_serpapi_rejects_resume_sentences_and_achievement_verbs(query: str) -> None:
+    policy_module = _policy_module()
+    with pytest.raises(policy_module.ScopeDenied, match="serpapi_fields"):
+        policy_module.validate_serpapi_payload({"query": query}, (), max_bytes=600)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Senior Product Manager AI",
+        "Python Backend Engineer",
+        "高级产品经理 AI",
+        "Python 后端工程师",
+    ],
+)
+def test_serpapi_accepts_compact_job_keyword_bags(query: str) -> None:
+    _policy_module().validate_serpapi_payload({"query": query}, (), max_bytes=600)

@@ -190,6 +190,16 @@ _EMPLOYMENT_HISTORY = re.compile(
     r"\b(?:from|between)\b.{0,40}\b(?:to|and)\b",
     re.IGNORECASE,
 )
+_RESUME_ACTION = re.compile(
+    r"\b(?:led|delivered|managed|built|achieved|worked|developed|responsible|"
+    r"owned|drove|implemented|created|launched|improved|increased|reduced)\b|"
+    r"(?:任职|负责|主导|交付|从事)",
+    re.IGNORECASE,
+)
+_SENTENCE_CONNECTOR = re.compile(
+    r"\b(?:and|or|but|for|with|from|to|at|during|while|where|who|that)\b",
+    re.IGNORECASE,
+)
 _PERSON_COMPANY_HISTORY = re.compile(
     r"\b[A-Z][a-z]+\s+[A-Z][a-z]+\b.{0,80}"
     r"\b(?:at|from|with)\b.{0,40}\b[A-Z][A-Za-z0-9&.-]+\b"
@@ -218,10 +228,14 @@ def _safe_search_phrase(value: Any, limit: int, words: int) -> bool:
 def _safe_job_search_phrase(value: Any) -> bool:
     return bool(
         _safe_search_phrase(value, 160, 20)
+        and len(value.split()) <= 6
+        and len(value) <= 60
         and _JOB_INTENT.search(value)
         and not _YEAR_OR_DATE.search(value)
         and not _EMPLOYMENT_HISTORY.search(value)
         and not _PERSON_COMPANY_HISTORY.search(value)
+        and not _RESUME_ACTION.search(value)
+        and not _SENTENCE_CONNECTOR.search(value)
     )
 
 
