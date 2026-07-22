@@ -121,6 +121,39 @@ class KnowledgeApplicationService:
             source_content_sha256=source_content_sha256,
         )
 
+    def reserve_job_description_source_identity(
+        self,
+        knowledge_base_id: UUID,
+        *,
+        reservation_id: UUID,
+        source_url: str,
+        source_content_sha256: str,
+    ) -> None:
+        self.store.reserve_job_description_source_identity(
+            self.scope,
+            knowledge_base_id,
+            reservation_id=reservation_id,
+            source_url=source_url,
+            source_content_sha256=source_content_sha256,
+        )
+
+    def commit_job_description_source_identity(
+        self, *, reservation_id: UUID, document_id: UUID
+    ) -> None:
+        self.store.commit_job_description_source_identity(
+            self.scope,
+            reservation_id=reservation_id,
+            document_id=document_id,
+        )
+
+    def release_job_description_source_identity(
+        self, *, reservation_id: UUID
+    ) -> None:
+        self.store.release_job_description_source_identity(
+            self.scope,
+            reservation_id=reservation_id,
+        )
+
     def get_job(
         self, knowledge_base_id: UUID, job_id: UUID
     ) -> IngestionJob:

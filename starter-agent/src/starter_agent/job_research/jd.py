@@ -309,23 +309,27 @@ class JobDescriptionIngestionService:
         job = self.normalizer.normalize_artifact(artifact)
         self._verify_approval_binding(approval, job)
         base_id = knowledge_base_id or self.knowledge.default_knowledge_base_id
-        duplicate = self.knowledge.find_job_description_by_source_identity(
-            base_id,
-            source_url=job.source_url,
-            source_content_sha256=job.source_content_sha256,
-        )
-        if duplicate is not None:
-            kind, _document = duplicate
-            raise JobDescriptionIngestionError(
-                "duplicate_source_hash"
-                if kind == "source_hash"
-                else "duplicate_source_url"
+        try:
+            self.knowledge.reserve_job_description_source_identity(
+                base_id,
+                reservation_id=approval.id,
+                source_url=job.source_url,
+                source_content_sha256=job.source_content_sha256,
             )
+        except KnowledgeError as exc:
+            code = {
+                "duplicate_job_description_source_hash": "duplicate_source_hash",
+                "duplicate_job_description_source_url": "duplicate_source_url",
+            }.get(exc.code, exc.code)
+            raise JobDescriptionIngestionError(code) from exc
         try:
             consumed = self.artifact_store.consume_job_description_approval(
                 approval_id, principal=principal, session_id=session_id
             )
         except ValueError as exc:
+            self.knowledge.release_job_description_source_identity(
+                reservation_id=approval.id
+            )
             raise JobDescriptionIngestionError(str(exc)) from exc
         try:
             upload = self.knowledge.upload(
@@ -335,13 +339,41 @@ class JobDescriptionIngestionService:
                 document_type="job_description",
                 confirmed_authorized=True,
             )
-        except KnowledgeError as exc:
+        except Exception as exc:
+            self.knowledge.release_job_description_source_identity(
+                reservation_id=approval.id
+            )
+            self.artifact_store.restore_job_description_approval(
+                approval_id, principal=principal, session_id=session_id
+            )
             code = (
                 "duplicate_content_hash"
-                if exc.code == "duplicate_document_content"
-                else exc.code
+                if isinstance(exc, KnowledgeError)
+                and exc.code == "duplicate_document_content"
+                else (
+                    exc.code
+                    if isinstance(exc, KnowledgeError)
+                    else "document_ingestion_failed"
+                )
             )
             raise JobDescriptionIngestionError(code) from exc
+        try:
+            self.knowledge.commit_job_description_source_identity(
+                reservation_id=approval.id,
+                document_id=upload.document.id,
+            )
+        except KnowledgeError as exc:
+            # The document is deleted before releasing its identity. If cleanup
+            # cannot complete, the reservation remains closed to prevent a
+            # second approval from writing the same source.
+            if self.knowledge.delete_document(base_id, upload.document.id):
+                self.knowledge.release_job_description_source_identity(
+                    reservation_id=approval.id
+                )
+                self.artifact_store.restore_job_description_approval(
+                    approval_id, principal=principal, session_id=session_id
+                )
+            raise JobDescriptionIngestionError(exc.code) from exc
         confirmed = JobDescriptionApproval.model_validate(consumed)
         trace = JobDescriptionTrace(
             gate_reason_code=confirmed.gate_reason_code,

@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     case,
     create_engine,
     event,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     or_,
     select,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.pool import StaticPool
 
@@ -142,6 +144,38 @@ class KnowledgeChunkRow(KnowledgeBaseSql):
     search_text: Mapped[str] = mapped_column(Text)
     content_sha256: Mapped[str] = mapped_column(String(64), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class JobDescriptionSourceIdentityRow(KnowledgeBaseSql):
+    __tablename__ = "knowledge_job_description_source_identities"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "project_id",
+            "knowledge_base_id",
+            "source_url_sha256",
+            name="uq_jd_source_url_identity",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "project_id",
+            "knowledge_base_id",
+            "source_content_sha256",
+            name="uq_jd_source_hash_identity",
+        ),
+    )
+
+    reservation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    knowledge_base_id: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(120), index=True)
+    project_id: Mapped[str] = mapped_column(String(120), index=True)
+    source_url: Mapped[str] = mapped_column(Text)
+    source_url_sha256: Mapped[str] = mapped_column(String(64))
+    source_content_sha256: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    document_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class InvalidatedCitationRow(KnowledgeBaseSql):
@@ -581,31 +615,154 @@ class SQLiteKnowledgeStore:
         source_url: str,
         source_content_sha256: str,
     ) -> tuple[str, KnowledgeDocument] | None:
-        """Find active JD source markers independent of its URL-derived filename."""
+        """Find a committed JD through its persistent source identity."""
 
+        source_url_sha256 = sha256(source_url.encode("utf-8")).hexdigest()
         with Session(self.engine) as db:
-            rows = list(
-                db.scalars(
-                    select(KnowledgeDocumentRow).where(
-                        *self._scope_filters(scope),
-                        KnowledgeDocumentRow.knowledge_base_id
-                        == str(knowledge_base_id),
-                        KnowledgeDocumentRow.document_type == "job_description",
-                        KnowledgeDocumentRow.active_version_id.is_not(None),
-                    )
+            identity = db.scalar(
+                select(JobDescriptionSourceIdentityRow).where(
+                    JobDescriptionSourceIdentityRow.user_id == scope.user_id,
+                    JobDescriptionSourceIdentityRow.project_id == scope.project_id,
+                    JobDescriptionSourceIdentityRow.knowledge_base_id
+                    == str(knowledge_base_id),
+                    JobDescriptionSourceIdentityRow.status == "committed",
+                    or_(
+                        JobDescriptionSourceIdentityRow.source_content_sha256
+                        == source_content_sha256,
+                        JobDescriptionSourceIdentityRow.source_url_sha256
+                        == source_url_sha256,
+                    ),
                 )
             )
-            for row in rows:
-                version = db.get(DocumentVersionRow, row.active_version_id)
-                if version is None:
-                    continue
-                lines = set(version.source_text.splitlines())
-                document = self._document(row, version)
-                if f"- Source content SHA-256: {source_content_sha256}" in lines:
-                    return "source_hash", document
-                if f"- Source URL: {source_url}" in lines:
-                    return "source_url", document
+            if identity is None or identity.document_id is None:
+                return None
+            row = db.get(KnowledgeDocumentRow, identity.document_id)
+            if row is None:
+                return None
+            version = (
+                db.get(DocumentVersionRow, row.active_version_id)
+                if row.active_version_id
+                else None
+            )
+            kind = (
+                "source_hash"
+                if identity.source_content_sha256 == source_content_sha256
+                else "source_url"
+            )
+            return kind, self._document(row, version)
         return None
+
+    def reserve_job_description_source_identity(
+        self,
+        scope: KnowledgeScope,
+        knowledge_base_id: UUID,
+        *,
+        reservation_id: UUID,
+        source_url: str,
+        source_content_sha256: str,
+    ) -> None:
+        """Atomically reserve both normalized URL and source-content identities."""
+
+        reservation = str(reservation_id)
+        base_id = str(knowledge_base_id)
+        url_hash = sha256(source_url.encode("utf-8")).hexdigest()
+        now = datetime.now(UTC)
+        with Session(self.engine) as db:
+            base = db.get(KnowledgeBaseRow, base_id)
+            if (
+                base is None
+                or base.user_id != scope.user_id
+                or base.project_id != scope.project_id
+            ):
+                raise KnowledgeError("knowledge_base_not_found")
+            existing = db.get(JobDescriptionSourceIdentityRow, reservation)
+            if existing is not None:
+                if (
+                    existing.user_id == scope.user_id
+                    and existing.project_id == scope.project_id
+                    and existing.knowledge_base_id == base_id
+                    and existing.source_url_sha256 == url_hash
+                    and existing.source_content_sha256 == source_content_sha256
+                ):
+                    return
+                raise KnowledgeError("job_description_source_reservation_conflict")
+            db.add(
+                JobDescriptionSourceIdentityRow(
+                    reservation_id=reservation,
+                    knowledge_base_id=base_id,
+                    user_id=scope.user_id,
+                    project_id=scope.project_id,
+                    source_url=source_url,
+                    source_url_sha256=url_hash,
+                    source_content_sha256=source_content_sha256,
+                    status="reserved",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            try:
+                db.commit()
+            except IntegrityError as exc:
+                db.rollback()
+                conflict = db.scalar(
+                    select(JobDescriptionSourceIdentityRow).where(
+                        JobDescriptionSourceIdentityRow.user_id == scope.user_id,
+                        JobDescriptionSourceIdentityRow.project_id
+                        == scope.project_id,
+                        JobDescriptionSourceIdentityRow.knowledge_base_id == base_id,
+                        or_(
+                            JobDescriptionSourceIdentityRow.source_content_sha256
+                            == source_content_sha256,
+                            JobDescriptionSourceIdentityRow.source_url_sha256
+                            == url_hash,
+                        ),
+                    )
+                )
+                code = (
+                    "duplicate_job_description_source_hash"
+                    if conflict is not None
+                    and conflict.source_content_sha256 == source_content_sha256
+                    else "duplicate_job_description_source_url"
+                )
+                raise KnowledgeError(code) from exc
+
+    def commit_job_description_source_identity(
+        self,
+        scope: KnowledgeScope,
+        *,
+        reservation_id: UUID,
+        document_id: UUID,
+    ) -> None:
+        with Session(self.engine) as db, db.begin():
+            row = db.get(JobDescriptionSourceIdentityRow, str(reservation_id))
+            if (
+                row is None
+                or row.user_id != scope.user_id
+                or row.project_id != scope.project_id
+            ):
+                raise KnowledgeError("job_description_source_reservation_not_found")
+            if row.status == "committed" and row.document_id == str(document_id):
+                return
+            if row.status != "reserved":
+                raise KnowledgeError("job_description_source_reservation_conflict")
+            row.status = "committed"
+            row.document_id = str(document_id)
+            row.updated_at = datetime.now(UTC)
+
+    def release_job_description_source_identity(
+        self,
+        scope: KnowledgeScope,
+        *,
+        reservation_id: UUID,
+    ) -> None:
+        with Session(self.engine) as db, db.begin():
+            db.query(JobDescriptionSourceIdentityRow).filter(
+                JobDescriptionSourceIdentityRow.reservation_id
+                == str(reservation_id),
+                JobDescriptionSourceIdentityRow.user_id == scope.user_id,
+                JobDescriptionSourceIdentityRow.project_id == scope.project_id,
+                JobDescriptionSourceIdentityRow.status == "reserved",
+            ).delete()
 
     def get_job(
         self,

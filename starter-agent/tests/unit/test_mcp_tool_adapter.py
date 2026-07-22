@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -114,10 +115,17 @@ class _ResultSession:
         )
 
 
+class _FailingResultSession:
+    async def call_tool(self, name, arguments):
+        assert name == "fetch_job"
+        assert arguments == {"url": "https://jobs.example/requested"}
+        raise RuntimeError("Authorization: Bearer TOP-SECRET-UPSTREAM")
+
+
 class _ResultClient:
-    def __init__(self) -> None:
+    def __init__(self, result_session=None) -> None:
         self.session = None
-        self._session = _ResultSession()
+        self._session = result_session or _ResultSession()
         self.stderr_summary = ""
 
     async def connect(self):
@@ -161,16 +169,12 @@ class _McpProvider(Provider):
         return True, "ready"
 
 
-@pytest.mark.asyncio
-async def test_real_manager_runtime_path_preserves_trusted_provenance_and_artifact(
-    tmp_path: Path,
-) -> None:
+async def _real_manager_runtime(tmp_path: Path, client: _ResultClient):
     builtin = ToolRegistry([])
     registry = UnifiedToolRegistry(builtin, allowed_risk_levels=["read", "external"])
     store = CapabilityStore("sqlite:///:memory:", tmp_path)
     gate = PreToolCallGate(store, registry=registry)
     executor = UnifiedToolExecutor(store, gate=gate)
-    client = _ResultClient()
     manager = McpManager(
         McpConfiguration(
             source_path=tmp_path / "mcp.json",
@@ -230,6 +234,14 @@ async def test_real_manager_runtime_path_preserves_trusted_provenance_and_artifa
         gate=gate,
         executor=executor,
     )
+    return manager, runtime, tool
+
+
+@pytest.mark.asyncio
+async def test_real_manager_runtime_path_preserves_trusted_provenance_and_artifact(
+    tmp_path: Path,
+) -> None:
+    manager, runtime, tool = await _real_manager_runtime(tmp_path, _ResultClient())
     artifacts: list[dict] = []
     events: list[dict] = []
 
@@ -262,4 +274,46 @@ async def test_real_manager_runtime_path_preserves_trusted_provenance_and_artifa
     assert artifacts[0]["final_url"] == "https://jobs.example/final"
     assert artifacts[0]["call_id"] == "call-real"
     assert artifacts[0]["content_sha256"]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_real_manager_runtime_exception_is_governed_and_never_leaks_upstream_secret(
+    tmp_path: Path,
+) -> None:
+    manager, runtime, _tool = await _real_manager_runtime(
+        tmp_path, _ResultClient(_FailingResultSession())
+    )
+    artifacts: list[dict] = []
+    events: list[dict] = []
+
+    async def artifact(item):
+        artifacts.append(item)
+
+    async def event(item):
+        events.append(item)
+
+    _response, generated, _tool_calls = await runtime.run(
+        _McpProvider(),
+        "fixture",
+        [Message(role="user", content="fetch")],
+        uuid4(),
+        uuid4(),
+        on_tool_artifact=artifact,
+        on_tool_event=event,
+    )
+
+    tool_message = next(item for item in generated if item.role == "tool")
+    completed = next(item for item in events if item["type"] == "tool_completed")
+    assert json.loads(tool_message.content)["error_code"] == "tool_execution_error"
+    assert completed["error_code"] == "tool_execution_error"
+    assert artifacts
+    assert artifacts[0]["server_id"] == "jobs"
+    assert artifacts[0]["snapshot_id"] == "snapshot-real"
+    serialized = json.dumps(
+        {"message": tool_message.content, "event": completed, "artifact": artifacts[0]},
+        default=str,
+    )
+    assert "TOP-SECRET-UPSTREAM" not in serialized
+    assert "Authorization" not in serialized
     await manager.shutdown()

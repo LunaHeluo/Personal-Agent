@@ -307,7 +307,16 @@ class AgentRuntime:
                 tool_display = ""
                 tool_retryable = False
                 tool_failure_type: str | None = None
-                tool_metadata: dict[str, object] = {}
+                tool_metadata: dict[str, object] = (
+                    {
+                        "server_id": capability.server_id,
+                        "call_id": call.id,
+                        "snapshot_id": capability.snapshot_id,
+                        "schema_hash": capability.schema_hash,
+                    }
+                    if capability is not None
+                    else {}
+                )
                 if tool is None and capability is None:
                     tool_error_code = "unknown_tool"
                     tool_display = "模型请求了未注册的工具"
@@ -409,7 +418,7 @@ class AgentRuntime:
                         )
                         logger.error(
                             "tool.failed",
-                            tool=tool.name,
+                            tool=call.name,
                             error_type=type(exc).__name__,
                         )
                 raw_source_ref = f"tool:{call.name}:{turn_id}:{call.id}"

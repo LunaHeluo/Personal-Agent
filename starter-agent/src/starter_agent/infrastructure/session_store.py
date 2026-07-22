@@ -878,6 +878,40 @@ class SQLiteSessionStore:
             assert refreshed is not None
             return self._job_description_approval(refreshed)
 
+    def restore_job_description_approval(
+        self,
+        approval_id: UUID,
+        *,
+        principal: str,
+        session_id: UUID,
+    ) -> dict[str, object]:
+        """Restore a consumed approval only after its reserved write rolled back."""
+
+        with Session(self.engine) as db, db.begin():
+            row = db.get(JobDescriptionApprovalRow, str(approval_id))
+            if row is None:
+                raise ValueError("confirmation_not_found")
+            if row.principal != principal or row.session_id != str(session_id):
+                raise ValueError("confirmation_binding_mismatch")
+            if row.status == "approved":
+                return self._job_description_approval(row)
+            if row.status != "consumed":
+                raise ValueError("confirmation_state_conflict")
+            result = db.execute(
+                update(JobDescriptionApprovalRow)
+                .where(
+                    JobDescriptionApprovalRow.id == str(approval_id),
+                    JobDescriptionApprovalRow.status == "consumed",
+                )
+                .values(status="approved", consumed_at=None)
+            )
+            if result.rowcount != 1:
+                raise ValueError("confirmation_state_conflict")
+            db.flush()
+            refreshed = db.get(JobDescriptionApprovalRow, str(approval_id))
+            assert refreshed is not None
+            return self._job_description_approval(refreshed)
+
     def session_exists(self, session_id: UUID) -> bool:
         with Session(self.engine) as db:
             return db.get(SessionRow, str(session_id)) is not None
