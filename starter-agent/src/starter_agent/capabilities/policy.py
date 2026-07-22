@@ -206,9 +206,12 @@ _PERSON_COMPANY_HISTORY = re.compile(
 )
 _JOB_INTENT = re.compile(
     r"\b(?:ai|ml|pm|qa|sre|devops|product|program|project|engineering|engineer|"
-    r"developer|architect|designer|analyst|scientist|researcher|recruiter|sales|"
-    r"marketing|security|frontend|backend|fullstack|data|python|java|javascript|"
-    r"typescript|react|kubernetes|cloud|platform|software|hardware|operations)\b",
+    r"manager|finance|accountant|developer|architect|designer|analyst|scientist|"
+    r"researcher|recruiter|hr|consultant|sales|marketing|security|frontend|backend|"
+    r"fullstack|data|python|java|javascript|typescript|react|kubernetes|cloud|"
+    r"platform|software|hardware|operations)\b|"
+    r"(?:产品经理|财务经理|工程师|开发|分析师|设计师|运营|市场|销售|财务|会计|"
+    r"招聘|人力|项目|顾问|研究员|架构师|测试|运维)",
     re.IGNORECASE,
 )
 

@@ -299,3 +299,51 @@ def test_serpapi_rejects_resume_sentences_and_achievement_verbs(query: str) -> N
 )
 def test_serpapi_accepts_compact_job_keyword_bags(query: str) -> None:
     _policy_module().validate_serpapi_payload({"query": query}, (), max_bytes=600)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "产品经理",
+        "财务经理",
+        "后端工程师",
+        "移动端开发",
+        "商业分析师",
+        "用户体验设计师",
+        "电商运营",
+        "市场经理",
+        "企业销售",
+        "财务会计",
+        "技术招聘",
+        "人力资源",
+        "项目经理",
+        "管理顾问",
+        "研究员",
+        "解决方案架构师",
+        "软件测试",
+        "系统运维",
+        "Finance Manager",
+        "Senior Accountant",
+        "Operations Consultant",
+        "HR Recruiter",
+    ],
+)
+def test_serpapi_accepts_common_job_role_queries(query: str) -> None:
+    _policy_module().validate_serpapi_payload({"query": query}, (), max_bytes=600)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "财务经理负责全球预算",
+        "产品经理主导增长项目",
+        "后端工程师交付支付系统",
+        "Operations Manager led global teams",
+        "Accountant responsible for reporting",
+        "HR Recruiter achieved hiring targets",
+    ],
+)
+def test_common_roles_do_not_bypass_resume_verb_rejection(query: str) -> None:
+    policy_module = _policy_module()
+    with pytest.raises(policy_module.ScopeDenied, match="serpapi_fields"):
+        policy_module.validate_serpapi_payload({"query": query}, (), max_bytes=600)
