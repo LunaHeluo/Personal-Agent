@@ -32,6 +32,7 @@ from starter_agent.mcp.discovery import (
     discover_candidate,
     discover_and_activate,
 )
+from starter_agent.mcp.tool_adapter import McpToolResultAdapter
 
 
 _CommandResult = TypeVar("_CommandResult")
@@ -531,6 +532,7 @@ class McpManager:
         if self.store is None or self.tool_executor is None:
             return
         registry = self.tool_executor.gate.registry
+        result_adapter = McpToolResultAdapter()
         tools = self.store.list_tools(snapshot.id)
         if registry is not None:
             registry.refresh_server(handle.status, tools, snapshot=snapshot)
@@ -538,13 +540,29 @@ class McpManager:
             if bool(tool.metadata.get("browser")) or "public_url" in tool.outbound_scope:
                 continue
 
-            async def invoke(arguments, _context, *, _name=tool.upstream_name):
-                return await self._invoke_tool(handle.server_id, _name, dict(arguments))
+            async def invoke(
+                arguments,
+                request,
+                *,
+                _name=tool.upstream_name,
+                _schema_hash=tool.schema_hash,
+            ):
+                upstream = await self._invoke_tool(
+                    handle.server_id, _name, dict(arguments)
+                )
+                return result_adapter.adapt(
+                    upstream,
+                    server_id=handle.server_id,
+                    call_id=request.call_id,
+                    snapshot_id=request.snapshot_id,
+                    schema_hash=_schema_hash,
+                )
 
             self.tool_executor.register_invoker(
                 server_id=handle.server_id,
                 tool_name=tool.upstream_name,
                 invoker=invoke,
+                context_factory=lambda request: request,
             )
 
     async def _drain_and_close(self, handle: ServerHandle) -> str | None:

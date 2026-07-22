@@ -95,6 +95,14 @@ class ToolArtifactRow(Base):
     turn_id: Mapped[str] = mapped_column(String(36), index=True)
     tool_name: Mapped[str] = mapped_column(String(120))
     content: Mapped[str] = mapped_column(Text)
+    server_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    snapshot_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    schema_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    requested_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    final_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    truncation_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    restricted: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
@@ -142,6 +150,28 @@ class SQLiteSessionStore:
                         "tool_calls_json TEXT NOT NULL DEFAULT '[]'"
                     )
                 )
+        artifact_columns = {
+            column["name"]
+            for column in inspect(self.engine).get_columns("tool_artifacts")
+        }
+        artifact_additions = {
+            "server_id": "VARCHAR(160)",
+            "snapshot_id": "VARCHAR(160)",
+            "schema_hash": "VARCHAR(64)",
+            "requested_url": "TEXT",
+            "final_url": "TEXT",
+            "content_sha256": "VARCHAR(64)",
+            "truncation_summary_json": "TEXT NOT NULL DEFAULT '{}'",
+            "restricted": "INTEGER NOT NULL DEFAULT 1",
+        }
+        with self.engine.begin() as connection:
+            for name, definition in artifact_additions.items():
+                if name not in artifact_columns:
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE tool_artifacts ADD COLUMN {name} {definition}"
+                        )
+                    )
 
     def create_session(self) -> UUID:
         session_id = uuid4()
@@ -594,7 +624,35 @@ class SQLiteSessionStore:
         turn_id: UUID,
         tool_name: str,
         content: str,
+        server_id: str | None = None,
+        snapshot_id: str | None = None,
+        schema_hash: str | None = None,
+        requested_url: str | None = None,
+        final_url: str | None = None,
+        content_sha256: str | None = None,
+        truncation_summary: dict[str, object] | None = None,
     ) -> None:
+        from starter_agent.agent.tool_result_guard import (
+            redact_tool_result_content,
+        )
+
+        safe_content = redact_tool_result_content(content)
+        safe_urls = json.loads(
+            redact_tool_result_content(
+                json.dumps(
+                    {
+                        "requested_url": requested_url,
+                        "final_url": final_url,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        )
+        safe_summary = json.loads(
+            redact_tool_result_content(
+                json.dumps(truncation_summary or {}, ensure_ascii=False)
+            )
+        )
         with Session(self.engine) as db:
             db.merge(
                 ToolArtifactRow(
@@ -602,11 +660,45 @@ class SQLiteSessionStore:
                     session_id=str(session_id),
                     turn_id=str(turn_id),
                     tool_name=tool_name,
-                    content=content,
+                    content=safe_content,
+                    server_id=server_id,
+                    snapshot_id=snapshot_id,
+                    schema_hash=schema_hash,
+                    requested_url=safe_urls.get("requested_url"),
+                    final_url=safe_urls.get("final_url"),
+                    content_sha256=content_sha256,
+                    truncation_summary_json=json.dumps(
+                        safe_summary, ensure_ascii=False, separators=(",", ":")
+                    ),
+                    restricted=1,
                     created_at=datetime.now(UTC),
                 )
             )
             db.commit()
+
+    def get_tool_artifact(self, source_ref: str) -> dict[str, object] | None:
+        with Session(self.engine) as db:
+            row = db.get(ToolArtifactRow, source_ref)
+            if row is None:
+                return None
+            return {
+                "source_ref": row.source_ref,
+                "session_id": UUID(row.session_id),
+                "turn_id": UUID(row.turn_id),
+                "tool_name": row.tool_name,
+                "content": row.content,
+                "server_id": row.server_id,
+                "snapshot_id": row.snapshot_id,
+                "schema_hash": row.schema_hash,
+                "requested_url": row.requested_url,
+                "final_url": row.final_url,
+                "content_sha256": row.content_sha256,
+                "truncation_summary": json.loads(
+                    row.truncation_summary_json or "{}"
+                ),
+                "restricted": bool(row.restricted),
+                "created_at": row.created_at,
+            }
 
     def session_exists(self, session_id: UUID) -> bool:
         with Session(self.engine) as db:

@@ -439,7 +439,22 @@ class AgentRuntime:
                             "session_id": session_id,
                             "turn_id": turn_id,
                             "tool_name": call.name,
-                            "content": result_text,
+                            "content": guarded.redacted_content,
+                            "server_id": tool_metadata.get("server_id"),
+                            "snapshot_id": tool_metadata.get("snapshot_id"),
+                            "schema_hash": tool_metadata.get("schema_hash"),
+                            "requested_url": tool_metadata.get("requested_url"),
+                            "final_url": tool_metadata.get("final_url"),
+                            "content_sha256": guarded.content_sha256,
+                            "truncation_summary": {
+                                "reason": guarded.truncation_reason,
+                                "raw_bytes": guarded.raw_result_bytes,
+                                "raw_chars": guarded.raw_result_chars,
+                                "raw_tokens": guarded.raw_result_tokens,
+                                "kept_bytes": guarded.kept_result_bytes,
+                                "kept_chars": guarded.kept_result_chars,
+                                "kept_tokens": guarded.kept_result_tokens,
+                            },
                         }
                     )
                 tool_message = Message(
@@ -463,6 +478,20 @@ class AgentRuntime:
                             "is_truncated": guarded.is_truncated,
                             "raw_result_tokens": guarded.raw_result_tokens,
                             "context_result_tokens": guarded.context_result_tokens,
+                            "raw_result_bytes": guarded.raw_result_bytes,
+                            "raw_result_chars": guarded.raw_result_chars,
+                            "kept_result_bytes": guarded.kept_result_bytes,
+                            "kept_result_chars": guarded.kept_result_chars,
+                            "kept_result_tokens": guarded.kept_result_tokens,
+                            "content_sha256": tool_metadata.get(
+                                "content_sha256", guarded.content_sha256
+                            ),
+                            "source_url": tool_metadata.get(
+                                "source_url", tool_metadata.get("final_url")
+                            ),
+                            "snapshot_id": tool_metadata.get("snapshot_id"),
+                            "schema_hash": tool_metadata.get("schema_hash"),
+                            "truncation_reason": guarded.truncation_reason,
                             "raw_source_ref": guarded.raw_source_ref,
                             "tool_governance_enabled": tool_governance_enabled,
                             "display": tool_display,
