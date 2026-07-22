@@ -17,10 +17,17 @@ from starter_agent.capabilities.registry import (
     ModelToolSnapshot,
     UnifiedToolRegistry,
 )
+from starter_agent.capabilities.confirmations import (
+    ConfirmationBroker,
+    ConfirmationService,
+    TurnCoordinator,
+)
 
 __all__ = [
     "AuditEvent",
     "Confirmation",
+    "ConfirmationBroker",
+    "ConfirmationService",
     "ExecutionPermit",
     "LightweightCapabilityCatalog",
     "ModelToolSnapshot",
@@ -31,5 +38,6 @@ __all__ = [
     "SkillRecord",
     "Snapshot",
     "Tool",
+    "TurnCoordinator",
     "UnifiedToolRegistry",
 ]

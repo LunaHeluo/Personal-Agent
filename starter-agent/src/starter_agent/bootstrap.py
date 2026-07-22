@@ -6,6 +6,11 @@ from starter_agent.application import ApplicationService
 from starter_agent.capabilities.store import CapabilityStore
 from starter_agent.capabilities.registry import UnifiedToolRegistry
 from starter_agent.capabilities.gate import PreToolCallGate, UnifiedToolExecutor
+from starter_agent.capabilities.confirmations import (
+    ConfirmationBroker,
+    ConfirmationService,
+    TurnCoordinator,
+)
 from starter_agent.infrastructure.session_store import SQLiteSessionStore
 from starter_agent.knowledge.service import KnowledgeApplicationService
 from starter_agent.knowledge.store import SQLiteKnowledgeStore
@@ -41,6 +46,17 @@ def create_application() -> ApplicationService:
     )
     gate = PreToolCallGate(capability_store, registry=tools)
     executor = UnifiedToolExecutor(capability_store, gate=gate)
+    confirmation_service = ConfirmationService(
+        capability_store,
+        gate,
+        broker=ConfirmationBroker(),
+        confirmation_ttl_seconds=settings.mcp.confirmation_timeout_seconds,
+        expire_orphans=True,
+    )
+    turn_coordinator = TurnCoordinator(
+        confirmation_service,
+        confirmation_timeout_seconds=settings.mcp.confirmation_timeout_seconds,
+    )
     runtime = AgentRuntime(
         tools,
         policy,
@@ -48,6 +64,7 @@ def create_application() -> ApplicationService:
         settings.context,
         gate=gate,
         executor=executor,
+        turn_coordinator=turn_coordinator,
     )
     context = ContextBuilder(
         settings.resolve_path(settings.app.identity_path),

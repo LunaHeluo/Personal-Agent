@@ -32,6 +32,10 @@ from starter_agent.capabilities.registry import UnifiedToolRegistry
 from starter_agent.capabilities.store import CapabilityStore
 from starter_agent.capabilities.models import PolicyRule
 from starter_agent.capabilities.store import RecordAlreadyExistsError
+from starter_agent.capabilities.confirmations import (
+    ConfirmationService,
+    TurnCoordinator,
+)
 
 
 class _BuiltinRegistryView:
@@ -69,6 +73,7 @@ class AgentRuntime:
         *,
         gate: PreToolCallGate | None = None,
         executor: UnifiedToolExecutor | None = None,
+        turn_coordinator: TurnCoordinator | None = None,
     ):
         self.tools = tools
         self.policy = policy
@@ -91,6 +96,9 @@ class AgentRuntime:
             executor = UnifiedToolExecutor(capability_store, gate=gate)
         self.gate = gate
         self.executor = executor
+        self.turn_coordinator = turn_coordinator or TurnCoordinator(
+            ConfirmationService(gate.store, gate)
+        )
         safe_auto_tools = {
             "get_current_time",
             "search_jobs_serpapi",
@@ -140,6 +148,7 @@ class AgentRuntime:
         forced: bool = False,
         retry: bool = False,
         confirmation_id: str | None = None,
+        on_tool_event: Callable[[dict], Awaitable[None]] | None = None,
     ):
         request = self.gate.request_for_tool(
             caller="model",
@@ -158,6 +167,15 @@ class AgentRuntime:
                 confirmation_id=confirmation_id,
             )
         )
+        if (
+            confirmation_id is None
+            and decision.outcome == "require_confirmation"
+        ):
+            decision = await self.turn_coordinator.wait_for_permit(
+                request,
+                decision,
+                on_event=on_tool_event,
+            )
         if decision.outcome != "allow":
             code = (
                 "tool_confirmation_required"
@@ -311,6 +329,7 @@ class AgentRuntime:
                                 call_id=call.id,
                                 forced=required_tool_name == call.name,
                                 retry=repeated_calls[signature] > 1,
+                                on_tool_event=on_tool_event,
                             ),
                             timeout=self.budget.tool_timeout_seconds,
                         )

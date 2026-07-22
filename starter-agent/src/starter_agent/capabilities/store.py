@@ -740,6 +740,110 @@ class CapabilityStore:
                 else Confirmation.model_validate_json(row.payload_json)
             )
 
+    def list_confirmations(
+        self,
+        *,
+        session_id: str | None = None,
+        status: str | None = None,
+    ) -> list[Confirmation]:
+        with Session(self.engine) as db:
+            statement = select(ConfirmationRow)
+            if status is not None:
+                statement = statement.where(ConfirmationRow.status == status)
+            rows = db.scalars(
+                statement.order_by(ConfirmationRow.expires_at, ConfirmationRow.id)
+            ).all()
+            confirmations = [
+                Confirmation.model_validate_json(row.payload_json) for row in rows
+            ]
+            if session_id is not None:
+                confirmations = [
+                    item for item in confirmations if item.session_id == session_id
+                ]
+            return confirmations
+
+    def invalidate_confirmation(
+        self,
+        confirmation_id: str,
+        *,
+        expected_revision: int,
+        status: str = "invalidated",
+        now: datetime | None = None,
+    ) -> Confirmation:
+        if status not in {"invalidated", "expired"}:
+            raise ValueError("Confirmation invalidation status is unsupported")
+        decided_at = now or datetime.now(UTC)
+        with Session(self.engine) as db:
+            row = db.get(ConfirmationRow, confirmation_id)
+            if row is None:
+                raise RecordNotFoundError(f"Confirmation not found: {confirmation_id}")
+            current = Confirmation.model_validate_json(row.payload_json)
+            if current.status == status:
+                return current
+            if current.status not in {"pending", "approved"}:
+                raise RevisionConflictError(
+                    f"Confirmation cannot become {status}: {current.status}"
+                )
+            candidate = Confirmation.model_validate(
+                {
+                    **current.model_dump(mode="python"),
+                    "decision": None,
+                    "status": status,
+                    "idempotency_key_hash": None,
+                    "execution_idempotency_key_hash": None,
+                    "consumed_at": None,
+                    "decided_at": decided_at,
+                    "revision": expected_revision + 1,
+                }
+            )
+            result = db.execute(
+                update(ConfirmationRow)
+                .where(
+                    ConfirmationRow.id == confirmation_id,
+                    ConfirmationRow.revision == expected_revision,
+                    ConfirmationRow.status.in_(("pending", "approved")),
+                )
+                .values(
+                    status=status,
+                    decision=None,
+                    idempotency_key_hash=None,
+                    revision=candidate.revision,
+                    payload_json=candidate.model_dump_json(),
+                )
+            )
+            if result.rowcount != 1:
+                db.rollback()
+                raise RevisionConflictError(
+                    f"Confirmation invalidation conflict: {confirmation_id}"
+                )
+            db.commit()
+            return candidate
+
+    def expire_pending_confirmations(
+        self,
+        *,
+        now: datetime | None = None,
+        include_unexpired: bool = False,
+    ) -> list[Confirmation]:
+        cutoff = now or datetime.now(UTC)
+        pending = self.list_confirmations(status="pending")
+        expired: list[Confirmation] = []
+        for confirmation in pending:
+            if not include_unexpired and confirmation.expires_at > cutoff:
+                continue
+            try:
+                expired.append(
+                    self.invalidate_confirmation(
+                        confirmation.id,
+                        expected_revision=confirmation.revision,
+                        status="expired",
+                        now=cutoff,
+                    )
+                )
+            except RevisionConflictError:
+                continue
+        return expired
+
     def decide_confirmation(
         self,
         confirmation_id: str,

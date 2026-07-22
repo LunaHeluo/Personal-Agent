@@ -371,6 +371,9 @@ class Confirmation(CapabilityModel):
     arguments_summary: BoundedJsonObject
     risk: RiskLevel
     destination: str = Field(min_length=1, max_length=500)
+    data_classes: tuple[str, ...] | None = Field(default=None, max_length=100)
+    policy_revision: int | None = Field(default=None, ge=0)
+    gate_reason_code: ShortText | None = None
     decision: ConfirmationDecision | None = None
     status: ConfirmationStatus = "pending"
     expires_at: UtcDateTime
@@ -492,6 +495,7 @@ class ExecutionPermit(CapabilityModel):
     snapshot_id: Identifier | None = None
     schema_hash: Sha256 | None = None
     arguments_hash: Sha256 | None = None
+    data_classes: tuple[str, ...] | None = Field(default=None, max_length=100)
     decision: Literal["allow"] | None = None
     invoker_id: ShortText | None = None
 

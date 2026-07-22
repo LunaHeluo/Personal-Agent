@@ -44,12 +44,33 @@ class ApplicationService:
         self.store = store
         self.providers = providers
         self.runtime = runtime
+        self.turn_coordinator = runtime.turn_coordinator
         self.context = context
         self.token_counter = TokenCounter(
             settings.context.estimator_safety_ratio
         )
         self.memory_writer = AutoMemoryWriter(store, settings.memory)
         self._background_tasks: set[asyncio.Task] = set()
+
+    def list_pending_confirmations(self, *, session_id: UUID | None = None):
+        return self.turn_coordinator.confirmations.list_pending(
+            session_id=None if session_id is None else str(session_id)
+        )
+
+    def decide_confirmation(
+        self,
+        confirmation_id: str,
+        *,
+        expected_revision: int,
+        idempotency_key: str,
+        decision: str,
+    ):
+        return self.turn_coordinator.confirmations.decide(
+            confirmation_id,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
+            decision=decision,
+        )
 
     async def chat(
         self,

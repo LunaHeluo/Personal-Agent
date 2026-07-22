@@ -13,6 +13,7 @@ from jsonschema import SchemaError, ValidationError, validate
 from pydantic import Field, computed_field
 
 from starter_agent.capabilities.models import (
+    AuditEvent,
     BoundedJsonObject,
     CapabilityModel,
     ExecutionPermit,
@@ -342,7 +343,16 @@ class PreToolCallGate:
                 "deny", "confirmation_binding_mismatch", canonical
             )
         if decision.outcome != "require_confirmation":
-            return await self.evaluate(canonical)
+            rules = self.store.list_policy_rules(
+                canonical.server_id, canonical.tool_name
+            )
+            return self._finalize(
+                canonical,
+                PolicyDecision("allow", "verified_confirmation"),
+                decision.destination_summary,
+                rules,
+                confirmation_id=confirmation_id,
+            )
         rules = self.store.list_policy_rules(
             canonical.server_id, canonical.tool_name
         )
@@ -378,6 +388,10 @@ class PreToolCallGate:
             and confirmation.schema_hash == request.schema_hash
             and confirmation.snapshot_id == request.snapshot_id
             and confirmation.arguments_hash == request.confirmation_arguments_hash
+            and (
+                confirmation.data_classes is None
+                or confirmation.data_classes == request.data_classes
+            )
             and confirmation.request_hash in expected_request_hashes
         )
 
@@ -478,6 +492,7 @@ class PreToolCallGate:
                 snapshot_id=request.snapshot_id,
                 schema_hash=request.schema_hash,
                 arguments_hash=request.arguments_hash,
+                data_classes=request.data_classes,
                 decision="allow",
                 invoker_id=_invoker_id(request.server_id, request.tool_name),
             )
@@ -608,10 +623,20 @@ class UnifiedToolExecutor:
             "arguments_hash": request.arguments_hash,
             "invoker_id": invoker_id,
         }
+        if permit.data_classes is not None:
+            expected["data_classes"] = request.data_classes
         try:
             self.store.consume_execution_permit(permit_id, expected=expected)
         except ExecutionPermitError as exc:
             raise ToolExecutionDenied(exc.code) from exc
+        self._audit_execution(
+            request,
+            permit_id=permit_id,
+            confirmation_id=permit.confirmation_id,
+            action="permit.consumed",
+            decision="allow",
+            reason_code="permit_consumed",
+        )
         if permit.confirmation_id:
             execution_key = request.arguments.get("idempotency_key", request.call_id)
             if not isinstance(execution_key, str):
@@ -628,8 +653,60 @@ class UnifiedToolExecutor:
             if registration.context_factory is None
             else registration.context_factory(request)
         )
-        result = registration.invoke(request.arguments, context)
-        return await result if inspect.isawaitable(result) else result
+        try:
+            result = registration.invoke(request.arguments, context)
+            result = await result if inspect.isawaitable(result) else result
+        except BaseException:
+            self._audit_execution(
+                request,
+                permit_id=permit_id,
+                confirmation_id=permit.confirmation_id,
+                action="tool.invoked",
+                decision="error",
+                reason_code="tool_invocation_failed",
+            )
+            raise
+        self._audit_execution(
+            request,
+            permit_id=permit_id,
+            confirmation_id=permit.confirmation_id,
+            action="tool.invoked",
+            decision="allow",
+            reason_code="tool_invocation_completed",
+        )
+        return result
+
+    def _audit_execution(
+        self,
+        request: ToolCallRequest,
+        *,
+        permit_id: str,
+        confirmation_id: str | None,
+        action: str,
+        decision: Literal["allow", "error"],
+        reason_code: str,
+    ) -> None:
+        self.store.append_audit_event(
+            AuditEvent(
+                event_id=f"audit-{uuid4().hex}",
+                actor=request.principal,
+                action=action,
+                target=f"tool:{request.server_id}:{request.tool_name}",
+                decision=decision,
+                reason_code=reason_code,
+                session_id=request.session_id,
+                turn_id=request.turn_id,
+                call_id=request.call_id,
+                payload={
+                    "permit_id": permit_id,
+                    "confirmation_id": confirmation_id,
+                    "request_hash": request.request_hash,
+                    "schema_hash": request.schema_hash,
+                    "arguments_hash": request.arguments_hash,
+                },
+                created_at=datetime.now(UTC),
+            )
+        )
 
     def _registration_is_browser(self, server_id: str, tool_name: str) -> bool:
         if self.gate.registry is not None:
