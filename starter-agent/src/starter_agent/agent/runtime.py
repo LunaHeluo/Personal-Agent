@@ -62,6 +62,7 @@ class AgentRuntime:
         repeated_calls: dict[str, int] = {}
         generated: list[Message] = []
         provider_usages: list[dict] = []
+        context_revision = 0
         logger = get_logger(session_id=str(session_id), turn_id=str(turn_id))
         if required_tool_name:
             required_tool = self.tools.get(required_tool_name)
@@ -73,19 +74,29 @@ class AgentRuntime:
             if monotonic() - started > self.budget.max_seconds:
                 raise RuntimeBudgetExceeded("Maximum run time exceeded")
             model_calls += 1
+            snapshot_reader = getattr(self.tools, "model_snapshot", None)
+            if callable(snapshot_reader):
+                snapshot = snapshot_reader()
+                request_tools = snapshot.provider_tools()
+                context_revision = snapshot.context_revision
+            else:
+                request_tools = self.tools.schemas()
+                context_revision = 0
             logger.info(
                 "model.requested",
                 provider=provider.name,
                 model=model,
                 model_call=model_calls,
+                context_revision=context_revision,
             )
             response = await provider.complete(
                 messages,
                 model,
-                self.tools.schemas(),
+                request_tools,
                 on_delta=on_delta,
                 tool_choice=(required_tool_name if model_calls == 1 else None),
             )
+            response.context_revision = context_revision
             if response.usage:
                 provider_usages.append(response.usage)
             logger.info(
@@ -303,6 +314,7 @@ class AgentRuntime:
             usage=aggregate_usage(provider_usages),
             tool_calls=tool_calls,
             model_calls=model_calls,
+            context_revision=context_revision,
         )
 
 

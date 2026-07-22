@@ -67,6 +67,12 @@ class ToolInfo(BaseModel):
     name: str
     description: str
     risk_level: str
+    source: str = "builtin"
+    server: str = "builtin"
+    type: str = "builtin"
+    enabled: bool = True
+    review: str = "approved"
+    callable: bool = True
 
 
 class ToolsResponse(BaseModel):
@@ -248,6 +254,10 @@ async def _api_lifespan(_api: FastAPI):
     try:
         manager = create_mcp_manager()
         await manager.start()
+        registry = create_application().runtime.tools
+        refresh = getattr(registry, "refresh_from_manager", None)
+        if callable(refresh):
+            refresh(manager)
     except asyncio.CancelledError:
         raise
     except Exception as error:
@@ -313,6 +323,33 @@ def create_api() -> FastAPI:
     @api.get("/v1/tools", response_model=ToolsResponse)
     async def tools() -> ToolsResponse:
         registry = create_application().runtime.tools
+        catalog_reader = getattr(registry, "lightweight_catalog", None)
+        if callable(catalog_reader):
+            builtin_tools = {tool.name: tool for tool in registry.list()}
+            return ToolsResponse(
+                tools=[
+                    ToolInfo(
+                        name=item.name,
+                        description=(
+                            builtin_tools[item.name].description
+                            if item.type == "builtin"
+                            else ""
+                        ),
+                        risk_level=(
+                            builtin_tools[item.name].risk_level
+                            if item.type == "builtin"
+                            else "external"
+                        ),
+                        source=item.type,
+                        server=item.server,
+                        type=item.type,
+                        enabled=item.enabled,
+                        review=item.review,
+                        callable=item.callable,
+                    )
+                    for item in catalog_reader().capabilities
+                ]
+            )
         return ToolsResponse(
             tools=[
                 ToolInfo(

@@ -4,6 +4,7 @@ from starter_agent.agent.context import ContextBuilder
 from starter_agent.agent.runtime import AgentRuntime
 from starter_agent.application import ApplicationService
 from starter_agent.capabilities.store import CapabilityStore
+from starter_agent.capabilities.registry import UnifiedToolRegistry
 from starter_agent.infrastructure.session_store import SQLiteSessionStore
 from starter_agent.knowledge.service import KnowledgeApplicationService
 from starter_agent.knowledge.store import SQLiteKnowledgeStore
@@ -27,7 +28,11 @@ def create_application() -> ApplicationService:
     configure_logging(settings.resolve_path(settings.app.log_path))
     store = SQLiteSessionStore(settings.app.database_url, settings.project_root)
     providers = ProviderRegistry(settings)
-    tools = ToolRegistry(settings.tools.enabled, settings=settings)
+    builtin_tools = ToolRegistry(settings.tools.enabled, settings=settings)
+    tools = UnifiedToolRegistry(
+        builtin_tools,
+        allowed_risk_levels=settings.tools.allow_risk_levels,
+    )
     policy = ToolPolicy(settings.tools.allow_risk_levels)
     runtime = AgentRuntime(tools, policy, settings.runtime, settings.context)
     context = ContextBuilder(

@@ -41,6 +41,7 @@ class ModelResponse(BaseModel):
     provider: str
     model: str
     usage: dict[str, Any] = Field(default_factory=dict)
+    context_revision: int = 0
 
 
 class ToolResult(BaseModel):
@@ -103,6 +104,7 @@ class ChatResult(BaseModel):
     citations: list[dict[str, Any]] = Field(default_factory=list)
     refusal_reason: str | None = None
     tool_governance_enabled: bool = True
+    context_revision: int = 0
     finish_reason: Literal["completed", "continuation_required"] = "completed"
     continuation: ContinuationInfo | None = None
 

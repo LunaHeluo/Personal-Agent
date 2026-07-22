@@ -25,3 +25,14 @@ __all__ = [
     "Snapshot",
     "Tool",
 ]
+from starter_agent.capabilities.registry import (
+    LightweightCapabilityCatalog,
+    ModelToolSnapshot,
+    UnifiedToolRegistry,
+)
+
+__all__ = [
+    "LightweightCapabilityCatalog",
+    "ModelToolSnapshot",
+    "UnifiedToolRegistry",
+]

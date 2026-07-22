@@ -193,6 +193,7 @@ class ApplicationService:
                 ),
                 summary_trace=summary_trace,
                 tool_governance_enabled=tool_governance_enabled,
+                context_revision=response.context_revision,
             )
             self._schedule_auto_memory(
                 provider=provider,
@@ -251,6 +252,7 @@ class ApplicationService:
                 ),
                 summary_trace=summary_trace,
                 tool_governance_enabled=tool_governance_enabled,
+                context_revision=exc.context_revision,
                 finish_reason="continuation_required",
                 continuation=ContinuationInfo(
                     reason="max_model_calls",

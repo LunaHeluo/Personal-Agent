@@ -148,12 +148,14 @@ class RuntimeContinuationRequired(RuntimeBudgetExceeded):
         usage: dict[str, Any],
         tool_calls: int,
         model_calls: int,
+        context_revision: int = 0,
     ) -> None:
         super().__init__()
         self.generated = generated
         self.usage = usage
         self.tool_calls = tool_calls
         self.model_calls = model_calls
+        self.context_revision = context_revision
 
 
 class ToolPolicyError(AgentError):
