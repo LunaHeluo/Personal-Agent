@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -167,6 +168,41 @@ class McpConfiguration(BaseModel):
         cls, values: dict[str, McpServerConfig]
     ) -> dict[str, McpServerConfig]:
         return _FrozenServerMap(values)
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedServerProfile:
+    name: str
+    browser: bool = False
+    outbound_scope: tuple[str, ...] = ()
+
+
+def derive_trusted_server_profile(
+    server_id: str,
+    config: McpServerConfig,
+    *,
+    runtime_name: str | None = None,
+) -> TrustedServerProfile | None:
+    """Classify a server only from trusted launch/runtime identity."""
+
+    if server_id.casefold() != "playwright":
+        return None
+    command = Path(config.command).name.casefold()
+    launch_matches = command in {"npx", "npx.cmd", "npx.exe"} and any(
+        argument == "@playwright/mcp@latest" for argument in config.args
+    )
+    runtime_matches = (runtime_name or "").casefold() in {
+        "playwright",
+        "playwright-mcp",
+        "@playwright/mcp",
+    }
+    if not launch_matches and not runtime_matches:
+        return None
+    return TrustedServerProfile(
+        name="playwright",
+        browser=True,
+        outbound_scope=("public_url",),
+    )
 
 
 class McpConfigLoader:

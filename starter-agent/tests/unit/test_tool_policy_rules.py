@@ -197,3 +197,73 @@ def test_browser_and_serp_structural_payload_rules_reject_neutral_pii_text() -> 
     ):
         with pytest.raises(policy_module.ScopeDenied, match="serpapi_fields"):
             policy_module.validate_serpapi_payload({"query": query}, (), max_bytes=600)
+
+
+@pytest.mark.parametrize(
+    ("action", "arguments"),
+    [
+        ("input", {"selector": "#email", "value": "a"}),
+        ("fill", {"selector": "#email", "value": "a"}),
+        ("type", {"selector": "#email", "text": "a"}),
+        ("upload", {"selector": "#resume", "path": "resume.pdf"}),
+        ("login", {"url": "https://jobs.example.com/login"}),
+        ("submit", {"selector": "button[type=submit]"}),
+        ("message", {"text": "hello"}),
+    ],
+)
+def test_phase_one_browser_mutations_are_directly_denied(action, arguments) -> None:
+    policy_module = _policy_module()
+    with pytest.raises(policy_module.ScopeDenied, match="forbidden_action"):
+        policy_module.validate_browser_payload(action, arguments)
+
+
+def test_click_and_script_accept_only_provably_read_only_structures() -> None:
+    policy_module = _policy_module()
+    policy_module.validate_browser_payload(
+        "click", {"selector": "button[aria-label='Details']", "button": "left"}
+    )
+    for arguments in (
+        {"selector": "button", "text": "Jane Doe"},
+        {"ref": "job-card", "value": "private"},
+        {"selector": "button", "payload": {"email": "jane@example.com"}},
+    ):
+        with pytest.raises(policy_module.ScopeDenied, match="browser_payload"):
+            policy_module.validate_browser_payload("click", arguments)
+
+    policy_module.validate_browser_payload(
+        "script", {"script": "return document.title"}
+    )
+    for script in (
+        "fetch('https://example.com/collect')",
+        "document.body.innerHTML = 'changed'",
+        "document.querySelector('input').value = 'Jane Doe'",
+        "return 'jane@example.com resume'",
+        "return window.someUnknownFunction()",
+    ):
+        with pytest.raises(policy_module.ScopeDenied):
+            policy_module.validate_browser_payload("script", {"script": script})
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Product Manager 2019 2024",
+        "employment from 2020 to 2024",
+        "I worked at Acme from January to March",
+        "John Smith software engineer at Google",
+        "Jane Doe employment at Acme",
+        "2024-01-01 to 2025-06-30 product manager",
+        "Shanghai",
+    ],
+)
+def test_serpapi_rejects_history_dates_and_non_job_intent(query: str) -> None:
+    policy_module = _policy_module()
+    with pytest.raises(policy_module.ScopeDenied, match="serpapi_fields"):
+        policy_module.validate_serpapi_payload({"query": query}, (), max_bytes=600)
+
+
+@pytest.mark.parametrize(
+    "query", ["AI product manager", "Python backend engineer", "Kubernetes DevOps"]
+)
+def test_serpapi_accepts_short_job_role_or_skill_search(query: str) -> None:
+    _policy_module().validate_serpapi_payload({"query": query}, (), max_bytes=600)

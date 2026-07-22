@@ -259,10 +259,11 @@ async def test_model_confirmation_argument_is_ignored_but_trusted_confirmation_s
     tool = store.list_tools(snapshot.id)[0]
     schema = {
         "type": "object",
-        "properties": {
-            "url": {"type": "string"},
-        },
-        "required": ["url"],
+            "properties": {
+                "url": {"type": "string"},
+                "script": {"type": "string"},
+            },
+            "required": ["url", "script"],
         "additionalProperties": False,
     }
     scripted = tool.model_copy(
@@ -293,9 +294,10 @@ async def test_model_confirmation_argument_is_ignored_but_trusted_confirmation_s
         gate_module,
         snapshot_id=refreshed.id,
         schema_hash=scripted.schema_hash,
-        arguments={
-            "url": "https://jobs.example.com/opening",
-        },
+            arguments={
+                "url": "https://jobs.example.com/opening",
+                "script": "return document.title",
+            },
     )
 
     unapproved = await gate.evaluate(request)

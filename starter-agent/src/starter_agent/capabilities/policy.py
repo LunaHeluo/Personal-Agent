@@ -145,7 +145,7 @@ def validate_serpapi_payload(
     if ("query" in arguments) == ("keywords" in arguments):
         raise ScopeDenied("serpapi_fields")
     query = arguments.get("query", arguments.get("keywords"))
-    if not _safe_search_phrase(query, 160, 20):
+    if not _safe_job_search_phrase(query):
         raise ScopeDenied("serpapi_fields")
     location = arguments.get("location")
     if location is not None and not _safe_search_phrase(location, 80, 10):
@@ -182,6 +182,25 @@ _FIRST_PERSON_HISTORY = re.compile(
     r"\b(?:i|i've|my)\s+(?:led|worked|managed|built|experience|resume|cv)\b",
     re.IGNORECASE,
 )
+_YEAR_OR_DATE = re.compile(
+    r"\b(?:19|20)\d{2}\b|\b\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?\b"
+)
+_EMPLOYMENT_HISTORY = re.compile(
+    r"\b(?:employment|employed|worked|working|experience)\b|"
+    r"\b(?:from|between)\b.{0,40}\b(?:to|and)\b",
+    re.IGNORECASE,
+)
+_PERSON_COMPANY_HISTORY = re.compile(
+    r"\b[A-Z][a-z]+\s+[A-Z][a-z]+\b.{0,80}"
+    r"\b(?:at|from|with)\b.{0,40}\b[A-Z][A-Za-z0-9&.-]+\b"
+)
+_JOB_INTENT = re.compile(
+    r"\b(?:ai|ml|pm|qa|sre|devops|product|program|project|engineering|engineer|"
+    r"developer|architect|designer|analyst|scientist|researcher|recruiter|sales|"
+    r"marketing|security|frontend|backend|fullstack|data|python|java|javascript|"
+    r"typescript|react|kubernetes|cloud|platform|software|hardware|operations)\b",
+    re.IGNORECASE,
+)
 
 
 def _safe_search_phrase(value: Any, limit: int, words: int) -> bool:
@@ -196,10 +215,41 @@ def _safe_search_phrase(value: Any, limit: int, words: int) -> bool:
     )
 
 
+def _safe_job_search_phrase(value: Any) -> bool:
+    return bool(
+        _safe_search_phrase(value, 160, 20)
+        and _JOB_INTENT.search(value)
+        and not _YEAR_OR_DATE.search(value)
+        and not _EMPLOYMENT_HISTORY.search(value)
+        and not _PERSON_COMPANY_HISTORY.search(value)
+    )
+
+
 def validate_browser_payload(action: str, arguments: Mapping[str, Any]) -> None:
     action = action.casefold()
     if action in _FORBIDDEN_ACTIONS:
         raise ScopeDenied("forbidden_action")
+    if action == "click":
+        allowed = {"selector", "ref", "button", "timeout"}
+        if not arguments or any(str(key).casefold() not in allowed for key in arguments):
+            raise ScopeDenied("browser_payload")
+        if "button" in arguments and arguments["button"] not in {"left", "middle", "right"}:
+            raise ScopeDenied("browser_payload")
+        for key in ("selector", "ref"):
+            value = arguments.get(key)
+            if value is not None and not _safe_short_text(value, 500):
+                raise ScopeDenied("browser_payload")
+        return
+    if action == "script":
+        if (
+            "script" not in arguments
+            or set(arguments) - {"script", "url"}
+            or not _is_provably_read_only_script(
+            arguments.get("script")
+            )
+        ):
+            raise ScopeDenied("browser_script")
+        return
     if action not in _AUTO_ACTIONS:
         return
     allowed = {
@@ -215,6 +265,28 @@ def validate_browser_payload(action: str, arguments: Mapping[str, Any]) -> None:
     }
     if any(str(key).casefold() not in allowed for key in arguments):
         raise ScopeDenied("browser_payload")
+
+
+_READ_ONLY_SCRIPT = re.compile(
+    r"^\s*return\s+(?:"
+    r"document\.(?:title|URL)|window\.location\.href|"
+    r"document\.querySelector\((['\"])[^\r\n]{1,300}\1\)\."
+    r"(?:textContent|innerText|getAttribute\((['\"])[A-Za-z_:][-A-Za-z0-9_:.]*\2\))"
+    r")\s*;?\s*$"
+)
+
+
+def _is_provably_read_only_script(value: Any) -> bool:
+    if not isinstance(value, str) or len(value) > 500:
+        return False
+    if (
+        _EMAIL.search(value)
+        or _PHONE.search(value)
+        or _FIRST_PERSON_HISTORY.search(value)
+        or any(term in value.casefold() for term in ("resume", "curriculum vitae"))
+    ):
+        return False
+    return _READ_ONLY_SCRIPT.fullmatch(value) is not None
 
 
 def reject_sensitive_url_query(url: str) -> None:

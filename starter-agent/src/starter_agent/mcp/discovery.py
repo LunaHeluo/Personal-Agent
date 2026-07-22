@@ -17,6 +17,7 @@ from starter_agent.capabilities.models import (
     canonical_json_sha256,
 )
 from starter_agent.capabilities.store import CapabilityStore
+from starter_agent.mcp.config import TrustedServerProfile
 
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -109,6 +110,7 @@ async def collect_capabilities(
     snapshot_id: str,
     version: int,
     reserved_model_names: Iterable[str] = (),
+    server_profile: TrustedServerProfile | None = None,
 ) -> CapabilityBundle:
     _require_safe_name(server_id, code="invalid_server_name")
     tools_page = await _collect_pages(session.list_tools, "tools")
@@ -145,6 +147,13 @@ async def collect_capabilities(
             raise DiscoveryError("invalid_tool_schema") from exc
         annotations = _model_dict(getattr(upstream, "annotations", None))
         title = getattr(upstream, "title", None) or annotations.get("title")
+        trusted_metadata: dict[str, Any] = {"annotations": annotations}
+        outbound_scope: tuple[str, ...] = ()
+        if server_profile is not None:
+            trusted_metadata["server_profile"] = server_profile.name
+            if server_profile.browser:
+                trusted_metadata["browser"] = True
+            outbound_scope = server_profile.outbound_scope
         tools.append(
             Tool(
                 snapshot_id=snapshot_id,
@@ -155,7 +164,8 @@ async def collect_capabilities(
                 description=getattr(upstream, "description", None) or "",
                 input_schema=schema,
                 schema_hash=canonical_json_sha256(schema),
-                metadata={"annotations": annotations},
+                metadata=trusted_metadata,
+                outbound_scope=outbound_scope,
                 review_state="unreviewed",
                 enabled=False,
             )
@@ -282,12 +292,14 @@ async def discover_and_activate(
     *,
     server_id: str,
     reserved_model_names: Iterable[str] = (),
+    server_profile: TrustedServerProfile | None = None,
 ) -> Snapshot:
     snapshot = await discover_candidate(
         store,
         session,
         server_id=server_id,
         reserved_model_names=reserved_model_names,
+        server_profile=server_profile,
     )
     return store.activate_snapshot(server_id, snapshot.id)
 
@@ -298,6 +310,7 @@ async def discover_candidate(
     *,
     server_id: str,
     reserved_model_names: Iterable[str] = (),
+    server_profile: TrustedServerProfile | None = None,
 ) -> Snapshot:
     """Validate and persist an inactive snapshot for a candidate client."""
     version = store.next_snapshot_version(server_id)
@@ -307,6 +320,7 @@ async def discover_candidate(
         snapshot_id=f"{server_id}-snapshot-{version}",
         version=version,
         reserved_model_names=reserved_model_names,
+        server_profile=server_profile,
     )
     store.create_snapshot(
         bundle.snapshot,

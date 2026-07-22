@@ -22,7 +22,11 @@ from starter_agent.mcp.client import (
     McpClientError,
     redact_runtime_text,
 )
-from starter_agent.mcp.config import McpConfiguration, McpServerConfig
+from starter_agent.mcp.config import (
+    McpConfiguration,
+    McpServerConfig,
+    derive_trusted_server_profile,
+)
 from starter_agent.mcp.discovery import (
     DiscoveryError,
     discover_candidate,
@@ -210,6 +214,11 @@ class McpManager:
                             session,
                             server_id=server_id,
                             reserved_model_names=reserved_model_names,
+                            server_profile=derive_trusted_server_profile(
+                                server_id,
+                                handle.config,
+                                runtime_name=handle.status.runtime_name,
+                            ),
                         )
                     )
                 except asyncio.CancelledError:
@@ -278,6 +287,11 @@ class McpManager:
                         self.store,
                         session,
                         server_id=server_id,
+                        server_profile=derive_trusted_server_profile(
+                            server_id,
+                            handle.config,
+                            runtime_name=metadata.runtime_name,
+                        ),
                     )
                 )
                 async with handle.connect_lock:

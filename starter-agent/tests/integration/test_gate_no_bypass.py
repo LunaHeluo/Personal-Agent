@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
 
@@ -10,6 +11,7 @@ from starter_agent.capabilities.models import ExecutionPermit, canonical_json_sh
 from starter_agent.capabilities.store import CapabilityStore
 from starter_agent.bootstrap import create_application
 from starter_agent.domain.models import ToolResult
+from mcp import types
 
 
 def _gate_module():
@@ -277,3 +279,124 @@ async def test_mcp_manager_business_call_requires_executor_permit_and_lease_is_o
     assert "_client" not in ClientLease.__dataclass_fields__
     assert "_session" not in ClientLease.__dataclass_fields__
     assert not hasattr(manager, "get_handle")
+
+
+async def test_real_playwright_config_classifies_every_discovered_tool_and_fails_closed(
+    tmp_path,
+) -> None:
+    gate_module = _gate_module()
+    from starter_agent.capabilities.registry import UnifiedToolRegistry
+    from starter_agent.mcp.client import ClientMetadata
+    from starter_agent.mcp.config import McpConfigLoader
+    from starter_agent.mcp.manager import McpManager, McpManagerError
+    from starter_agent.tools.registry import ToolRegistry
+
+    (tmp_path / "mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "playwright": {
+                        "command": "npx",
+                        "args": ["-y", "@playwright/mcp@latest"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    configuration = McpConfigLoader(tmp_path).load("mcp.json")
+
+    class Session:
+        calls = 0
+
+        async def list_tools(self, *, params=None):
+            return types.ListToolsResult(
+                tools=[
+                    types.Tool(
+                        name="opaque_capability_name",
+                        inputSchema={
+                            "type": "object",
+                            "properties": {"url": {"type": "string"}},
+                            "required": ["url"],
+                        },
+                    )
+                ]
+            )
+
+        async def list_resources(self, *, params=None):
+            return types.ListResourcesResult(resources=[])
+
+        async def list_resource_templates(self, *, params=None):
+            return types.ListResourceTemplatesResult(resourceTemplates=[])
+
+        async def list_prompts(self, *, params=None):
+            return types.ListPromptsResult(prompts=[])
+
+        async def call_tool(self, name, arguments):
+            self.calls += 1
+            return {"name": name, "arguments": arguments}
+
+    class Client:
+        def __init__(self):
+            self.session = None
+            self._session = Session()
+            self.stderr_summary = ""
+
+        async def connect(self):
+            self.session = self._session
+            return ClientMetadata(
+                protocol_version="2025-06-18",
+                runtime_name="untrusted-generic-name",
+                runtime_version="1.0.0",
+                node_version="v22",
+                npx_version="10",
+                started_at=datetime.now(UTC),
+            )
+
+        async def run_session_command(self, operation):
+            return await operation(self.session)
+
+        async def close(self):
+            self.session = None
+
+    store = CapabilityStore("sqlite:///:memory:", tmp_path)
+    registry = UnifiedToolRegistry(ToolRegistry([]))
+    gate = gate_module.PreToolCallGate(store, registry=registry)
+    executor = gate_module.UnifiedToolExecutor(store, gate=gate)
+    client = Client()
+    manager = McpManager(
+        configuration,
+        store=store,
+        client_factory=lambda _server_id, _config: client,
+        tool_executor=executor,
+    )
+
+    await manager.start()
+    snapshot = await manager.discover("playwright")
+    persisted = store.list_tools(snapshot.id)
+    assert len(persisted) == 1
+    assert persisted[0].metadata["browser"] is True
+    assert persisted[0].outbound_scope == ("public_url",)
+    capability = registry.resolve_execution("mcp__playwright__opaque_capability_name")
+    assert capability is not None and capability.browser is True
+
+    with pytest.raises(gate_module.ToolExecutionDenied, match="network_guard_required"):
+        executor.register_invoker(
+            server_id="playwright",
+            tool_name="opaque_capability_name",
+            invoker=lambda _arguments, _context: None,
+        )
+
+    request = gate.request_for_tool(
+        caller="model",
+        session_id="session-1",
+        turn_id="turn-1",
+        call_id="call-1",
+        tool_name="mcp__playwright__opaque_capability_name",
+        arguments={"url": "https://jobs.example.com/opening"},
+    )
+    decision = await gate.evaluate(request)
+    assert (decision.outcome, decision.reason_code) == ("deny", "tool_disabled")
+    with pytest.raises(McpManagerError, match="permit_required"):
+        await manager.call_tool(request, permit_id=None)
+    assert client._session.calls == 0
