@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.orm import Session
+from sqlalchemy.sql.dml import Update
 
 from starter_agent.agent.runtime import AgentRuntime
 from starter_agent.capabilities.confirmations import (
@@ -163,3 +166,91 @@ async def test_cancel_and_timeout_never_enter_real_tool(tmp_path, decision) -> N
     with pytest.raises(ToolExecutionDenied):
         await task
     assert tool.calls == 0
+
+
+async def test_two_permits_racing_confirmation_cas_enter_invoker_once(
+    tmp_path, monkeypatch
+) -> None:
+    tool = _CountingTool()
+    registry = UnifiedToolRegistry(
+        type(
+            "BuiltinView",
+            (),
+            {"list": lambda self: [tool], "email_manager": None},
+        )()
+    )
+    database_url = f"sqlite:///{tmp_path / 'confirmation-race.db'}"
+    stores = [
+        CapabilityStore(database_url, tmp_path),
+        CapabilityStore(database_url, tmp_path),
+    ]
+    gates = [PreToolCallGate(store, registry=registry) for store in stores]
+    executors = [
+        UnifiedToolExecutor(store, gate=gate)
+        for store, gate in zip(stores, gates, strict=True)
+    ]
+    request = gates[0].request_for_tool(
+        caller="model",
+        session_id=str(uuid4()),
+        turn_id=str(uuid4()),
+        call_id="call-race",
+        tool_name=tool.name,
+        arguments={"value": 9},
+    )
+    service = ConfirmationService(stores[0], gates[0])
+    pending = service.create_pending(request, await gates[0].evaluate(request))
+    approved = service.decide(
+        pending.id,
+        expected_revision=0,
+        idempotency_key="decision-race",
+        decision="once",
+    )
+    permits = [
+        (await gate.evaluate_approved(request, confirmation_id=approved.id)).permit
+        for gate in gates
+    ]
+    assert all(permit is not None for permit in permits)
+
+    entered = 0
+    entered_lock = threading.Lock()
+
+    async def invoke(arguments, _context):
+        nonlocal entered
+        with entered_lock:
+            entered += 1
+        return arguments["value"]
+
+    for executor in executors:
+        executor.register_invoker(
+            server_id=request.server_id,
+            tool_name=request.tool_name,
+            invoker=invoke,
+        )
+
+    confirmation_cas_barrier = threading.Barrier(2)
+    original_execute = Session.execute
+
+    def execute_with_barrier(self, statement, *args, **kwargs):
+        if (
+            isinstance(statement, Update)
+            and statement.table.name == "tool_confirmations"
+        ):
+            confirmation_cas_barrier.wait(timeout=5)
+        return original_execute(self, statement, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "execute", execute_with_barrier)
+
+    async def worker(index):
+        permit = permits[index]
+        assert permit is not None
+        return await asyncio.to_thread(
+            lambda: asyncio.run(
+                executors[index].execute(request, permit_id=permit.id)
+            )
+        )
+
+    results = await asyncio.gather(worker(0), worker(1), return_exceptions=True)
+
+    assert results.count(9) == 1
+    assert sum(isinstance(item, ToolExecutionDenied) for item in results) == 1
+    assert entered == 1

@@ -951,11 +951,7 @@ class CapabilityStore:
         execution_idempotency_key: str,
         now: datetime | None = None,
     ) -> Confirmation:
-        """Bind a one-shot approval to the first transport idempotency key.
-
-        Replays are accepted only for that exact key.  The confirmation's
-        request/argument binding is validated by the gate before this method.
-        """
+        """Atomically claim a one-shot approval for exactly one execution."""
 
         if not execution_idempotency_key or len(execution_idempotency_key) > 1_000:
             raise ConfirmationExecutionError("confirmation_execution_key_invalid")
@@ -995,10 +991,6 @@ class CapabilityStore:
             )
             if result.rowcount != 1:
                 db.rollback()
-                latest = self.get_confirmation(confirmation_id)
-                if latest is not None and latest.status == "consumed":
-                    if latest.execution_idempotency_key_hash == key_hash:
-                        return latest
                 raise ConfirmationExecutionError("confirmation_consumed")
             db.commit()
             return candidate
