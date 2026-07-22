@@ -139,7 +139,7 @@ async def test_refresh_is_per_server_and_leases_pin_client_generation(
 
     created["alpha"][1].discovery_release.set()
     for _ in range(20):
-        if manager.get_handle("alpha").client is created["alpha"][1]:
+        if manager._get_handle("alpha").client is created["alpha"][1]:
             break
         await asyncio.sleep(0)
     async with manager.lease("alpha") as alpha_new_binding:

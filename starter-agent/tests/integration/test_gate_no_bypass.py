@@ -91,10 +91,19 @@ async def test_permit_is_ttl_bound_single_use_and_atomically_consumed() -> None:
         await asyncio.sleep(0)
         return 1
 
+    async def guarded(_request):
+        return gate_module.NetworkGuardAttestation(
+            targets=("https://jobs.example.com/opening",),
+            dns_pinned=True,
+            redirects_enforced=True,
+            peer_verified=True,
+        )
+
     executor.register_invoker(
         server_id=request.server_id,
         tool_name=request.tool_name,
         invoker=invoke,
+        network_guard=guarded,
     )
 
     results = await asyncio.gather(
@@ -158,6 +167,18 @@ async def test_real_agent_runtime_forced_builtin_uses_gate_and_bound_executor(
     assert executed == 1
 
 
+def test_bootstrap_seeds_explicit_safe_builtin_allowlist_only() -> None:
+    create_application.cache_clear()
+    runtime = create_application().runtime
+    time_rules = runtime.gate.store.list_policy_rules("builtin", "get_current_time")
+    resume_rules = runtime.gate.store.list_policy_rules("builtin", "read_resume")
+    email_rules = runtime.gate.store.list_policy_rules("builtin", "email_read")
+
+    assert any(rule.effect == "allowlist_auto" for rule in time_rules)
+    assert not any(rule.effect == "allowlist_auto" for rule in resume_rules)
+    assert not any(rule.effect == "allowlist_auto" for rule in email_rules)
+
+
 async def test_executor_revalidates_and_cannot_accept_arbitrary_invoker() -> None:
     gate_module = _gate_module()
     from tests.unit.test_pre_tool_call_gate import _public_resolver, _request, _store
@@ -180,6 +201,13 @@ async def test_executor_revalidates_and_cannot_accept_arbitrary_invoker() -> Non
             invoker=lambda _arguments: "bypass",
         )
 
+    with pytest.raises(TypeError):
+        await executor.execute(
+            request,
+            permit_id=decision.permit.id,
+            context=object(),
+        )
+
     executor.register_invoker(
         server_id="playwright",
         tool_name="different_tool",
@@ -187,6 +215,41 @@ async def test_executor_revalidates_and_cannot_accept_arbitrary_invoker() -> Non
     )
     with pytest.raises(gate_module.ToolExecutionDenied, match="invoker_unavailable"):
         await executor.execute(request, permit_id=decision.permit.id)
+
+
+def test_browser_invoker_registration_requires_network_guard_attestation() -> None:
+    gate_module = _gate_module()
+    from tests.unit.test_pre_tool_call_gate import _public_resolver, _store
+    from starter_agent.capabilities.registry import UnifiedToolRegistry
+    from starter_agent.tools.registry import ToolRegistry
+
+    store = _store()
+    snapshot = store.get_active_snapshot("playwright")
+    assert snapshot is not None
+    registry = UnifiedToolRegistry(ToolRegistry([]))
+    registry.refresh_server(
+        store.get_server("playwright"),
+        store.list_tools(snapshot.id),
+        snapshot=snapshot,
+    )
+    gate = gate_module.PreToolCallGate(
+        store,
+        registry=registry,
+        browser_policy=import_module("starter_agent.capabilities.policy").BrowserScopePolicy(
+            resolver=_public_resolver
+        ),
+    )
+    executor = gate_module.UnifiedToolExecutor(store, gate=gate)
+
+    with pytest.raises(
+        gate_module.ToolExecutionDenied,
+        match="network_guard_required",
+    ):
+        executor.register_invoker(
+            server_id="playwright",
+            tool_name="browser_navigate",
+            invoker=lambda _arguments, _context: None,
+        )
 
 
 async def test_mcp_manager_business_call_requires_executor_permit_and_lease_is_opaque(
@@ -211,3 +274,6 @@ async def test_mcp_manager_business_call_requires_executor_permit_and_lease_is_o
         )
     assert "client" not in ClientLease.__dataclass_fields__
     assert "session" not in ClientLease.__dataclass_fields__
+    assert "_client" not in ClientLease.__dataclass_fields__
+    assert "_session" not in ClientLease.__dataclass_fields__
+    assert not hasattr(manager, "get_handle")

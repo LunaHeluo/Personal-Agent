@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from starter_agent.capabilities.gate import ToolCallRequest, UnifiedToolExecutor
@@ -67,15 +68,8 @@ class ClientSlot:
 
 @dataclass(frozen=True, slots=True)
 class ClientLease:
-    _client: ManagedClient
-    _session: Any
+    lease_id: str
     snapshot_id: str | None
-
-    async def _run_protocol_command(
-        self,
-        operation: Callable[[Any], Awaitable[_CommandResult]],
-    ) -> _CommandResult:
-        return await self._client.run_session_command(operation)
 
 
 @dataclass(slots=True)
@@ -99,11 +93,6 @@ class ServerHandle:
     @property
     def drain_event(self) -> asyncio.Event:
         return self.active.drain_event
-
-    @property
-    def session(self) -> Any | None:
-        return self.client.session
-
 
 class McpManager:
     """Coordinate isolated MCP clients without a cross-server lifecycle lock."""
@@ -132,6 +121,7 @@ class McpManager:
             )
         self._client_factory = client_factory
         self._handles: dict[str, ServerHandle] = {}
+        self._lease_bindings: dict[str, ClientSlot] = {}
         for server_id, config in configuration.servers.items():
             initial = Server(
                 id=server_id,
@@ -163,14 +153,14 @@ class McpManager:
                 status=initial,
             )
 
-    def get_handle(self, server_id: str) -> ServerHandle:
+    def _get_handle(self, server_id: str) -> ServerHandle:
         try:
             return self._handles[server_id]
         except KeyError as exc:
             raise McpManagerError("server_not_found") from exc
 
     def get_status(self, server_id: str) -> Server:
-        return self.get_handle(server_id).status
+        return self._get_handle(server_id).status
 
     def statuses(self) -> dict[str, Server]:
         return {
@@ -195,7 +185,7 @@ class McpManager:
             raise McpManagerError(code) from exc
 
     def get_snapshot_summary(self, server_id: str) -> Snapshot | None:
-        self.get_handle(server_id)
+        self._get_handle(server_id)
         if self.store is None:
             return None
         return self.store.get_snapshot_summary(server_id)
@@ -206,14 +196,15 @@ class McpManager:
         *,
         reserved_model_names: Iterable[str] = (),
     ) -> Snapshot:
-        handle = self.get_handle(server_id)
+        handle = self._get_handle(server_id)
         if self.store is None:
             raise McpManagerError("capability_store_unavailable")
         async with handle.refresh_lock:
             async with self.lease(server_id) as lease:
                 self._update(handle, operation_state="discovering")
                 try:
-                    snapshot = await lease._run_protocol_command(
+                    snapshot = await self._run_protocol_command(
+                        lease,
                         lambda session: discover_and_activate(
                             self.store,
                             session,
@@ -247,6 +238,7 @@ class McpManager:
                     last_error=None,
                 )
                 handle.active.snapshot_id = snapshot.id
+                self._publish_snapshot(handle, snapshot)
                 return snapshot
 
     async def refresh_server(
@@ -254,7 +246,7 @@ class McpManager:
         server_id: str,
         expected_revision: int,
     ) -> Snapshot:
-        handle = self.get_handle(server_id)
+        handle = self._get_handle(server_id)
         if self.store is None:
             raise McpManagerError("capability_store_unavailable")
         if handle.refresh_lock.locked():
@@ -316,6 +308,7 @@ class McpManager:
                         last_error=None,
                         last_checked_at=datetime.now(UTC),
                     )
+                    self._publish_snapshot(handle, activated)
             except asyncio.CancelledError:
                 await self._close_candidate(candidate)
                 raise
@@ -349,11 +342,12 @@ class McpManager:
             return activated
 
     async def ping(self, server_id: str) -> Server:
-        handle = self.get_handle(server_id)
+        handle = self._get_handle(server_id)
         async with handle.refresh_lock:
             async with self.lease(server_id) as lease:
                 try:
-                    await lease._run_protocol_command(
+                    await self._run_protocol_command(
+                        lease,
                         lambda session: session.send_ping()
                     )
                 except asyncio.CancelledError:
@@ -385,11 +379,11 @@ class McpManager:
         return self.statuses()
 
     async def connect(self, server_id: str) -> Server:
-        handle = self.get_handle(server_id)
+        handle = self._get_handle(server_id)
         async with handle.connect_lock:
             if not self._accepting or not handle.accepting:
                 return handle.status
-            if handle.session is not None:
+            if handle.client.session is not None:
                 return handle.status
             started_at = datetime.now(UTC)
             self._update(
@@ -457,7 +451,7 @@ class McpManager:
             )
 
     async def close(self, server_id: str) -> str | None:
-        handle = self.get_handle(server_id)
+        handle = self._get_handle(server_id)
         handle.accepting = False
         error = await self._drain_and_close(handle)
         return error
@@ -479,10 +473,10 @@ class McpManager:
 
     @asynccontextmanager
     async def lease(self, server_id: str):
-        handle = self.get_handle(server_id)
+        handle = self._get_handle(server_id)
         if not self._accepting or not handle.accepting:
             raise McpManagerError("manager_draining")
-        if handle.status.connection_state != "ready" or handle.session is None:
+        if handle.status.connection_state != "ready" or handle.client.session is None:
             raise McpManagerError("server_not_ready")
         slot = handle.active
         session = slot.client.session
@@ -491,15 +485,53 @@ class McpManager:
         slot.in_flight += 1
         slot.drain_event.clear()
         try:
-            yield ClientLease(
-                _client=slot.client,
-                _session=session,
-                snapshot_id=slot.snapshot_id,
-            )
+            lease_id = uuid4().hex
+            self._lease_bindings[lease_id] = slot
+            yield ClientLease(lease_id=lease_id, snapshot_id=slot.snapshot_id)
         finally:
+            self._lease_bindings.pop(lease_id, None)
             slot.in_flight -= 1
             if slot.in_flight == 0:
                 slot.drain_event.set()
+
+    async def _run_protocol_command(
+        self,
+        lease: ClientLease,
+        operation: Callable[[Any], Awaitable[_CommandResult]],
+    ) -> _CommandResult:
+        slot = self._lease_bindings.get(lease.lease_id)
+        if slot is None:
+            raise McpManagerError("lease_invalid")
+        return await slot.client.run_session_command(operation)
+
+    async def _invoke_tool(
+        self, server_id: str, tool_name: str, arguments: dict[str, Any]
+    ) -> Any:
+        async with self.lease(server_id) as lease:
+            return await self._run_protocol_command(
+                lease,
+                lambda session: session.call_tool(tool_name, arguments),
+            )
+
+    def _publish_snapshot(self, handle: ServerHandle, snapshot: Snapshot) -> None:
+        if self.store is None or self.tool_executor is None:
+            return
+        registry = self.tool_executor.gate.registry
+        tools = self.store.list_tools(snapshot.id)
+        if registry is not None:
+            registry.refresh_server(handle.status, tools, snapshot=snapshot)
+        for tool in tools:
+            if bool(tool.metadata.get("browser")) or "public_url" in tool.outbound_scope:
+                continue
+
+            async def invoke(arguments, _context, *, _name=tool.upstream_name):
+                return await self._invoke_tool(handle.server_id, _name, dict(arguments))
+
+            self.tool_executor.register_invoker(
+                server_id=handle.server_id,
+                tool_name=tool.upstream_name,
+                invoker=invoke,
+            )
 
     async def _drain_and_close(self, handle: ServerHandle) -> str | None:
         async with handle.connect_lock:

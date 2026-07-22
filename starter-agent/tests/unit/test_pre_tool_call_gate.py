@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib import import_module
 import ipaddress
+import pytest
 
 from starter_agent.capabilities.models import (
+    Confirmation,
     PolicyRule,
     Server,
     Snapshot,
@@ -259,7 +261,6 @@ async def test_model_confirmation_argument_is_ignored_but_trusted_confirmation_s
         "type": "object",
         "properties": {
             "url": {"type": "string"},
-            "confirmation_id": {"type": "string"},
         },
         "required": ["url"],
         "additionalProperties": False,
@@ -294,18 +295,46 @@ async def test_model_confirmation_argument_is_ignored_but_trusted_confirmation_s
         schema_hash=scripted.schema_hash,
         arguments={
             "url": "https://jobs.example.com/opening",
-            "confirmation_id": "model-forged",
         },
     )
 
-    forged = await gate.evaluate(request)
-    assert forged.outcome == "require_confirmation"
-    assert forged.permit is None
+    unapproved = await gate.evaluate(request)
+    assert unapproved.outcome == "require_confirmation"
+    assert unapproved.permit is None
 
-    verified = await gate.evaluate_confirmed(
-        request,
-        verified_confirmation_id="server-verified-approval",
+    with pytest.raises(AttributeError):
+        getattr(gate, "evaluate_confirmed")
+
+    approved = Confirmation(
+        id="server-verified-approval",
+        principal=request.principal,
+        session_id=request.session_id,
+        turn_id=request.turn_id,
+        call_id=request.call_id,
+        request_hash=request.request_hash,
+        server_id=request.server_id,
+        tool_name=request.tool_name,
+        schema_hash=request.schema_hash,
+        snapshot_id=request.snapshot_id,
+        arguments_hash=request.arguments_hash,
+        arguments_summary={"url": "https://jobs.example.com/opening"},
+        risk="dangerous",
+        destination="jobs.example.com",
+        decision="once",
+        status="approved",
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        idempotency_key_hash="e" * 64,
+        decided_at=datetime.now(UTC),
     )
+    store.create_confirmation(approved)
+    verified = await gate.evaluate_approved(request, confirmation_id=approved.id)
     assert verified.outcome == "allow"
     assert verified.permit is not None
-    assert verified.permit.confirmation_id == "server-verified-approval"
+    assert verified.permit.confirmation_id == approved.id
+
+    wrong_session = request.model_copy(update={"session_id": "session-2"})
+    denied = await gate.evaluate_approved(wrong_session, confirmation_id=approved.id)
+    assert (denied.outcome, denied.reason_code) == (
+        "deny",
+        "confirmation_binding_mismatch",
+    )

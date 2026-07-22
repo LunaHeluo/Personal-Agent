@@ -29,10 +29,13 @@ from starter_agent.capabilities.policy import (
     classify_tool,
     extract_url_targets,
     infer_data_classes,
+    reject_sensitive_url_query,
+    validate_browser_payload,
     validate_serpapi_payload,
 )
 from starter_agent.capabilities.store import (
     CapabilityStore,
+    ConfirmationExecutionError,
     ExecutionPermitError,
 )
 from starter_agent.tools.adapters.safe_web_fetcher import sanitize_public_url
@@ -40,6 +43,7 @@ from starter_agent.tools.base import ToolContext
 
 
 class ToolCallRequest(CapabilityModel):
+    principal: str = Field(default="local-user", min_length=1, max_length=200)
     caller: str = Field(min_length=1, max_length=200)
     session_id: str = Field(min_length=1, max_length=160)
     turn_id: str = Field(min_length=1, max_length=160)
@@ -59,10 +63,39 @@ class ToolCallRequest(CapabilityModel):
 
     @computed_field
     @property
+    def confirmation_arguments_hash(self) -> str:
+        # Transport retry keys are not part of the approved business action.
+        business_arguments = {
+            key: value
+            for key, value in self.arguments.items()
+            if key.casefold() != "idempotency_key"
+        }
+        return canonical_json_sha256(business_arguments)
+
+    @computed_field
+    @property
+    def confirmation_request_hash(self) -> str:
+        return canonical_json_sha256(
+            {
+                "principal": self.principal,
+                "session_id": self.session_id,
+                "turn_id": self.turn_id,
+                "call_id": self.call_id,
+                "server_id": self.server_id,
+                "tool_name": self.tool_name,
+                "snapshot_id": self.snapshot_id,
+                "schema_hash": self.schema_hash,
+                "arguments_hash": self.confirmation_arguments_hash,
+            }
+        )
+
+    @computed_field
+    @property
     def request_hash(self) -> str:
         return canonical_json_sha256(
             {
                 "caller": self.caller,
+                "principal": self.principal,
                 "session_id": self.session_id,
                 "turn_id": self.turn_id,
                 "call_id": self.call_id,
@@ -151,8 +184,11 @@ class PreToolCallGate:
                     outbound_size,
                     max_bytes=self.max_outbound_bytes,
                 )
+                validate_browser_payload(action, request.arguments)
                 urls = extract_url_targets(request.arguments)
                 targets = await self.browser_policy.validate_all(urls)
+                for raw_url in urls:
+                    reject_sensitive_url_query(raw_url)
                 target = targets[0]
             except ScopeDenied as exc:
                 return self._decision("deny", exc.code, request)
@@ -183,6 +219,10 @@ class PreToolCallGate:
                 schema_hash=request.schema_hash,
                 scheme=scheme,
                 domain=domain,
+                target_scopes=tuple(
+                    (target.scheme, target.hostname)
+                    for target in (targets if _is_browser_tool(tool) else ())
+                ),
                 arguments=request.arguments,
                 role=request.role,
                 data_classes=inferred_classes,
@@ -191,8 +231,6 @@ class PreToolCallGate:
             ),
             rules,
         )
-        if request.server_id == "builtin" and action in {"read", "snapshot", "navigate"}:
-            policy_decision = PolicyDecision("allow", "builtin_reviewed")
         if policy_decision.outcome == "allow" and not issue_permit:
             return GateDecision(
                 "allow",
@@ -206,6 +244,7 @@ class PreToolCallGate:
         self,
         *,
         caller: str,
+        principal: str = "local-user",
         session_id: str,
         turn_id: str,
         call_id: str,
@@ -220,6 +259,7 @@ class PreToolCallGate:
             raise ValueError("tool_not_found")
         return ToolCallRequest(
             caller=caller,
+            principal=principal,
             session_id=session_id,
             turn_id=turn_id,
             call_id=call_id,
@@ -269,7 +309,10 @@ class PreToolCallGate:
     ) -> ToolCallRequest:
         canonical = self.canonicalize(request)
         decision = await self.evaluate(canonical, issue_permit=False)
-        confirmed = bool(permit.confirmation_id)
+        confirmed = False
+        if permit.confirmation_id:
+            confirmation = self.store.get_confirmation(permit.confirmation_id)
+            confirmed = self._confirmation_matches(canonical, confirmation)
         if decision.outcome == "deny" or (
             decision.outcome == "require_confirmation" and not confirmed
         ):
@@ -280,18 +323,26 @@ class PreToolCallGate:
             raise ToolExecutionDenied("policy_revision_mismatch")
         return canonical
 
-    async def evaluate_confirmed(
+    async def evaluate_approved(
         self,
         request: ToolCallRequest,
         *,
-        verified_confirmation_id: str,
+        confirmation_id: str,
     ) -> GateDecision:
-        if not verified_confirmation_id or len(verified_confirmation_id) > 160:
+        if not confirmation_id or len(confirmation_id) > 160:
             return self._decision("deny", "confirmation_invalid", request)
         canonical = self.canonicalize(request)
-        decision = await self.evaluate(canonical)
-        if decision.outcome != "require_confirmation":
+        # Deny/disabled/stale policy state always wins over an old approval.
+        decision = await self.evaluate(canonical, issue_permit=False)
+        if decision.outcome == "deny":
             return decision
+        confirmation = self.store.get_confirmation(confirmation_id)
+        if not self._confirmation_matches(canonical, confirmation):
+            return self._decision(
+                "deny", "confirmation_binding_mismatch", canonical
+            )
+        if decision.outcome != "require_confirmation":
+            return await self.evaluate(canonical)
         rules = self.store.list_policy_rules(
             canonical.server_id, canonical.tool_name
         )
@@ -300,7 +351,34 @@ class PreToolCallGate:
             PolicyDecision("allow", "verified_confirmation"),
             decision.destination_summary,
             rules,
-            confirmation_id=verified_confirmation_id,
+            confirmation_id=confirmation_id,
+        )
+
+    def _confirmation_matches(self, request: ToolCallRequest, confirmation: Any) -> bool:
+        if confirmation is None:
+            return False
+        if confirmation.status not in {"approved", "consumed"}:
+            return False
+        if confirmation.expires_at <= self._now():
+            return False
+        expected_request_hashes = {
+            request.confirmation_request_hash,
+            # Backward-compatible only when no transport key was excluded.
+            request.request_hash
+            if request.arguments_hash == request.confirmation_arguments_hash
+            else "",
+        }
+        return (
+            confirmation.principal == request.principal
+            and confirmation.session_id == request.session_id
+            and confirmation.turn_id == request.turn_id
+            and confirmation.call_id == request.call_id
+            and confirmation.server_id == request.server_id
+            and confirmation.tool_name == request.tool_name
+            and confirmation.schema_hash == request.schema_hash
+            and confirmation.snapshot_id == request.snapshot_id
+            and confirmation.arguments_hash == request.confirmation_arguments_hash
+            and confirmation.request_hash in expected_request_hashes
         )
 
     def _resolve_tool(
@@ -374,8 +452,17 @@ class PreToolCallGate:
             if prior is not None:
                 prior_hash, decision = prior
                 if prior_hash == request.request_hash:
-                    return decision
-                return GateDecision("deny", "duplicate_call", summary, destination)
+                    prior_permit = decision.permit
+                    if confirmation_id and prior_permit is not None:
+                        stored = self.store.get_execution_permit(prior_permit.id)
+                        if stored is not None and stored.consumed_at is not None:
+                            del self._decisions[key]
+                        else:
+                            return decision
+                    else:
+                        return decision
+                elif key in self._decisions:
+                    return GateDecision("deny", "duplicate_call", summary, destination)
             permit = ExecutionPermit(
                 id=f"permit-{uuid4().hex}",
                 confirmation_id=confirmation_id,
@@ -383,6 +470,7 @@ class PreToolCallGate:
                 policy_revision=_policy_revision(rules),
                 expires_at=self._now() + timedelta(seconds=self.permit_ttl_seconds),
                 caller=request.caller,
+                principal=request.principal,
                 session_id=request.session_id,
                 turn_id=request.turn_id,
                 server_id=request.server_id,
@@ -423,6 +511,21 @@ class ToolExecutionDenied(RuntimeError):
 Invoker = Callable[[Mapping[str, Any]], Any | Awaitable[Any]]
 
 
+@dataclass(frozen=True, slots=True)
+class NetworkGuardAttestation:
+    targets: tuple[str, ...]
+    dns_pinned: bool
+    redirects_enforced: bool
+    peer_verified: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _InvokerRegistration:
+    invoke: Callable[[Mapping[str, Any], Any], Any]
+    context_factory: Callable[[ToolCallRequest], Any] | None = None
+    network_guard: Callable[[ToolCallRequest], Any] | None = None
+
+
 class UnifiedToolExecutor:
     def __init__(
         self,
@@ -432,7 +535,7 @@ class UnifiedToolExecutor:
     ) -> None:
         self.store = store
         self.gate = gate
-        self._invokers: dict[str, Callable[[Mapping[str, Any], Any], Any]] = {}
+        self._invokers: dict[str, _InvokerRegistration] = {}
 
     def register_invoker(
         self,
@@ -440,15 +543,20 @@ class UnifiedToolExecutor:
         server_id: str,
         tool_name: str,
         invoker: Callable[[Mapping[str, Any], Any], Any],
+        context_factory: Callable[[ToolCallRequest], Any] | None = None,
+        network_guard: Callable[[ToolCallRequest], Any] | None = None,
     ) -> None:
-        self._invokers[_invoker_id(server_id, tool_name)] = invoker
+        if self._registration_is_browser(server_id, tool_name) and network_guard is None:
+            raise ToolExecutionDenied("network_guard_required")
+        self._invokers[_invoker_id(server_id, tool_name)] = _InvokerRegistration(
+            invoker, context_factory, network_guard
+        )
 
     async def execute(
         self,
         request: ToolCallRequest,
         *,
         permit_id: str | None,
-        context: Any = None,
         forced: bool = False,
         retry: bool = False,
     ) -> Any:
@@ -464,8 +572,8 @@ class UnifiedToolExecutor:
         invoker_id = _invoker_id(request.server_id, request.tool_name)
         if permit.invoker_id != invoker_id:
             raise ToolExecutionDenied("permit_binding_mismatch")
-        selected = self._invokers.get(invoker_id)
-        if selected is None:
+        registration = self._invokers.get(invoker_id)
+        if registration is None:
             raise ToolExecutionDenied("invoker_unavailable")
         capability = (
             None
@@ -475,9 +583,22 @@ class UnifiedToolExecutor:
         if capability is not None and capability.browser:
             targets = extract_url_targets(request.arguments)
             await self.gate.browser_policy.validate_all(targets)
+            if registration.network_guard is None:
+                raise ToolExecutionDenied("network_guard_required")
+            attestation = registration.network_guard(request)
+            if inspect.isawaitable(attestation):
+                attestation = await attestation
+            if not isinstance(attestation, NetworkGuardAttestation) or (
+                attestation.targets != targets
+                or not attestation.dns_pinned
+                or not attestation.redirects_enforced
+                or not attestation.peer_verified
+            ):
+                raise ToolExecutionDenied("network_guard_attestation_invalid")
         expected = {
             "request_hash": request.request_hash,
             "caller": request.caller,
+            "principal": request.principal,
             "session_id": request.session_id,
             "turn_id": request.turn_id,
             "server_id": request.server_id,
@@ -491,8 +612,40 @@ class UnifiedToolExecutor:
             self.store.consume_execution_permit(permit_id, expected=expected)
         except ExecutionPermitError as exc:
             raise ToolExecutionDenied(exc.code) from exc
-        result = selected(request.arguments, context)
+        if permit.confirmation_id:
+            execution_key = request.arguments.get("idempotency_key", request.call_id)
+            if not isinstance(execution_key, str):
+                raise ToolExecutionDenied("confirmation_execution_key_invalid")
+            try:
+                self.store.consume_confirmation_execution(
+                    permit.confirmation_id,
+                    execution_idempotency_key=execution_key,
+                )
+            except ConfirmationExecutionError as exc:
+                raise ToolExecutionDenied(exc.code) from exc
+        context = (
+            None
+            if registration.context_factory is None
+            else registration.context_factory(request)
+        )
+        result = registration.invoke(request.arguments, context)
         return await result if inspect.isawaitable(result) else result
+
+    def _registration_is_browser(self, server_id: str, tool_name: str) -> bool:
+        if self.gate.registry is not None:
+            capability = self.gate.registry.resolve_execution(tool_name)
+            if capability is not None and capability.server_id == server_id:
+                return capability.browser
+        if server_id != "builtin":
+            snapshot = self.store.get_active_snapshot(server_id)
+            if snapshot is not None:
+                tool = next(
+                    (item for item in self.store.list_tools(snapshot.id)
+                     if tool_name in {item.upstream_name, item.model_alias}),
+                    None,
+                )
+                return bool(tool and _is_browser_tool(tool))
+        return False
 
     async def execute_builtin(self, request: ToolCallRequest, **kwargs: Any) -> Any:
         if request.server_id != "builtin":

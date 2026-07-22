@@ -12,6 +12,7 @@ from starter_agent.domain.models import RiskLevel, ToolResult
 class ToolContext:
     session_id: UUID
     turn_id: UUID
+    tool_call_id: str | None = None
 
 
 class Tool(ABC):
@@ -35,4 +36,3 @@ class Tool(ABC):
         self, arguments: dict[str, Any], context: ToolContext
     ) -> ToolResult:
         raise NotImplementedError
-

@@ -71,6 +71,7 @@ ConfirmationStatus = Literal[
     "cancelled",
     "expired",
     "invalidated",
+    "consumed",
 ]
 SkillLoadState = Literal[
     "loaded",
@@ -365,6 +366,8 @@ class Confirmation(CapabilityModel):
     server_id: Identifier
     tool_name: ShortText
     schema_hash: Sha256
+    snapshot_id: Identifier | None = None
+    arguments_hash: Sha256 | None = None
     arguments_summary: BoundedJsonObject
     risk: RiskLevel
     destination: str = Field(min_length=1, max_length=500)
@@ -372,6 +375,8 @@ class Confirmation(CapabilityModel):
     status: ConfirmationStatus = "pending"
     expires_at: UtcDateTime
     idempotency_key_hash: Sha256 | None = None
+    execution_idempotency_key_hash: Sha256 | None = None
+    consumed_at: UtcDateTime | None = None
     decided_at: UtcDateTime | None = None
     revision: int = Field(default=0, ge=0)
 
@@ -387,6 +392,8 @@ class Confirmation(CapabilityModel):
                 self.decision is not None
                 or self.idempotency_key_hash is not None
                 or self.decided_at is not None
+                or self.execution_idempotency_key_hash is not None
+                or self.consumed_at is not None
             ):
                 raise ValueError(
                     "pending status cannot have decision, idempotency hash, or decided_at"
@@ -399,6 +406,17 @@ class Confirmation(CapabilityModel):
                 raise ValueError("approved status requires an approval decision")
             if self.idempotency_key_hash is None:
                 raise ValueError("approved status requires an idempotency hash")
+            if self.execution_idempotency_key_hash is not None or self.consumed_at is not None:
+                raise ValueError("approved status cannot already be consumed")
+            return self
+        if self.status == "consumed":
+            if (
+                self.decision not in {"once", "allowlist"}
+                or self.idempotency_key_hash is None
+                or self.execution_idempotency_key_hash is None
+                or self.consumed_at is None
+            ):
+                raise ValueError("consumed status requires approval and execution binding")
             return self
         if self.status == "cancelled":
             if self.decision != "cancel" or self.idempotency_key_hash is None:
@@ -466,6 +484,7 @@ class ExecutionPermit(CapabilityModel):
     expires_at: UtcDateTime
     consumed_at: UtcDateTime | None = None
     caller: ShortText | None = None
+    principal: ShortText | None = None
     session_id: Identifier | None = None
     turn_id: Identifier | None = None
     server_id: Identifier | None = None

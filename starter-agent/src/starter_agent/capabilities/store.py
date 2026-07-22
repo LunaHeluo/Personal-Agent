@@ -59,6 +59,12 @@ class ExecutionPermitError(CapabilityStoreError):
         self.code = code
 
 
+class ConfirmationExecutionError(CapabilityStoreError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 class CapabilityBase(DeclarativeBase):
     pass
 
@@ -831,6 +837,67 @@ class CapabilityStore:
                     f"Confirmation revision conflict: {confirmation_id} "
                     f"expected {expected_revision}"
                 )
+            db.commit()
+            return candidate
+
+    def consume_confirmation_execution(
+        self,
+        confirmation_id: str,
+        *,
+        execution_idempotency_key: str,
+        now: datetime | None = None,
+    ) -> Confirmation:
+        """Bind a one-shot approval to the first transport idempotency key.
+
+        Replays are accepted only for that exact key.  The confirmation's
+        request/argument binding is validated by the gate before this method.
+        """
+
+        if not execution_idempotency_key or len(execution_idempotency_key) > 1_000:
+            raise ConfirmationExecutionError("confirmation_execution_key_invalid")
+        key_hash = hashlib.sha256(execution_idempotency_key.encode("utf-8")).hexdigest()
+        consumed_at = now or datetime.now(UTC)
+        with Session(self.engine) as db:
+            row = db.get(ConfirmationRow, confirmation_id)
+            if row is None:
+                raise ConfirmationExecutionError("confirmation_not_found")
+            current = Confirmation.model_validate_json(row.payload_json)
+            if current.expires_at <= consumed_at:
+                raise ConfirmationExecutionError("confirmation_expired")
+            if current.status == "consumed":
+                if current.execution_idempotency_key_hash == key_hash:
+                    return current
+                raise ConfirmationExecutionError("confirmation_consumed")
+            if current.status != "approved":
+                raise ConfirmationExecutionError("confirmation_not_approved")
+            candidate = current.model_copy(
+                update={
+                    "status": "consumed",
+                    "execution_idempotency_key_hash": key_hash,
+                    "consumed_at": consumed_at,
+                    "revision": current.revision + 1,
+                }
+            )
+            result = db.execute(
+                update(ConfirmationRow)
+                .where(
+                    ConfirmationRow.id == confirmation_id,
+                    ConfirmationRow.revision == current.revision,
+                    ConfirmationRow.status == "approved",
+                )
+                .values(
+                    status="consumed",
+                    revision=candidate.revision,
+                    payload_json=candidate.model_dump_json(),
+                )
+            )
+            if result.rowcount != 1:
+                db.rollback()
+                latest = self.get_confirmation(confirmation_id)
+                if latest is not None and latest.status == "consumed":
+                    if latest.execution_idempotency_key_hash == key_hash:
+                        return latest
+                raise ConfirmationExecutionError("confirmation_consumed")
             db.commit()
             return candidate
 

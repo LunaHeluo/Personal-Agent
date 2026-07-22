@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Literal
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +38,8 @@ from starter_agent.tools.email.errors import EmailError, EmailErrorCode
 from starter_agent.tools.email.models import ApprovalChallengeView, SendApproval
 from starter_agent.tools.base import ToolContext
 from starter_agent.capabilities.gate import ToolExecutionDenied
+from starter_agent.capabilities.models import Confirmation, canonical_json_sha256
+from starter_agent.capabilities.store import RecordAlreadyExistsError
 
 
 class ChatRequest(BaseModel):
@@ -183,6 +186,27 @@ def _email_approval_service() -> EmailApprovalService:
             },
         )
     return EmailApprovalService(manager)
+
+
+def _email_turn_id(approval_id: str) -> UUID:
+    return uuid5(NAMESPACE_URL, f"starter-agent:email-approval:{approval_id}")
+
+
+def _email_gate_request(application, approval, draft):
+    return application.runtime.gate.request_for_tool(
+        caller="trusted-email-api",
+        principal=approval.user_ref or "local-user",
+        session_id=approval.session_id,
+        turn_id=str(_email_turn_id(approval.approval_id)),
+        call_id=f"api-email-send-{approval.approval_id}",
+        tool_name="email_send",
+        arguments={
+            "profile": approval.profile,
+            "draft_id": draft.draft_id,
+            "expected_content_sha256": draft.content_sha256,
+            "approval_id": approval.approval_id,
+        },
+    )
 
 
 def _email_http_error(error: EmailError) -> HTTPException:
@@ -619,11 +643,60 @@ def create_api() -> FastAPI:
         request: EmailApprovalActionRequest,
     ) -> SendApproval:
         try:
-            return _email_approval_service().confirm(
+            approval = _email_approval_service().confirm(
                 approval_id,
                 session_id=str(request.session_id),
                 confirmed=request.confirmed,
             )
+            application = create_application()
+            manager = application.runtime.tools.email_manager
+            assert manager is not None
+            draft = manager.store.get_draft(
+                approval.draft_id,
+                session_id=str(request.session_id),
+                profile=approval.profile,
+            )
+            gate_request = _email_gate_request(application, approval, draft)
+            confirmation = Confirmation(
+                id=f"email-{approval.approval_id}",
+                principal=approval.user_ref or "local-user",
+                session_id=approval.session_id,
+                turn_id=gate_request.turn_id,
+                call_id=gate_request.call_id,
+                request_hash=gate_request.confirmation_request_hash,
+                server_id=gate_request.server_id,
+                tool_name=gate_request.tool_name,
+                schema_hash=gate_request.schema_hash,
+                snapshot_id=gate_request.snapshot_id,
+                arguments_hash=gate_request.confirmation_arguments_hash,
+                arguments_summary={
+                    "draft_id": draft.draft_id,
+                    "content_sha256": draft.content_sha256,
+                    "recipient_sha256": approval.recipient_sha256,
+                    "attachment_sha256s": approval.attachment_sha256s,
+                },
+                risk="external",
+                destination="email",
+                decision="once",
+                status="approved",
+                expires_at=approval.expires_at,
+                idempotency_key_hash=canonical_json_sha256(
+                    {"approval_id": approval.approval_id}
+                ),
+                decided_at=approval.approved_at or datetime.now(UTC),
+            )
+            try:
+                application.runtime.gate.store.create_confirmation(confirmation)
+            except RecordAlreadyExistsError:
+                existing = application.runtime.gate.store.get_confirmation(
+                    confirmation.id
+                )
+                if existing is None or existing.request_hash != confirmation.request_hash:
+                    raise EmailError(
+                        EmailErrorCode.APPROVAL_REQUIRED,
+                        "approval binding conflict",
+                    )
+            return approval
         except EmailError as error:
             raise _email_http_error(error) from error
 
@@ -692,6 +765,22 @@ def create_api() -> FastAPI:
                 session_id=str(request.session_id),
                 profile=approval.profile,
             )
+            capability_confirmation = application.runtime.gate.store.get_confirmation(
+                f"email-{approval.approval_id}"
+            )
+            execution_key_hash = hashlib.sha256(
+                request.idempotency_key.encode("utf-8")
+            ).hexdigest()
+            if (
+                capability_confirmation is not None
+                and capability_confirmation.status == "consumed"
+                and capability_confirmation.execution_idempotency_key_hash
+                != execution_key_hash
+            ):
+                raise EmailError(
+                    EmailErrorCode.APPROVAL_CONSUMED,
+                    "email approval has already been consumed",
+                )
             result = await application.runtime.execute_tool(
                 tool_name=tool.name,
                 arguments={
@@ -702,9 +791,10 @@ def create_api() -> FastAPI:
                     "idempotency_key": request.idempotency_key,
                 },
                 session_id=request.session_id,
-                turn_id=uuid4(),
-                call_id=f"api-email-send-{uuid4()}",
-                verified_confirmation_id=approval.approval_id,
+                turn_id=_email_turn_id(approval.approval_id),
+                call_id=f"api-email-send-{approval.approval_id}",
+                principal=approval.user_ref or "local-user",
+                confirmation_id=f"email-{approval.approval_id}",
             )
         except EmailError as error:
             raise _email_http_error(error) from error

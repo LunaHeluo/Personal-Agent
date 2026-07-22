@@ -30,6 +30,33 @@ from starter_agent.capabilities.gate import (
 )
 from starter_agent.capabilities.registry import UnifiedToolRegistry
 from starter_agent.capabilities.store import CapabilityStore
+from starter_agent.capabilities.models import PolicyRule
+from starter_agent.capabilities.store import RecordAlreadyExistsError
+
+
+class _BuiltinRegistryView:
+    """Narrow adapter for test/embedded registries that expose a tool mapping."""
+
+    def __init__(self, source):
+        self._source = source
+        self.email_manager = getattr(source, "email_manager", None)
+
+    def list(self):
+        return _builtin_tools(self._source)
+
+
+def _builtin_tools(source):
+    list_tools = getattr(source, "list", None)
+    if callable(list_tools):
+        return list(list_tools())
+    mapping = getattr(source, "tools", None)
+    if isinstance(mapping, dict):
+        return list(mapping.values())
+    raise TypeError("tool registry must expose list() or a tools mapping")
+
+
+def _builtin_source(source):
+    return source if callable(getattr(source, "list", None)) else _BuiltinRegistryView(source)
 
 
 class AgentRuntime:
@@ -53,25 +80,53 @@ class AgentRuntime:
             self.context_config.per_tool_result_tokens,
         )
         if gate is None or executor is None:
+            builtin_source = _builtin_source(tools)
             boundary_registry = (
                 tools
                 if isinstance(tools, UnifiedToolRegistry)
-                else UnifiedToolRegistry(tools)
+                else UnifiedToolRegistry(builtin_source)
             )
             capability_store = CapabilityStore("sqlite:///:memory:", Path("."))
             gate = PreToolCallGate(capability_store, registry=boundary_registry)
             executor = UnifiedToolExecutor(capability_store, gate=gate)
         self.gate = gate
         self.executor = executor
-        for builtin in tools.list():
+        safe_auto_tools = {
+            "get_current_time",
+            "search_jobs_serpapi",
+            "search_job_description",
+        }
+        for builtin in _builtin_tools(tools):
             async def invoke(arguments, context, *, _tool=builtin):
                 return await _tool.execute(dict(arguments), context)
 
-            self.executor.register_invoker(
-                server_id="builtin",
-                tool_name=builtin.name,
-                invoker=invoke,
-            )
+            capability = self.gate.registry.resolve_execution(builtin.name)
+            if capability is not None and builtin.name in safe_auto_tools:
+                rule = PolicyRule(
+                    id=f"builtin-auto-{builtin.name}",
+                    server_id="builtin",
+                    tool_name=builtin.name,
+                    effect="allowlist_auto",
+                    actions=("read",),
+                    schema_hash=capability.schema_hash,
+                    created_by="bootstrap",
+                )
+                try:
+                    self.gate.store.create_policy_rule(rule)
+                except RecordAlreadyExistsError:
+                    pass
+            network_guard = getattr(builtin, "network_guard_attestation", None)
+            try:
+                self.executor.register_invoker(
+                    server_id="builtin",
+                    tool_name=builtin.name,
+                    invoker=invoke,
+                    context_factory=self._context_for_request,
+                    network_guard=network_guard,
+                )
+            except ToolExecutionDenied as exc:
+                if exc.code != "network_guard_required":
+                    raise
 
     async def execute_tool(
         self,
@@ -81,12 +136,14 @@ class AgentRuntime:
         session_id: UUID,
         turn_id: UUID,
         call_id: str,
+        principal: str = "local-user",
         forced: bool = False,
         retry: bool = False,
-        verified_confirmation_id: str | None = None,
+        confirmation_id: str | None = None,
     ):
         request = self.gate.request_for_tool(
             caller="model",
+            principal=principal,
             session_id=str(session_id),
             turn_id=str(turn_id),
             call_id=call_id,
@@ -95,10 +152,10 @@ class AgentRuntime:
         )
         decision = (
             await self.gate.evaluate(request)
-            if verified_confirmation_id is None
-            else await self.gate.evaluate_confirmed(
+            if confirmation_id is None
+            else await self.gate.evaluate_approved(
                 request,
-                verified_confirmation_id=verified_confirmation_id,
+                confirmation_id=confirmation_id,
             )
         )
         if decision.outcome != "allow":
@@ -112,9 +169,16 @@ class AgentRuntime:
         return await self.executor.execute(
             request,
             permit_id=decision.permit.id,
-            context=ToolContext(session_id=session_id, turn_id=turn_id),
             forced=forced,
             retry=retry,
+        )
+
+    @staticmethod
+    def _context_for_request(request):
+        return ToolContext(
+            session_id=UUID(request.session_id),
+            turn_id=UUID(request.turn_id),
+            tool_call_id=request.call_id,
         )
 
     async def run(

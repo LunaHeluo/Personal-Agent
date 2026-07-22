@@ -105,9 +105,9 @@ async def test_servers_have_isolated_sessions_locks_and_lifecycles(
 
     await manager.start()
 
-    alpha = manager.get_handle("alpha")
-    beta = manager.get_handle("beta")
-    assert alpha.session is not beta.session
+    alpha = manager._get_handle("alpha")
+    beta = manager._get_handle("beta")
+    assert alpha.client.session is not beta.client.session
     assert alpha.connect_lock is not beta.connect_lock
     assert alpha.refresh_lock is not beta.refresh_lock
     assert manager.get_status("alpha").runtime_version == "1.0.1"

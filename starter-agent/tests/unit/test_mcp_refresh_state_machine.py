@@ -169,7 +169,7 @@ async def test_refresh_swaps_only_valid_candidate_and_invalidates_changed_schema
 
     assert refreshed.version == old_snapshot.version + 1
     assert refreshed.active is True
-    assert manager.get_handle("alpha").client is clients[1]
+    assert manager._get_handle("alpha").client is clients[1]
     assert clients[0].closed is True
     changed_tool = store.list_tools(refreshed.id)[0]
     assert changed_tool.upstream_name == old_tool.upstream_name
@@ -191,7 +191,7 @@ async def test_refresh_swaps_only_valid_candidate_and_invalidates_changed_schema
     with pytest.raises(McpManagerError) as failed:
         await manager.refresh_server("alpha", current_revision)
     assert failed.value.code == "candidate_failed"
-    assert manager.get_handle("alpha").client is clients[1]
+    assert manager._get_handle("alpha").client is clients[1]
     assert clients[2].closed is True
     stale = store.get_active_snapshot("alpha")
     assert stale.id == active_before_failure.id

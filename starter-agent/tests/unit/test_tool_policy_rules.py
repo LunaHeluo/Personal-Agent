@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from importlib import import_module
+import pytest
 
 from starter_agent.capabilities.models import PolicyRule
 
@@ -144,3 +145,55 @@ def test_serpapi_rejects_secrets_long_text_and_total_budget() -> None:
         except policy_module.ScopeDenied:
             continue
         assert False, f"unsafe SerpAPI payload accepted: {payload.keys()}"
+
+
+def test_policy_applies_scope_rule_to_every_recursive_target() -> None:
+    policy_module = _policy_module()
+    request = policy_module.PolicyRequest(
+        server_id="playwright",
+        tool_name="browser_navigate",
+        action="navigate",
+        schema_hash="a" * 64,
+        target_scopes=(
+            ("https", "jobs.example.com"),
+            ("https", "evil.example.net"),
+        ),
+        arguments={"url": "https://jobs.example.com"},
+        reviewed=True,
+    )
+    rule = PolicyRule(
+        id="scoped",
+        server_id="playwright",
+        tool_name="browser_navigate",
+        effect="allowlist_auto",
+        schemes=("https",),
+        domains=("*.example.com",),
+        actions=("navigate",),
+        schema_hash="a" * 64,
+        created_by="admin",
+    )
+
+    assert policy_module.ToolPolicy().evaluate(request, (rule,)).outcome == (
+        "require_confirmation"
+    )
+
+
+def test_browser_and_serp_structural_payload_rules_reject_neutral_pii_text() -> None:
+    policy_module = _policy_module()
+    with pytest.raises(policy_module.ScopeDenied, match="browser_payload"):
+        policy_module.validate_browser_payload(
+            "navigate",
+            {"url": "https://jobs.example.com", "payload": "harmless free text"},
+        )
+    with pytest.raises(policy_module.ScopeDenied, match="sensitive_url_query"):
+        policy_module.reject_sensitive_url_query(
+            "https://jobs.example.com?q=jane@example.com"
+        )
+    for query in (
+        "jane@example.com product manager",
+        "+86 13800138000 product manager",
+        "I led product teams for ten years",
+        "AI PM\nMy experience includes delivery",
+    ):
+        with pytest.raises(policy_module.ScopeDenied, match="serpapi_fields"):
+            policy_module.validate_serpapi_payload({"query": query}, (), max_bytes=600)

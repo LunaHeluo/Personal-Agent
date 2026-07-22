@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from fnmatch import fnmatchcase
+import re
 from typing import Any, Literal, Mapping, cast
+from urllib.parse import parse_qsl, urlsplit
 
 from pydantic import Field
 
@@ -29,6 +31,11 @@ _FORBIDDEN_ACTIONS = frozenset(
         "message",
         "upload_resume",
         "bypass_access_control",
+        "input",
+        "fill",
+        "type",
+        "upload",
+        "submit",
     }
 )
 _ALWAYS_CONFIRM_ACTIONS = frozenset(
@@ -59,6 +66,9 @@ class PolicyRequest(CapabilityModel):
     arguments: BoundedJsonObject = Field(default_factory=dict)
     role: str = Field(default="user", min_length=1, max_length=100)
     data_classes: tuple[str, ...] = Field(default_factory=tuple, max_length=100)
+    target_scopes: tuple[tuple[str, str], ...] = Field(
+        default_factory=tuple, max_length=100
+    )
     reviewed: bool = False
     enabled: bool = True
 
@@ -135,10 +145,10 @@ def validate_serpapi_payload(
     if ("query" in arguments) == ("keywords" in arguments):
         raise ScopeDenied("serpapi_fields")
     query = arguments.get("query", arguments.get("keywords"))
-    if not _safe_short_text(query, 300):
+    if not _safe_search_phrase(query, 160, 20):
         raise ScopeDenied("serpapi_fields")
     location = arguments.get("location")
-    if location is not None and not _safe_short_text(location, 100):
+    if location is not None and not _safe_search_phrase(location, 80, 10):
         raise ScopeDenied("serpapi_fields")
     encoded = json_bytes(arguments)
     if len(encoded) > max_bytes:
@@ -164,6 +174,62 @@ def _safe_short_text(value: Any, limit: int) -> bool:
             for marker in ("bearer ", "token=", "password=", "cookie=", "secret=")
         )
     )
+
+
+_EMAIL = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b")
+_PHONE = re.compile(r"(?:\+?\d[\d\s().-]{8,}\d)")
+_FIRST_PERSON_HISTORY = re.compile(
+    r"\b(?:i|i've|my)\s+(?:led|worked|managed|built|experience|resume|cv)\b",
+    re.IGNORECASE,
+)
+
+
+def _safe_search_phrase(value: Any, limit: int, words: int) -> bool:
+    return bool(
+        _safe_short_text(value, limit)
+        and "\n" not in value
+        and "\r" not in value
+        and len(value.split()) <= words
+        and not _EMAIL.search(value)
+        and not _PHONE.search(value)
+        and not _FIRST_PERSON_HISTORY.search(value)
+    )
+
+
+def validate_browser_payload(action: str, arguments: Mapping[str, Any]) -> None:
+    action = action.casefold()
+    if action in _FORBIDDEN_ACTIONS:
+        raise ScopeDenied("forbidden_action")
+    if action not in _AUTO_ACTIONS:
+        return
+    allowed = {
+        "url",
+        "uri",
+        "selector",
+        "ref",
+        "timeout",
+        "wait_until",
+        "redirect",
+        "redirects",
+        "final_url",
+    }
+    if any(str(key).casefold() not in allowed for key in arguments):
+        raise ScopeDenied("browser_payload")
+
+
+def reject_sensitive_url_query(url: str) -> None:
+    try:
+        values = [item for pair in parse_qsl(urlsplit(url).query) for item in pair]
+    except ValueError as exc:
+        raise ScopeDenied("unsafe_url") from exc
+    text = " ".join(values)
+    if (
+        _EMAIL.search(text)
+        or _PHONE.search(text)
+        or _FIRST_PERSON_HISTORY.search(text)
+        or any(term in text.casefold() for term in ("resume", "curriculum vitae"))
+    ):
+        raise ScopeDenied("sensitive_url_query")
 
 
 def extract_url_targets(arguments: Mapping[str, Any]) -> tuple[str, ...]:
@@ -310,14 +376,14 @@ class ToolPolicy:
             item.casefold() for item in rule.actions
         }:
             return False
-        if rule.schemes and (request.scheme or "").casefold() not in {
-            item.casefold() for item in rule.schemes
-        }:
-            return False
-        if rule.domains:
-            domain = (request.domain or "").casefold()
-            if not any(
-                pattern == "*" or fnmatchcase(domain, pattern.casefold())
+        scopes = request.target_scopes or (((request.scheme or ""), (request.domain or "")),)
+        for scheme, domain in scopes:
+            if rule.schemes and scheme.casefold() not in {
+                item.casefold() for item in rule.schemes
+            }:
+                return False
+            if rule.domains and not any(
+                pattern == "*" or fnmatchcase(domain.casefold(), pattern.casefold())
                 for pattern in rule.domains
             ):
                 return False
