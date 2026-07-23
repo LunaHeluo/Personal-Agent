@@ -48,6 +48,10 @@ def test_selector_triggers_research_but_not_general_advice_or_rewrite():
     assert selector.select("读取这个公开 JD 并和我的简历比较").name == "job-research"
     assert selector.select("给我一些通用求职建议") is None
     assert selector.select("只润色这段已经提供的文字") is None
+    assert selector.select("Compare this JD with my resume").name == "job-research"
+    assert selector.select("Analyze the JD for this role").name == "job-research"
+    assert selector.select("Give me general career advice") is None
+    assert selector.select("Just rewrite this supplied JD paragraph") is None
 
 
 def test_context_has_light_catalog_until_a_skill_is_triggered(tmp_path: Path):

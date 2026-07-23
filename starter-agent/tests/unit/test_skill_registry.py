@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import asyncio
+import pytest
+
 from starter_agent.capabilities.store import CapabilityStore
 from starter_agent.skills.registry import SkillRegistry
 
@@ -82,3 +85,56 @@ def test_enable_override_survives_registry_restart(tmp_path: Path):
 
     assert snapshot.skills[0].enabled is False
     assert store.get_skill("example-skill").enabled is False
+
+
+def test_reload_dependency_exception_keeps_last_good_snapshot(tmp_path: Path):
+    _write_skill(tmp_path)
+    registry = SkillRegistry(tmp_path)
+    good = registry.reload()
+
+    def fail(_dependency):
+        raise RuntimeError("dependency_probe_failed")
+
+    registry.dependency_resolver = fail
+    stale = registry.reload()
+
+    assert stale.stale is True
+    assert stale.skills == good.skills
+    assert stale.last_error == "dependency_probe_failed"
+
+
+def test_reload_store_exception_keeps_last_good_snapshot(tmp_path: Path):
+    _write_skill(tmp_path)
+    registry = SkillRegistry(tmp_path)
+    good = registry.reload()
+
+    class BrokenStore:
+        def get_skill(self, _name):
+            raise RuntimeError("skill_store_failed")
+
+    registry.store = BrokenStore()
+    stale = registry.reload()
+
+    assert stale.stale is True
+    assert stale.skills == good.skills
+    assert stale.last_error == "skill_store_failed"
+
+
+@pytest.mark.parametrize(
+    "exception",
+    [asyncio.CancelledError(), KeyboardInterrupt(), SystemExit()],
+)
+def test_reload_does_not_swallow_process_control_exceptions(
+    tmp_path: Path,
+    exception: BaseException,
+):
+    _write_skill(tmp_path)
+    registry = SkillRegistry(tmp_path)
+    registry.reload()
+
+    def interrupt(_dependency):
+        raise exception
+
+    registry.dependency_resolver = interrupt
+    with pytest.raises(type(exception)):
+        registry.reload()

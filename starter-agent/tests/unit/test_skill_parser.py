@@ -73,3 +73,33 @@ def test_parser_rejects_incomplete_or_malformed_skill(source: str, tmp_path: Pat
 
     with pytest.raises(SkillParseError):
         SkillParser().parse_file(path)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        VALID_SKILL.replace(
+            "name: example-skill\n",
+            "name: example-skill\nname: shadow-skill\n",
+        ),
+        VALID_SKILL.replace(
+            "enabled: true\n",
+            "enabled: true\nenabled: false\n",
+        ),
+        VALID_SKILL.replace(
+            "  tools: [search_jobs_serpapi, retrieve_resume_evidence]\n",
+            "  tools: [search_jobs_serpapi]\n"
+            "  tools: [retrieve_resume_evidence]\n",
+        ),
+    ],
+)
+def test_parser_rejects_duplicate_keys_at_any_mapping_depth(
+    source: str,
+    tmp_path: Path,
+):
+    path = tmp_path / "example-skill" / "SKILL.md"
+    path.parent.mkdir()
+    path.write_text(source, encoding="utf-8")
+
+    with pytest.raises(SkillParseError, match="duplicate"):
+        SkillParser().parse_file(path)

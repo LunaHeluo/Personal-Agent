@@ -6,12 +6,52 @@ from typing import Any
 
 import yaml
 from pydantic import ValidationError
+from yaml.constructor import ConstructorError
+from yaml.nodes import MappingNode
 
 from starter_agent.skills.models import SkillDefinition, SkillDependency
 
 
 class SkillParseError(ValueError):
     pass
+
+
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects duplicate keys at every mapping depth."""
+
+
+def _construct_unique_mapping(
+    loader: yaml.SafeLoader,
+    node: MappingNode,
+    deep: bool = False,
+) -> dict[Any, Any]:
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable key",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"duplicate key: {key}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeySafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
 
 
 class SkillParser:
@@ -35,9 +75,14 @@ class SkillParser:
         if not definition:
             raise SkillParseError("skill_definition_required")
         try:
-            metadata = yaml.safe_load(frontmatter_text)
+            metadata = yaml.load(frontmatter_text, Loader=_UniqueKeySafeLoader)
         except yaml.YAMLError as exc:
-            raise SkillParseError("skill_frontmatter_invalid") from exc
+            error = (
+                "skill_frontmatter_duplicate_key"
+                if "duplicate key" in str(exc)
+                else "skill_frontmatter_invalid"
+            )
+            raise SkillParseError(error) from exc
         if not isinstance(metadata, dict):
             raise SkillParseError("skill_frontmatter_invalid")
         try:

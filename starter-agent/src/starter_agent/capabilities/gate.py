@@ -555,6 +555,10 @@ class UnifiedToolExecutor:
         self.gate = gate
         self._invokers: dict[str, _InvokerRegistration] = {}
 
+    def has_invoker(self, server_id: str, tool_name: str) -> bool:
+        """Return whether a concrete execution path is registered."""
+        return _invoker_id(server_id, tool_name) in self._invokers
+
     def register_invoker(
         self,
         *,

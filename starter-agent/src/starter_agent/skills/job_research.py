@@ -261,6 +261,10 @@ class JobResearchOrchestrator:
                 or not capability.enabled
                 or not capability.connected
                 or capability.review_state != "approved"
+                or not self.executor.has_invoker(
+                    capability.server_id,
+                    capability.canonical_name,
+                )
             ):
                 missing.append(f"{kind}:{name}")
         return tuple(missing)

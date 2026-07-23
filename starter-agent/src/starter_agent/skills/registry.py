@@ -45,7 +45,7 @@ class SkillRegistry:
     def reload(self) -> SkillSnapshot:
         try:
             candidates = self._load_candidates()
-        except (OSError, SkillParseError, ValueError) as exc:
+        except Exception as exc:
             return self._mark_stale(exc)
         with self._write_lock:
             try:
@@ -227,10 +227,10 @@ class SkillRegistry:
         error = str(exc)[:2_000]
         if self.store is not None:
             for skill in self._snapshot.skills:
-                record = self.store.get_skill(skill.name)
-                if record is None:
-                    continue
                 try:
+                    record = self.store.get_skill(skill.name)
+                    if record is None:
+                        continue
                     self.store.update_skill(
                         skill.name,
                         expected_revision=record.revision,

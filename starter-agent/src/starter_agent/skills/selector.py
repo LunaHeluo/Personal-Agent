@@ -10,7 +10,7 @@ _JOB_RESEARCH_POSITIVE = re.compile(
     r"(?:搜索|查找|寻找|找).{0,30}(?:岗位|职位|工作|招聘)|"
     r"(?:读取|打开|分析|研究).{0,12}(?:JD|职位描述|岗位描述)|"
     r"(?:JD|职位描述|岗位描述).{0,20}(?:简历|匹配|比较)|"
-    r"(?:compare|analy[sz]e|read|research).{0,20}(?:job description|\\bJD\\b)|"
+    r"(?:compare|analy[sz]e|read|research).{0,20}(?:job description|\bJD\b)|"
     r"(?:search|find).{0,12}(?:jobs?|roles?|openings?)",
     re.IGNORECASE,
 )

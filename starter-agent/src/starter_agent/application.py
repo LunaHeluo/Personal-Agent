@@ -29,6 +29,7 @@ from starter_agent.infrastructure.session_store import SQLiteSessionStore
 from starter_agent.observability.logging import get_logger
 from starter_agent.providers.registry import ProviderRegistry
 from starter_agent.settings import AgentSettings
+from starter_agent.tools.base import ToolContext
 
 
 class ApplicationService:
@@ -52,12 +53,80 @@ class ApplicationService:
         self.memory_writer = AutoMemoryWriter(store, settings.memory)
         self._background_tasks: set[asyncio.Task] = set()
         self.job_description_ingestion = None
+        self.job_research = None
 
     def configure_job_description_ingestion(self, knowledge) -> None:
         from starter_agent.job_research.jd import JobDescriptionIngestionService
 
         self.job_description_ingestion = JobDescriptionIngestionService(
             knowledge, self.store
+        )
+
+    def configure_job_research(self, orchestrator) -> None:
+        self.job_research = orchestrator
+
+    async def search_job_research(
+        self,
+        *,
+        query: str,
+        session_id: UUID,
+        turn_id: UUID | None = None,
+        location: str | None = None,
+        limit: int = 5,
+        knowledge_base_id: UUID | None = None,
+    ):
+        if self.job_research is None:
+            raise RuntimeError("job_research_unavailable")
+        return await self.job_research.search(
+            query=query,
+            location=location,
+            limit=limit,
+            context=self._job_research_context(
+                session_id=session_id,
+                turn_id=turn_id,
+                knowledge_base_id=knowledge_base_id,
+            ),
+        )
+
+    async def analyze_job_research(
+        self,
+        *,
+        query: str,
+        selected_url: str,
+        session_id: UUID,
+        turn_id: UUID | None = None,
+        top_k: int = 6,
+        knowledge_base_id: UUID | None = None,
+    ):
+        if self.job_research is None:
+            raise RuntimeError("job_research_unavailable")
+        return await self.job_research.analyze(
+            query=query,
+            selected_url=selected_url,
+            top_k=top_k,
+            context=self._job_research_context(
+                session_id=session_id,
+                turn_id=turn_id,
+                knowledge_base_id=knowledge_base_id,
+            ),
+        )
+
+    def _job_research_context(
+        self,
+        *,
+        session_id: UUID,
+        turn_id: UUID | None,
+        knowledge_base_id: UUID | None,
+    ) -> ToolContext:
+        scope = self.runtime.knowledge_scope
+        return ToolContext(
+            session_id=session_id,
+            turn_id=turn_id or uuid4(),
+            user_id=None if scope is None else scope.user_id,
+            project_id=None if scope is None else scope.project_id,
+            knowledge_base_id=(
+                knowledge_base_id or self.runtime.knowledge_base_id
+            ),
         )
 
     def prepare_job_description_ingestion(

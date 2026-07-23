@@ -20,6 +20,7 @@ from starter_agent.observability.logging import configure_logging
 from starter_agent.providers.registry import ProviderRegistry
 from starter_agent.settings import AgentSettings, load_settings
 from starter_agent.skills.registry import SkillRegistry
+from starter_agent.skills.job_research import JobResearchOrchestrator
 from starter_agent.skills.selector import SkillSelector
 from starter_agent.tools.builtin.knowledge import RetrieveResumeEvidenceTool
 from starter_agent.tools.policy import ToolPolicy
@@ -94,6 +95,10 @@ def create_application() -> ApplicationService:
                 and capability.enabled
                 and capability.connected
                 and capability.review_state == "approved"
+                and executor.has_invoker(
+                    capability.server_id,
+                    capability.canonical_name,
+                )
             )
             if dependency.kind in {"tool", "mcp"}
             else dependency.name == "job_description_ingestion"
@@ -114,6 +119,15 @@ def create_application() -> ApplicationService:
         context=context,
     )
     application.configure_job_description_ingestion(knowledge)
+    application.configure_job_research(
+        JobResearchOrchestrator(
+            tools,
+            executor,
+            ingestion_available=lambda: (
+                application.job_description_ingestion is not None
+            ),
+        )
+    )
     return application
 
 

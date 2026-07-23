@@ -20,6 +20,9 @@ from starter_agent.capabilities.registry import UnifiedToolRegistry
 from starter_agent.capabilities.store import CapabilityStore
 from starter_agent.domain.models import ToolResult
 from starter_agent.skills.job_research import JobResearchOrchestrator
+from starter_agent.settings import load_settings
+from starter_agent.mcp.config import McpConfiguration, McpServerConfig
+from starter_agent.mcp.manager import McpManager
 from starter_agent.tools.base import Tool, ToolContext
 from starter_agent.tools.builtin.knowledge import RetrieveResumeEvidenceTool
 
@@ -282,3 +285,97 @@ async def test_missing_dependency_fails_closed_without_tool_invocation(tmp_path)
     assert result.missing_dependencies == ("tool:search_jobs_serpapi",)
     assert result.trace == ()
     assert store.list_audit_events() == []
+
+
+async def test_bootstrap_application_entry_fails_closed_after_real_browser_publish(
+    tmp_path,
+    monkeypatch,
+):
+    from starter_agent import bootstrap
+
+    settings = load_settings("config/config.example.yaml")
+    settings.project_root = tmp_path
+    settings.app.database_url = "sqlite:///agent.db"
+    settings.app.identity_path = "agent.md"
+    settings.providers["mock"].models = ["starter-mock"]
+    (tmp_path / "agent.md").write_text("# Agent", encoding="utf-8")
+    prompts = tmp_path / "config" / "prompts"
+    prompts.mkdir(parents=True)
+    (prompts / "system.md").write_text("{identity}", encoding="utf-8")
+    monkeypatch.setattr(bootstrap, "get_settings", lambda: settings)
+    bootstrap.create_application.cache_clear()
+    application = bootstrap.create_application()
+    assert application.job_research is not None
+
+    executor = application.runtime.executor
+    store = application.runtime.gate.store
+    manager = McpManager(
+        McpConfiguration(
+            source_path=tmp_path / "mcp.json",
+            servers={"playwright": McpServerConfig(command="npx")},
+            config_hash="f" * 64,
+        ),
+        store=store,
+        client_factory=lambda _server_id, _config: object(),
+        tool_executor=executor,
+    )
+    handle = manager._get_handle("playwright")
+    current = store.get_server("playwright")
+    assert current is not None
+    ready = store.update_server(
+        "playwright",
+        expected_revision=current.revision,
+        enabled=True,
+        connection_state="ready",
+    )
+    handle.status = ready
+    schema = {
+        "type": "object",
+        "properties": {"url": {"type": "string"}},
+        "required": ["url"],
+        "additionalProperties": False,
+    }
+    browser = McpTool(
+        snapshot_id="production-browser-snapshot",
+        server_id="playwright",
+        upstream_name="browser_navigate",
+        model_alias="mcp__playwright__browser_navigate",
+        description="Navigate to a public page",
+        input_schema=schema,
+        schema_hash=canonical_json_sha256(schema),
+        metadata={"browser": True, "action": "navigate"},
+        risk_level="read",
+        outbound_scope=("public_url",),
+        enabled=True,
+        review_state="approved",
+    )
+    snapshot = Snapshot(
+        id=browser.snapshot_id,
+        server_id="playwright",
+        version=1,
+        schema_hash=browser.schema_hash,
+        discovered_at=datetime.now(UTC),
+        tool_count=1,
+    )
+    store.create_snapshot(snapshot, tools=[browser])
+    active = store.activate_snapshot("playwright", snapshot.id)
+    handle.active.snapshot_id = active.id
+    manager._publish_snapshot(handle, active)
+
+    capability = application.runtime.tools.resolve_execution(browser.model_alias)
+    assert capability is not None
+    assert capability.enabled and capability.connected
+    assert executor.has_invoker("playwright", "browser_navigate") is False
+
+    result = await application.analyze_job_research(
+        query="AI Agent engineer",
+        selected_url="https://jobs.example/agent",
+        session_id=uuid4(),
+    )
+
+    assert result.status == "dependency_unavailable"
+    assert result.missing_dependencies == (
+        "mcp:mcp__playwright__browser_navigate",
+    )
+    assert result.trace == ()
+    bootstrap.create_application.cache_clear()
