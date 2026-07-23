@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+from urllib.parse import quote, unquote
 from uuid import uuid4
 
 import pytest
@@ -121,6 +122,39 @@ class _FailingResultSession:
         assert name == "fetch_job"
         assert arguments == {"url": "https://jobs.example/requested"}
         raise RuntimeError("Authorization: Bearer TOP-SECRET-UPSTREAM")
+
+
+class _ArtifactUrlResultSession:
+    async def call_tool(self, name, arguments):
+        assert name == "fetch_job"
+        assert arguments == {"url": "https://jobs.example/requested"}
+        nested = quote(
+            "https://inner-user:INNER-PASSWORD@inner.example/path"
+            "?token=INNER-SECRET&ok=inner",
+            safe="",
+        )
+        return CallToolResult(
+            content=[TextContent(type="text", text="safe")],
+            structuredContent={
+                "final_url": (
+                    "https://jobs.example/final?token=SPACE SECRET&ok=final"
+                ),
+                "requested_url": (
+                    "https://request-user:REQUEST-PASSWORD@jobs.example/requested"
+                    "?api_key=REQUEST-SECRET&ok=request"
+                ),
+                "source_url": (
+                    f"https://outer.example/source?next={nested}&ok=outer"
+                ),
+                "nested": {
+                    "uri": (
+                        "https://uri-user:URI-PASSWORD@uri.example/item"
+                        "?secret=URI-SECRET&ok=uri"
+                    ),
+                    "url": "https://bad.example/path\nCONTROL-SECRET",
+                },
+            },
+        )
 
 
 class _ResultClient:
@@ -427,4 +461,71 @@ async def test_runtime_overrides_forged_mcp_result_provenance_with_capability(
     assert "forged-call" not in serialized
     assert "password" not in serialized
     assert "TOP-SECRET" not in serialized
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_adapter_guard_artifact_strictly_sanitizes_nested_url_fields(
+    tmp_path: Path,
+) -> None:
+    manager, runtime, _tool = await _real_manager_runtime(
+        tmp_path,
+        _ResultClient(_ArtifactUrlResultSession()),
+    )
+    artifacts: list[dict] = []
+    events: list[dict] = []
+
+    async def artifact(item):
+        artifacts.append(item)
+
+    async def event(item):
+        events.append(item)
+
+    await runtime.run(
+        _McpProvider(),
+        "fixture",
+        [Message(role="user", content="fetch")],
+        uuid4(),
+        uuid4(),
+        on_tool_artifact=artifact,
+        on_tool_event=event,
+    )
+
+    artifact_payload = json.loads(artifacts[0]["content"])
+    structured = artifact_payload["data"]["structured_content"]
+    assert structured["final_url"] == "[invalid-url]"
+    assert structured["requested_url"] == (
+        "https://jobs.example/requested?ok=request"
+    )
+    assert structured["nested"]["uri"] == "https://uri.example/item?ok=uri"
+    assert structured["nested"]["url"] == "[invalid-url]"
+    expanded_source = structured["source_url"]
+    for _ in range(5):
+        expanded_source = unquote(expanded_source)
+    serialized = json.dumps(
+        {
+            "artifact": artifacts[0],
+            "event": next(
+                item for item in events if item["type"] == "tool_completed"
+            ),
+            "audit": next(
+                item.model_dump(mode="json")
+                for item in runtime.gate.store.list_audit_events()
+                if item.action == "tool.completed"
+            ),
+        },
+        default=str,
+    )
+    for secret in (
+        "SPACE SECRET",
+        "INNER-PASSWORD",
+        "INNER-SECRET",
+        "REQUEST-PASSWORD",
+        "REQUEST-SECRET",
+        "URI-PASSWORD",
+        "URI-SECRET",
+        "CONTROL-SECRET",
+    ):
+        assert secret not in expanded_source
+        assert secret not in serialized
     await manager.shutdown()

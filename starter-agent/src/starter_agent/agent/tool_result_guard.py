@@ -51,6 +51,11 @@ _URL_LIKE_QUERY_KEY = re.compile(
     r"(?:url|uri|redirect|return|next|continue|callback|target|destination|link)",
     re.IGNORECASE,
 )
+_PROVENANCE_URL_KEY = re.compile(
+    r"(?:^|[_-])(?:url|uri)$"
+    r"|^(?:url|uri|redirect|return|next|continue|callback|target|destination|link)$",
+    re.IGNORECASE,
+)
 _MAX_PROVENANCE_URL_DEPTH = 4
 _MAX_PROVENANCE_URL_CHARS = 8_000
 
@@ -340,7 +345,25 @@ def redact_tool_result_content(content: str) -> str:
     return _redact_content(content)
 
 
-def _redact_value(value: Any, *, sensitive: bool = False) -> Any:
+def _redact_value(
+    value: Any,
+    *,
+    sensitive: bool = False,
+    provenance_url: bool = False,
+) -> Any:
+    if sensitive and value is not None:
+        return "[redacted]"
+    if provenance_url:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return [
+                _redact_value(item, provenance_url=True)
+                for item in value
+            ]
+        if isinstance(value, str):
+            return sanitize_provenance_url(value) or "[invalid-url]"
+        return "[invalid-url]"
     if isinstance(value, dict):
         return {
             key: _redact_value(
@@ -350,13 +373,21 @@ def _redact_value(value: Any, *, sensitive: bool = False) -> Any:
                     or bool(_SENSITIVE_KEY.search(str(key)))
                     or bool(_SENSITIVE_CONTAINER_KEY.fullmatch(str(key)))
                 ),
+                provenance_url=bool(
+                    _PROVENANCE_URL_KEY.search(str(key))
+                ),
             )
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [_redact_value(item, sensitive=sensitive) for item in value]
-    if sensitive and value is not None:
-        return "[redacted]"
+        return [
+            _redact_value(
+                item,
+                sensitive=sensitive,
+                provenance_url=provenance_url,
+            )
+            for item in value
+        ]
     if isinstance(value, str):
         return _redact_text(value)
     return value
