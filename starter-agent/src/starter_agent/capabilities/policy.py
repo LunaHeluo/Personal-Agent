@@ -138,7 +138,7 @@ def validate_serpapi_payload(
     *,
     max_bytes: int = 2_000,
 ) -> None:
-    allowed_fields = {"query", "keywords", "location"}
+    allowed_fields = {"query", "keywords", "location", "limit"}
     allowed_classes = {"job_keywords", "location"}
     if set(arguments) - allowed_fields or set(data_classes) - allowed_classes:
         raise ScopeDenied("serpapi_fields")
@@ -149,6 +149,16 @@ def validate_serpapi_payload(
         raise ScopeDenied("serpapi_fields")
     location = arguments.get("location")
     if location is not None and not _safe_search_phrase(location, 80, 10):
+        raise ScopeDenied("serpapi_fields")
+    limit = arguments.get("limit")
+    if (
+        limit is not None
+        and (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 10
+        )
+    ):
         raise ScopeDenied("serpapi_fields")
     encoded = json_bytes(arguments)
     if len(encoded) > max_bytes:

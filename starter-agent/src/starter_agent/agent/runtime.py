@@ -74,6 +74,8 @@ class AgentRuntime:
         gate: PreToolCallGate | None = None,
         executor: UnifiedToolExecutor | None = None,
         turn_coordinator: TurnCoordinator | None = None,
+        knowledge_scope=None,
+        knowledge_base_id: UUID | None = None,
     ):
         self.tools = tools
         self.policy = policy
@@ -99,10 +101,13 @@ class AgentRuntime:
         self.turn_coordinator = turn_coordinator or TurnCoordinator(
             ConfirmationService(gate.store, gate)
         )
+        self.knowledge_scope = knowledge_scope
+        self.knowledge_base_id = knowledge_base_id
         safe_auto_tools = {
             "get_current_time",
             "search_jobs_serpapi",
             "search_job_description",
+            "retrieve_resume_evidence",
         }
         for builtin in _builtin_tools(tools):
             async def invoke(arguments, context, *, _tool=builtin):
@@ -191,12 +196,22 @@ class AgentRuntime:
             retry=retry,
         )
 
-    @staticmethod
-    def _context_for_request(request):
+    def _context_for_request(self, request):
         return ToolContext(
             session_id=UUID(request.session_id),
             turn_id=UUID(request.turn_id),
             tool_call_id=request.call_id,
+            user_id=(
+                None
+                if self.knowledge_scope is None
+                else self.knowledge_scope.user_id
+            ),
+            project_id=(
+                None
+                if self.knowledge_scope is None
+                else self.knowledge_scope.project_id
+            ),
+            knowledge_base_id=self.knowledge_base_id,
         )
 
     async def run(

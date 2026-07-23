@@ -17,6 +17,7 @@ from starter_agent.tools.builtin.job_description_search import (
     SearchJobDescriptionTool,
 )
 from starter_agent.tools.builtin.job_search import SearchJobsSerpApiTool
+from starter_agent.tools.builtin.knowledge import RetrieveResumeEvidenceTool
 from starter_agent.tools.builtin.resume import (
     CompareResumeTool,
     CompareResumeToJdTool,
@@ -39,7 +40,13 @@ from starter_agent.tools.email.tools import (
 
 
 class ToolRegistry:
-    def __init__(self, enabled: list[str], settings: AgentSettings | None = None):
+    def __init__(
+        self,
+        enabled: list[str],
+        settings: AgentSettings | None = None,
+        *,
+        knowledge_service=None,
+    ):
         project_root = settings.project_root if settings else PROJECT_ROOT
         resume_manager = ResumeManager(
             project_root,
@@ -78,6 +85,10 @@ class ToolRegistry:
             DraftResumePatchTool.name: DraftResumePatchTool(resume_manager),
             SaveResumeVersionTool.name: SaveResumeVersionTool(resume_manager),
         }
+        if knowledge_service is not None:
+            available[RetrieveResumeEvidenceTool.name] = (
+                RetrieveResumeEvidenceTool(knowledge_service)
+            )
         self.email_manager: EmailManager | None = None
         email_tool_names = {
             EmailSearchTool.name,

@@ -19,6 +19,9 @@ from starter_agent.mcp.manager import McpManager
 from starter_agent.observability.logging import configure_logging
 from starter_agent.providers.registry import ProviderRegistry
 from starter_agent.settings import AgentSettings, load_settings
+from starter_agent.skills.registry import SkillRegistry
+from starter_agent.skills.selector import SkillSelector
+from starter_agent.tools.builtin.knowledge import RetrieveResumeEvidenceTool
 from starter_agent.tools.policy import ToolPolicy
 from starter_agent.tools.registry import ToolRegistry
 
@@ -34,7 +37,20 @@ def create_application() -> ApplicationService:
     configure_logging(settings.resolve_path(settings.app.log_path))
     store = SQLiteSessionStore(settings.app.database_url, settings.project_root)
     providers = ProviderRegistry(settings)
-    builtin_tools = ToolRegistry(settings.tools.enabled, settings=settings)
+    knowledge = KnowledgeApplicationService(
+        settings,
+        SQLiteKnowledgeStore(
+            settings.app.database_url, settings.project_root
+        ),
+    )
+    enabled_tools = list(settings.tools.enabled)
+    if RetrieveResumeEvidenceTool.name not in enabled_tools:
+        enabled_tools.append(RetrieveResumeEvidenceTool.name)
+    builtin_tools = ToolRegistry(
+        enabled_tools,
+        settings=settings,
+        knowledge_service=knowledge,
+    )
     tools = UnifiedToolRegistry(
         builtin_tools,
         allowed_risk_levels=settings.tools.allow_risk_levels,
@@ -65,10 +81,30 @@ def create_application() -> ApplicationService:
         gate=gate,
         executor=executor,
         turn_coordinator=turn_coordinator,
+        knowledge_scope=knowledge.scope,
+        knowledge_base_id=knowledge.default_knowledge_base_id,
     )
+    skills = SkillRegistry(
+        settings.project_root / "skills",
+        store=capability_store,
+        dependency_resolver=lambda dependency: (
+            (
+                (capability := tools.resolve_execution(dependency.name))
+                is not None
+                and capability.enabled
+                and capability.connected
+                and capability.review_state == "approved"
+            )
+            if dependency.kind in {"tool", "mcp"}
+            else dependency.name == "job_description_ingestion"
+        ),
+    )
+    skills.reload()
     context = ContextBuilder(
         settings.resolve_path(settings.app.identity_path),
         settings.project_root / "config/prompts/system.md",
+        skill_registry=skills,
+        skill_selector=SkillSelector(skills),
     )
     application = ApplicationService(
         settings=settings,
@@ -77,14 +113,7 @@ def create_application() -> ApplicationService:
         runtime=runtime,
         context=context,
     )
-    application.configure_job_description_ingestion(
-        KnowledgeApplicationService(
-            settings,
-            SQLiteKnowledgeStore(
-                settings.app.database_url, settings.project_root
-            ),
-        )
-    )
+    application.configure_job_description_ingestion(knowledge)
     return application
 
 

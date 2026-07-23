@@ -13,6 +13,9 @@ class ToolContext:
     session_id: UUID
     turn_id: UUID
     tool_call_id: str | None = None
+    user_id: str | None = None
+    project_id: str | None = None
+    knowledge_base_id: UUID | None = None
 
 
 class Tool(ABC):
