@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import inspect
 import hashlib
-import re
+import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from typing import Any, Awaitable, Literal, Protocol
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field
 
 from starter_agent.bootstrap import create_application, create_mcp_manager
@@ -18,10 +20,12 @@ from starter_agent.capabilities.confirmations import (
 )
 from starter_agent.capabilities.models import (
     AuditEvent,
+    BuiltinToolOverride,
     Confirmation,
     PolicyRule,
     canonical_json_sha256,
 )
+from starter_agent.agent.tool_result_guard import redact_tool_result_content
 from starter_agent.capabilities.store import (
     CapabilityStore,
     RecordAlreadyExistsError,
@@ -269,6 +273,108 @@ def _audit_mutation(
     )
 
 
+async def _mutation_exception_boundary(
+    request: Request,
+    services: CapabilityApiServices = Depends(get_capability_services),
+    actor: ManagementPrincipal = Depends(get_management_principal),
+):
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        yield
+        return
+    operation_id = f"operation-{uuid4().hex}"
+    try:
+        yield
+    except asyncio.CancelledError:
+        _audit_mutation(
+            services,
+            actor=actor.subject,
+            operation_id=operation_id,
+            action="management.request",
+            target=request.url.path,
+            decision="error",
+            reason_code="operation_cancelled",
+            before_revision=None,
+            after_revision=None,
+            result="cancelled",
+        )
+        raise
+    except RequestValidationError as exc:
+        _audit_mutation(
+            services,
+            actor=actor.subject,
+            operation_id=operation_id,
+            action="management.request",
+            target=request.url.path,
+            decision="error",
+            reason_code="validation_error",
+            before_revision=None,
+            after_revision=None,
+            result="validation_error",
+        )
+        raise _http_error(
+            422,
+            "validation_error",
+            "Management request validation failed.",
+            authoritative_state={"operation_id": operation_id},
+        ) from exc
+    except HTTPException as exc:
+        detail = (
+            dict(exc.detail)
+            if isinstance(exc.detail, dict)
+            else {"code": "management_error", "message": str(exc.detail)}
+        )
+        detail.setdefault("operation_id", operation_id)
+        exc.detail = detail
+        _audit_mutation(
+            services,
+            actor=actor.subject,
+            operation_id=operation_id,
+            action="management.request",
+            target=request.url.path,
+            decision="error",
+            reason_code=str(detail.get("code", "management_error")),
+            before_revision=None,
+            after_revision=None,
+            result="failed",
+        )
+        raise
+    except Exception as exc:
+        if isinstance(exc, TimeoutError):
+            status_code, code = 504, "operation_timeout"
+        elif isinstance(exc, RevisionConflictError):
+            status_code, code = 409, "revision_conflict"
+        elif isinstance(exc, RecordAlreadyExistsError):
+            status_code, code = 409, "record_exists"
+        elif isinstance(exc, RecordNotFoundError):
+            status_code, code = 404, "record_not_found"
+        elif isinstance(exc, ValueError):
+            status_code, code = 422, "validation_error"
+        elif isinstance(exc, McpManagerError):
+            mapped = _manager_error(exc)
+            status_code = mapped.status_code
+            code = exc.code
+        else:
+            status_code, code = 500, "management_error"
+        _audit_mutation(
+            services,
+            actor=actor.subject,
+            operation_id=operation_id,
+            action="management.request",
+            target=request.url.path,
+            decision="error",
+            reason_code=code,
+            before_revision=None,
+            after_revision=None,
+            result=type(exc).__name__,
+        )
+        raise _http_error(
+            status_code,
+            code,
+            "Management operation failed.",
+            authoritative_state={"operation_id": operation_id},
+        ) from exc
+
+
 def _server_state(services: CapabilityApiServices, server_id: str) -> Any:
     try:
         return services.manager.get_status(server_id)
@@ -311,7 +417,14 @@ def _tool(services: CapabilityApiServices, name: str) -> dict[str, Any]:
 
 
 def _tool_revision(services: CapabilityApiServices, capability: Any) -> int:
-    if capability.server_id == "builtin" or services.store is None:
+    if capability.server_id == "builtin":
+        if services.store is None:
+            return 0
+        override = services.store.get_builtin_tool_override(
+            capability.canonical_name
+        )
+        return 0 if override is None else override.revision
+    if services.store is None:
         return _registry_revision(services)
     tools = services.store.list_tools(capability.snapshot_id)
     stored = next(
@@ -335,21 +448,16 @@ def _skill_metadata(skill: Any) -> dict[str, Any]:
     }
 
 
-_RAW_SECRET = re.compile(
-    r"(?im)^([^\n]*(?:authorization|api[_-]?key|password|secret|token)[^:=\n]*[:=]\s*)\S+"
-)
-
-
 def _redact_skill_definition(value: str) -> str:
-    return _RAW_SECRET.sub(r"\\1<redacted>", value)
+    return redact_tool_result_content(value)
 
 
 def _replay_result(
     services: CapabilityApiServices,
     confirmation: Confirmation,
     request: ConfirmationDecisionRequest,
-) -> dict[str, Any] | None:
-    if confirmation.status != "consumed":
+) -> tuple[int, dict[str, Any]] | None:
+    if confirmation.status not in {"consumed", "cancelled"}:
         return None
     key_hash = hashlib.sha256(request.idempotency_key.encode("utf-8")).hexdigest()
     if (
@@ -361,12 +469,65 @@ def _replay_result(
         return None
     for event in reversed(services.store.list_audit_events()):
         if (
-            event.action == "management.executed"
+            event.action == "management.terminal"
             and event.call_id == confirmation.call_id
         ):
-            result = event.payload.get("result")
-            return None if not isinstance(result, dict) else dict(result)
+            response = event.payload.get("response")
+            status_code = event.payload.get("status_code")
+            if isinstance(response, dict) and isinstance(status_code, int):
+                return status_code, dict(response)
     return None
+
+
+def _safe_response_payload(value: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(
+        redact_tool_result_content(
+            json.dumps(value, ensure_ascii=False, default=str)
+        )
+    )
+
+
+def _record_management_terminal(
+    services: CapabilityApiServices,
+    confirmation: Confirmation,
+    *,
+    actor: str,
+    status_code: int,
+    response: dict[str, Any],
+) -> None:
+    if services.store is None:
+        return
+    event = AuditEvent(
+        event_id=f"management-terminal-{confirmation.id}",
+        actor=actor,
+        action="management.terminal",
+        target=confirmation.destination,
+        decision=(
+            "cancelled"
+            if confirmation.decision == "cancel"
+            else ("approved" if status_code < 400 else "error")
+        ),
+        reason_code=(
+            "management_operation_completed"
+            if status_code < 400
+            else str(response.get("detail", {}).get("code", "management_failed"))
+        ),
+        session_id=confirmation.session_id,
+        turn_id=confirmation.turn_id,
+        call_id=confirmation.call_id,
+        payload={
+            "confirmation_id": confirmation.id,
+            "decision": confirmation.decision,
+            "idempotency_hash": confirmation.idempotency_key_hash,
+            "status_code": status_code,
+            "response": _safe_response_payload(response),
+        },
+        created_at=datetime.now(UTC),
+    )
+    try:
+        services.store.append_audit_event(event)
+    except RecordAlreadyExistsError:
+        return
 
 
 def _skill_record(services: CapabilityApiServices, name: str) -> Any:
@@ -534,7 +695,25 @@ async def _execute_management(
                 authoritative_state=current_tool,
             )
         capability = services.registry.resolve_execution(target)
-        if capability.server_id != "builtin" and services.store is not None:
+        if capability.server_id == "builtin":
+            if services.store is None:
+                raise _http_error(
+                    503, "capability_store_unavailable", "Store unavailable."
+                )
+            updated_override = services.store.put_builtin_tool_override(
+                BuiltinToolOverride(
+                    tool_name=capability.canonical_name,
+                    enabled=True,
+                ),
+                expected_revision=expected,
+            )
+            services.registry.set_tool_enabled(target, True)
+            return _operation_result(
+                operation_id,
+                updated_override.revision,
+                _tool(services, target),
+            )
+        if services.store is not None:
             updated = services.store.update_tool(
                 capability.snapshot_id,
                 capability.canonical_name,
@@ -545,9 +724,8 @@ async def _execute_management(
             return _operation_result(
                 operation_id, updated.revision, _tool(services, target)
             )
-        snapshot = services.registry.set_tool_enabled(target, True)
-        return _operation_result(
-            operation_id, snapshot.context_revision, _tool(services, target)
+        raise _http_error(
+            503, "capability_store_unavailable", "Store unavailable."
         )
     if operation == "policy.create":
         current = _registry_revision(services)
@@ -595,7 +773,11 @@ async def _execute_management(
 
 
 def create_capabilities_router() -> APIRouter:
-    router = APIRouter(prefix="/v1/capabilities", tags=["capabilities"])
+    router = APIRouter(
+        prefix="/v1/capabilities",
+        tags=["capabilities"],
+        dependencies=[Depends(_mutation_exception_boundary)],
+    )
 
     @router.get("/servers")
     async def list_servers(
@@ -864,7 +1046,46 @@ def create_capabilities_router() -> APIRouter:
             )
             return _confirmation_result(confirmation)
         capability = services.registry.resolve_execution(tool_name)
-        if capability.server_id != "builtin" and services.store is not None:
+        if capability.server_id == "builtin":
+            if services.store is None:
+                raise _http_error(
+                    503, "capability_store_unavailable", "Store unavailable."
+                )
+            try:
+                updated_override = services.store.put_builtin_tool_override(
+                    BuiltinToolOverride(
+                        tool_name=capability.canonical_name,
+                        enabled=enabled,
+                    ),
+                    expected_revision=expected,
+                )
+            except RevisionConflictError as exc:
+                raise _http_error(
+                    409,
+                    "revision_conflict",
+                    "Builtin tool revision conflict.",
+                    authoritative_state=_tool(services, tool_name),
+                ) from exc
+            services.registry.set_tool_enabled(tool_name, enabled)
+            operation_id = f"operation-{uuid4().hex}"
+            _audit_mutation(
+                services,
+                actor=actor.subject,
+                operation_id=operation_id,
+                action="tool.enabled" if enabled else "tool.disabled",
+                target=f"tool:{tool_name}",
+                decision="allow",
+                reason_code="tool_state_updated",
+                before_revision=expected,
+                after_revision=updated_override.revision,
+                result="enabled" if enabled else "disabled",
+            )
+            return _operation_result(
+                operation_id,
+                updated_override.revision,
+                _tool(services, tool_name),
+            )
+        if services.store is not None:
             try:
                 updated = services.store.update_tool(
                     capability.snapshot_id,
@@ -896,24 +1117,8 @@ def create_capabilities_router() -> APIRouter:
                 updated.revision,
                 _tool(services, tool_name),
             )
-        snapshot = services.registry.set_tool_enabled(tool_name, enabled)
-        operation_id = f"operation-{uuid4().hex}"
-        _audit_mutation(
-            services,
-            actor=actor.subject,
-            operation_id=operation_id,
-            action="tool.enabled" if enabled else "tool.disabled",
-            target=f"tool:{tool_name}",
-            decision="allow",
-            reason_code="tool_state_updated",
-            before_revision=expected,
-            after_revision=snapshot.context_revision,
-            result="enabled" if enabled else "disabled",
-        )
-        return _operation_result(
-            operation_id,
-            snapshot.context_revision,
-            _tool(services, tool_name),
+        raise _http_error(
+            503, "capability_store_unavailable", "Store unavailable."
         )
 
     @router.post("/tools/{tool_name}/enable", status_code=202)
@@ -957,7 +1162,14 @@ def create_capabilities_router() -> APIRouter:
                 authoritative_state=current,
             )
         capability = services.registry.resolve_execution(tool_name)
-        if capability.server_id != "builtin" and services.store is not None:
+        if capability.server_id == "builtin":
+            raise _http_error(
+                409,
+                "builtin_review_unsupported",
+                "Builtin tool review state is fixed by the application.",
+                authoritative_state=current,
+            )
+        if services.store is not None:
             updated = services.store.update_tool(
                 capability.snapshot_id,
                 capability.canonical_name,
@@ -983,24 +1195,8 @@ def create_capabilities_router() -> APIRouter:
                 updated.revision,
                 _tool(services, tool_name),
             )
-        snapshot = services.registry.set_tool_review(tool_name, mutation.review_state)
-        operation_id = f"operation-{uuid4().hex}"
-        _audit_mutation(
-            services,
-            actor=actor.subject,
-            operation_id=operation_id,
-            action="tool.reviewed",
-            target=f"tool:{tool_name}",
-            decision="allow",
-            reason_code="tool_review_updated",
-            before_revision=expected,
-            after_revision=snapshot.context_revision,
-            result=mutation.review_state,
-        )
-        return _operation_result(
-            operation_id,
-            snapshot.context_revision,
-            _tool(services, tool_name),
+        raise _http_error(
+            503, "capability_store_unavailable", "Store unavailable."
         )
 
     @router.post("/tools/{tool_name}/policies")
@@ -1367,7 +1563,13 @@ def create_capabilities_router() -> APIRouter:
             raise _http_error(403, "confirmation_principal_mismatch", "Forbidden.")
         replay = _replay_result(services, current, mutation)
         if replay is not None:
-            return replay
+            replay_status, replay_response = replay
+            if replay_status >= 400:
+                raise HTTPException(
+                    status_code=replay_status,
+                    detail=replay_response.get("detail", replay_response),
+                )
+            return replay_response
         if is_management:
             require_role(actor, "admin")
             if current.principal != actor.subject:
@@ -1449,8 +1651,18 @@ def create_capabilities_router() -> APIRouter:
                 "Confirmation conflict.",
                 authoritative_state=_dump(latest),
             ) from exc
-        if not is_management or mutation.decision == "cancel":
+        if not is_management:
             return _confirmation_result(decided)
+        if mutation.decision == "cancel":
+            result = _confirmation_result(decided)
+            _record_management_terminal(
+                services,
+                decided,
+                actor=actor.subject,
+                status_code=200,
+                response=result,
+            )
+            return result
         assert services.store is not None
         try:
             consumed = services.store.consume_confirmation_execution(
@@ -1466,7 +1678,29 @@ def create_capabilities_router() -> APIRouter:
             ) from exc
         try:
             result = await _execute_management(services, consumed)
+        except asyncio.CancelledError:
+            cancelled_response = {
+                "detail": {
+                    "code": "management_cancelled",
+                    "message": "Management operation was cancelled.",
+                    "operation_id": consumed.turn_id,
+                }
+            }
+            _record_management_terminal(
+                services,
+                consumed,
+                actor=actor.subject,
+                status_code=499,
+                response=cancelled_response,
+            )
+            raise
         except (SkillReloadError, SkillCandidateChangedError, RevisionConflictError) as exc:
+            error = _http_error(
+                409,
+                getattr(exc, "args", ["management_failed"])[0],
+                "Management operation failed after revalidation.",
+            )
+            error.detail["operation_id"] = consumed.turn_id
             _audit_mutation(
                 services,
                 actor=actor.subject,
@@ -1481,17 +1715,27 @@ def create_capabilities_router() -> APIRouter:
                 after_revision=None,
                 result="failed",
             )
-            raise _http_error(
-                409,
-                getattr(exc, "args", ["management_failed"])[0],
-                "Management operation failed after revalidation.",
-            ) from exc
+            _record_management_terminal(
+                services,
+                consumed,
+                actor=actor.subject,
+                status_code=error.status_code,
+                response={"detail": error.detail},
+            )
+            raise error from exc
         except HTTPException as exc:
             code = (
                 exc.detail.get("code", "management_failed")
                 if isinstance(exc.detail, dict)
                 else "management_failed"
             )
+            detail = (
+                dict(exc.detail)
+                if isinstance(exc.detail, dict)
+                else {"code": code, "message": "Management operation failed."}
+            )
+            detail["operation_id"] = consumed.turn_id
+            exc.detail = detail
             _audit_mutation(
                 services,
                 actor=actor.subject,
@@ -1506,26 +1750,49 @@ def create_capabilities_router() -> APIRouter:
                 after_revision=None,
                 result="failed",
             )
-            raise
-        services.store.append_audit_event(
-            AuditEvent(
-                event_id=f"audit-{uuid4().hex}",
+            _record_management_terminal(
+                services,
+                consumed,
                 actor=actor.subject,
-                action="management.executed",
-                target=consumed.destination,
-                decision="approved",
-                reason_code="management_operation_completed",
-                session_id=consumed.session_id,
-                turn_id=consumed.turn_id,
-                call_id=consumed.call_id,
-                payload={
-                    "confirmation_id": consumed.id,
-                    "operation": consumed.tool_name,
-                    "revision": result["revision"],
-                    "result": result,
-                },
-                created_at=datetime.now(UTC),
+                status_code=exc.status_code,
+                response={"detail": detail},
             )
+            raise
+        except Exception as exc:
+            error = _http_error(
+                500,
+                "management_execution_failed",
+                "Management operation failed.",
+            )
+            error.detail["operation_id"] = consumed.turn_id
+            _audit_mutation(
+                services,
+                actor=actor.subject,
+                operation_id=consumed.turn_id,
+                action=consumed.tool_name,
+                target=consumed.destination,
+                decision="error",
+                reason_code="management_execution_failed",
+                before_revision=int(
+                    consumed.arguments_summary.get("expected_revision", 0)
+                ),
+                after_revision=None,
+                result=type(exc).__name__,
+            )
+            _record_management_terminal(
+                services,
+                consumed,
+                actor=actor.subject,
+                status_code=error.status_code,
+                response={"detail": error.detail},
+            )
+            raise error from exc
+        _record_management_terminal(
+            services,
+            consumed,
+            actor=actor.subject,
+            status_code=200,
+            response=result,
         )
         return result
 
@@ -1550,31 +1817,35 @@ def create_capabilities_router() -> APIRouter:
         actor: ManagementPrincipal = Depends(get_management_principal),
     ) -> dict[str, Any]:
         require_role(actor, "viewer")
-        current = services.registry.model_snapshot()
-        if current.context_revision != revision:
+        if services.store is None:
             raise _http_error(
-                409,
+                503, "capability_store_unavailable", "Store unavailable."
+            )
+        matching = [
+            event
+            for event in services.store.list_audit_events()
+            if (
+                event.action == "model.context.snapshot"
+                and event.session_id == str(session_id)
+                and event.turn_id == turn_id
+                and event.payload.get("context_revision") == revision
+            )
+        ]
+        if not matching:
+            raise _http_error(
+                404,
                 "context_revision_unavailable",
-                "Requested model tool revision is not current.",
-                authoritative_state={"revision": current.context_revision},
+                "No provider request used this context revision for the requested turn.",
             )
-        callable_tools: list[dict[str, str]] = []
-        for definition in current.provider_tools():
-            function = definition.get("function", {})
-            name = function.get("name")
-            capability = (
-                None if not isinstance(name, str)
-                else services.registry.resolve_execution(name)
-            )
-            if capability is not None:
-                callable_tools.append(
-                    {"name": name, "schema_hash": capability.schema_hash}
-                )
+        event = matching[-1]
         return {
             "session_id": str(session_id),
             "turn_id": turn_id,
             "revision": revision,
-            "callable_tools": callable_tools,
+            "model_call": event.payload.get("model_call"),
+            "provider_tools_hash": event.payload.get("provider_tools_hash"),
+            "callable_tools": event.payload.get("callable_tools", ()),
+            "recorded_at": event.created_at,
         }
 
     return router

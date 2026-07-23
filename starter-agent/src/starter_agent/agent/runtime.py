@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from time import monotonic
-from uuid import UUID
+from uuid import UUID, uuid4
 from pathlib import Path
 
 from starter_agent.domain.errors import (
@@ -30,7 +31,11 @@ from starter_agent.capabilities.gate import (
 )
 from starter_agent.capabilities.registry import UnifiedToolRegistry
 from starter_agent.capabilities.store import CapabilityStore
-from starter_agent.capabilities.models import PolicyRule
+from starter_agent.capabilities.models import (
+    AuditEvent,
+    PolicyRule,
+    canonical_json_sha256,
+)
 from starter_agent.capabilities.store import RecordAlreadyExistsError
 from starter_agent.capabilities.confirmations import (
     ConfirmationService,
@@ -172,6 +177,20 @@ class AgentRuntime:
                 confirmation_id=confirmation_id,
             )
         )
+        self._append_audit(
+            action="gate.evaluated",
+            target=f"tool:{request.server_id}:{request.tool_name}",
+            decision=decision.outcome,
+            reason_code=decision.reason_code,
+            session_id=str(session_id),
+            turn_id=str(turn_id),
+            call_id=call_id,
+            payload={
+                "request_hash": request.request_hash,
+                "schema_hash": request.schema_hash,
+                "snapshot_id": request.snapshot_id,
+            },
+        )
         if (
             confirmation_id is None
             and decision.outcome == "require_confirmation"
@@ -194,6 +213,34 @@ class AgentRuntime:
             permit_id=decision.permit.id,
             forced=forced,
             retry=retry,
+        )
+
+    def _append_audit(
+        self,
+        *,
+        action: str,
+        target: str,
+        decision: str,
+        reason_code: str,
+        session_id: str,
+        turn_id: str,
+        call_id: str,
+        payload: dict | None = None,
+    ) -> None:
+        self.gate.store.append_audit_event(
+            AuditEvent(
+                event_id=f"audit-{uuid4().hex}",
+                actor="runtime",
+                action=action,
+                target=target,
+                decision=decision,
+                reason_code=reason_code,
+                session_id=session_id,
+                turn_id=turn_id,
+                call_id=call_id,
+                payload=payload or {},
+                created_at=datetime.now(UTC),
+            )
         )
 
     def _context_for_request(self, request):
@@ -256,6 +303,33 @@ class AgentRuntime:
             else:
                 request_tools = self.tools.schemas()
                 context_revision = 0
+            callable_tools = []
+            for definition in request_tools:
+                function = definition.get("function", {})
+                name = function.get("name")
+                parameters = function.get("parameters")
+                if isinstance(name, str) and isinstance(parameters, dict):
+                    callable_tools.append(
+                        {
+                            "name": name,
+                            "schema_hash": canonical_json_sha256(parameters),
+                        }
+                    )
+            self._append_audit(
+                action="model.context.snapshot",
+                target=f"provider:{provider.name}:{model}",
+                decision="allow",
+                reason_code="provider_request_prepared",
+                session_id=str(session_id),
+                turn_id=str(turn_id),
+                call_id=f"model-call-{model_calls}",
+                payload={
+                    "model_call": model_calls,
+                    "context_revision": context_revision,
+                    "provider_tools_hash": canonical_json_sha256(request_tools),
+                    "callable_tools": callable_tools,
+                },
+            )
             logger.info(
                 "model.requested",
                 provider=provider.name,
@@ -299,6 +373,16 @@ class AgentRuntime:
             messages.append(assistant_tool_message)
             generated.append(assistant_tool_message)
             for call in response.tool_calls:
+                self._append_audit(
+                    action="tool.requested",
+                    target=f"tool:{call.name}",
+                    decision="allow",
+                    reason_code="model_requested_tool",
+                    session_id=str(session_id),
+                    turn_id=str(turn_id),
+                    call_id=call.id,
+                    payload={"tool_name": call.name},
+                )
                 if on_tool_event:
                     await on_tool_event(
                         {
@@ -436,6 +520,24 @@ class AgentRuntime:
                             tool=call.name,
                             error_type=type(exc).__name__,
                         )
+                self._append_audit(
+                    action="tool.completed",
+                    target=f"tool:{call.name}",
+                    decision="allow" if tool_ok else "error",
+                    reason_code=(
+                        "tool_completed"
+                        if tool_ok
+                        else (tool_error_code or "tool_execution_error")
+                    ),
+                    session_id=str(session_id),
+                    turn_id=str(turn_id),
+                    call_id=call.id,
+                    payload={
+                        "tool_name": call.name,
+                        "ok": tool_ok,
+                        "error_code": tool_error_code,
+                    },
+                )
                 raw_source_ref = f"tool:{call.name}:{turn_id}:{call.id}"
                 remaining_tool_tokens = max(
                     100,

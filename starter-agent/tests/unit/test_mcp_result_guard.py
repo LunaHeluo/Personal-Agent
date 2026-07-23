@@ -2,7 +2,10 @@ import json
 from uuid import uuid4
 
 from starter_agent.agent.token_counter import TokenCounter
-from starter_agent.agent.tool_result_guard import ToolResultGuard
+from starter_agent.agent.tool_result_guard import (
+    ToolResultGuard,
+    redact_tool_result_content,
+)
 from starter_agent.infrastructure.session_store import SQLiteSessionStore
 from starter_agent.interfaces.api import ChatRequest
 
@@ -56,6 +59,21 @@ def test_guard_redacts_small_results_even_when_no_truncation_is_needed() -> None
     assert "private" not in result.content
     assert "[redacted]" in result.content
     assert result.raw_source_ref is None
+
+
+def test_shared_redactor_handles_multiline_inline_spaced_and_url_secrets() -> None:
+    content = (
+        "Authorization: Bearer TOP-SECRET\n"
+        "api_key = value with spaces\n"
+        "inline secret=INLINE-SECRET then continue\n"
+        "open https://alice:PASS@example.test/path?token=URL-TOKEN&ok=yes now"
+    )
+
+    redacted = redact_tool_result_content(content)
+
+    for secret in ("TOP-SECRET", "value with spaces", "INLINE-SECRET", "PASS", "URL-TOKEN"):
+        assert secret not in redacted
+    assert "\\1" not in redacted
 
 
 def test_tool_artifact_store_is_restricted_and_never_persists_unredacted_content(

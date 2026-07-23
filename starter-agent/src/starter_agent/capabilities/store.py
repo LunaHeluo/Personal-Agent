@@ -25,6 +25,7 @@ from sqlalchemy.pool import StaticPool
 
 from starter_agent.capabilities.models import (
     AuditEvent,
+    BuiltinToolOverride,
     Confirmation,
     ConfirmationDecision,
     ExecutionPermit,
@@ -123,6 +124,15 @@ class McpToolRow(CapabilityBase):
     schema_hash: Mapped[str] = mapped_column(String(64), index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, index=True)
     review_state: Mapped[str] = mapped_column(String(40), index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+
+
+class BuiltinToolOverrideRow(CapabilityBase):
+    __tablename__ = "builtin_tool_overrides"
+
+    tool_name: Mapped[str] = mapped_column(String(160), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, index=True)
+    revision: Mapped[int] = mapped_column(Integer)
     payload_json: Mapped[str] = mapped_column(Text)
 
 
@@ -671,6 +681,90 @@ class CapabilityStore:
                 db.rollback()
                 raise RevisionConflictError(
                     f"Tool revision conflict: {upstream_name} expected {expected_revision}"
+                )
+            db.commit()
+            return candidate
+
+    def get_builtin_tool_override(
+        self, tool_name: str
+    ) -> BuiltinToolOverride | None:
+        with Session(self.engine) as db:
+            row = db.get(BuiltinToolOverrideRow, tool_name)
+            return (
+                None
+                if row is None
+                else BuiltinToolOverride.model_validate_json(row.payload_json)
+            )
+
+    def list_builtin_tool_overrides(self) -> list[BuiltinToolOverride]:
+        with Session(self.engine) as db:
+            rows = db.scalars(
+                select(BuiltinToolOverrideRow).order_by(
+                    BuiltinToolOverrideRow.tool_name
+                )
+            ).all()
+            return [
+                BuiltinToolOverride.model_validate_json(row.payload_json)
+                for row in rows
+            ]
+
+    def put_builtin_tool_override(
+        self,
+        override: BuiltinToolOverride,
+        *,
+        expected_revision: int,
+    ) -> BuiltinToolOverride:
+        if override.revision not in {0, expected_revision}:
+            raise ValueError("Builtin override revision is supplied by the store")
+        candidate = override.model_copy(update={"revision": expected_revision + 1})
+        with Session(self.engine) as db:
+            row = db.get(BuiltinToolOverrideRow, override.tool_name)
+            if row is None:
+                if expected_revision != 0:
+                    raise RevisionConflictError(
+                        f"Builtin tool revision conflict: {override.tool_name} "
+                        f"expected {expected_revision}"
+                    )
+                try:
+                    db.add(
+                        BuiltinToolOverrideRow(
+                            tool_name=candidate.tool_name,
+                            enabled=candidate.enabled,
+                            revision=candidate.revision,
+                            payload_json=candidate.model_dump_json(),
+                        )
+                    )
+                    db.commit()
+                except IntegrityError as exc:
+                    db.rollback()
+                    raise RevisionConflictError(
+                        f"Builtin tool revision conflict: {override.tool_name} "
+                        f"expected {expected_revision}"
+                    ) from exc
+                return candidate
+            current = BuiltinToolOverride.model_validate_json(row.payload_json)
+            if current.revision != expected_revision:
+                raise RevisionConflictError(
+                    f"Builtin tool revision conflict: {override.tool_name} "
+                    f"expected {expected_revision}"
+                )
+            result = db.execute(
+                update(BuiltinToolOverrideRow)
+                .where(
+                    BuiltinToolOverrideRow.tool_name == override.tool_name,
+                    BuiltinToolOverrideRow.revision == expected_revision,
+                )
+                .values(
+                    enabled=candidate.enabled,
+                    revision=candidate.revision,
+                    payload_json=candidate.model_dump_json(),
+                )
+            )
+            if result.rowcount != 1:
+                db.rollback()
+                raise RevisionConflictError(
+                    f"Builtin tool revision conflict: {override.tool_name} "
+                    f"expected {expected_revision}"
                 )
             db.commit()
             return candidate

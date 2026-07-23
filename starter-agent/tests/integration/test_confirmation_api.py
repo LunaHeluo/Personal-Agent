@@ -207,6 +207,70 @@ def test_management_confirmation_replay_returns_original_result_without_executio
     assert manager.calls == 1
 
 
+def test_management_confirmation_replays_the_same_failure_without_execution() -> None:
+    store = CapabilityStore("sqlite:///:memory:", Path("."))
+    confirmations = ConfirmationService(store, PreToolCallGate(store))
+
+    class Manager:
+        def __init__(self):
+            self.state = Server(
+                id="alpha", name="alpha", config_source="mcp.json", config_hash="a" * 64
+            )
+            self.calls = 0
+
+        def get_status(self, _server_id):
+            return self.state
+
+        async def connect(self, _server_id):
+            self.calls += 1
+            raise RuntimeError("Authorization: Bearer MUST-NOT-BE-AUDITED")
+
+    manager = Manager()
+    services = CapabilityApiServices(
+        manager=manager,
+        registry=SimpleNamespace(
+            context_revision=0, refresh_from_manager=lambda _manager: None
+        ),
+        skill_registry=None,
+        confirmations=confirmations,
+        store=store,
+        application=None,
+    )
+    app = FastAPI()
+    app.include_router(create_capabilities_router())
+    app.dependency_overrides[get_capability_services] = lambda: services
+    app.dependency_overrides[get_management_principal] = lambda: ManagementPrincipal(
+        subject="owner", role="admin"
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        proposal = client.post(
+            "/v1/capabilities/servers/alpha/connect",
+            json={"expected_revision": 0},
+        ).json()["confirmation"]
+        body = {
+            "expected_revision": proposal["revision"],
+            "decision": "once",
+            "idempotency_key": "same-failure-key",
+        }
+        first = client.post(
+            f"/v1/capabilities/confirmations/{proposal['id']}/decisions", json=body
+        )
+        replay = client.post(
+            f"/v1/capabilities/confirmations/{proposal['id']}/decisions", json=body
+        )
+
+    assert first.status_code == replay.status_code == 500
+    assert replay.json() == first.json()
+    assert manager.calls == 1
+    terminal = [
+        event
+        for event in store.list_audit_events()
+        if event.action == "management.terminal"
+    ]
+    assert len(terminal) == 1
+    assert "MUST-NOT-BE-AUDITED" not in terminal[0].model_dump_json()
+
+
 def test_pending_and_decision_are_principal_scoped_unless_admin() -> None:
     store = CapabilityStore("sqlite:///:memory:", Path("."))
     confirmations = ConfirmationService(store, PreToolCallGate(store))

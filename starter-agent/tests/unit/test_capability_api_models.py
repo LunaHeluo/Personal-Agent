@@ -5,7 +5,13 @@ from pydantic import ValidationError
 from datetime import UTC, datetime
 from pathlib import Path
 
-from starter_agent.capabilities.models import Server, Snapshot, Tool, canonical_json_sha256
+from starter_agent.capabilities.models import (
+    BuiltinToolOverride,
+    Server,
+    Snapshot,
+    Tool,
+    canonical_json_sha256,
+)
 from starter_agent.capabilities.store import CapabilityStore, RevisionConflictError
 from starter_agent.skills.registry import SkillCandidateChangedError, SkillRegistry
 from tests.unit.test_skill_parser import VALID_SKILL
@@ -93,6 +99,26 @@ def test_mcp_tool_state_is_persisted_with_per_tool_cas() -> None:
     assert refreshed.enabled is True
     assert refreshed.review_state == "approved"
     assert refreshed.revision == updated.revision
+
+
+def test_builtin_tool_override_is_persistent_and_uses_per_tool_cas(tmp_path) -> None:
+    database_url = "sqlite:///capabilities.db"
+    store = CapabilityStore(database_url, tmp_path)
+
+    created = store.put_builtin_tool_override(
+        BuiltinToolOverride(tool_name="get_current_time", enabled=False),
+        expected_revision=0,
+    )
+
+    assert created.revision == 1
+    store.close()
+    reopened = CapabilityStore(database_url, tmp_path)
+    assert reopened.get_builtin_tool_override("get_current_time") == created
+    with pytest.raises(RevisionConflictError):
+        reopened.put_builtin_tool_override(
+            BuiltinToolOverride(tool_name="get_current_time", enabled=True),
+            expected_revision=0,
+        )
 
 
 def test_skill_reload_candidate_hash_blocks_toctou_and_does_not_publish(tmp_path) -> None:

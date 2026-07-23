@@ -142,6 +142,55 @@ async def test_dynamic_mcp_definition_tracks_every_state_on_real_model_requests(
     ]
 
 
+@pytest.mark.asyncio
+async def test_runtime_persists_the_exact_provider_tool_payload_for_each_turn() -> None:
+    registry = UnifiedToolRegistry(ToolRegistry([]))
+    registry.refresh_server(_server(), [_mcp_tool()])
+    provider = _RecordingProvider([])
+    runtime = AgentRuntime(
+        registry,
+        ToolPolicy(["external"]),
+        RuntimeConfig(max_model_calls=1),
+    )
+    session_id, first_turn, second_turn = uuid4(), uuid4(), uuid4()
+
+    await runtime.run(
+        provider,
+        "test-model",
+        [Message(role="user", content="first")],
+        session_id,
+        first_turn,
+    )
+    registry.set_tool_enabled(MCP_NAME, False)
+    await runtime.run(
+        provider,
+        "test-model",
+        [Message(role="user", content="second")],
+        session_id,
+        second_turn,
+    )
+
+    snapshots = [
+        event
+        for event in runtime.gate.store.list_audit_events()
+        if event.action == "model.context.snapshot"
+    ]
+    assert [(event.session_id, event.turn_id) for event in snapshots] == [
+        (str(session_id), str(first_turn)),
+        (str(session_id), str(second_turn)),
+    ]
+    assert snapshots[0].payload["callable_tools"] == (
+        {
+            "name": MCP_NAME,
+            "schema_hash": canonical_json_sha256(MCP_INPUT_SCHEMA),
+        },
+    )
+    assert snapshots[1].payload["callable_tools"] == ()
+    assert snapshots[0].payload["provider_tools_hash"] == canonical_json_sha256(
+        provider.requests[0]
+    )
+
+
 def test_tools_api_is_compatible_and_does_not_leak_schema(monkeypatch) -> None:
     registry = UnifiedToolRegistry(ToolRegistry(["get_current_time"]))
     registry.refresh_server(_server(), [_mcp_tool()])

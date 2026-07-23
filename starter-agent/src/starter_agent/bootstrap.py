@@ -61,6 +61,11 @@ def create_application() -> ApplicationService:
         settings.app.database_url,
         settings.project_root,
     )
+    for override in capability_store.list_builtin_tool_overrides():
+        try:
+            tools.set_tool_enabled(override.tool_name, override.enabled)
+        except KeyError:
+            continue
     gate = PreToolCallGate(capability_store, registry=tools)
     executor = UnifiedToolExecutor(capability_store, gate=gate)
     confirmation_service = ConfirmationService(

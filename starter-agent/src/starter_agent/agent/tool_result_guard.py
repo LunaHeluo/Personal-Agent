@@ -41,10 +41,11 @@ _SENSITIVE_CONTAINER_KEY = re.compile(
 _SENSITIVE_ASSIGNMENT = re.compile(
     r"(?P<key>api[_-]?key|authorization|auth[_-]?code|cookie|credential|csrf|"
     r"pass(?:word|wd)?|secret|session|token)"
-    r"(?P<separator>\s*[=:]\s*)(?P<value>Bearer\s+\S+|\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+    r"(?P<separator>\s*[=:]\s*)(?P<value>[^\r\n]+)",
     re.IGNORECASE,
 )
 _BEARER = re.compile(r"\bBearer\s+[^\s,;\"']+", re.IGNORECASE)
+_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 
 
@@ -356,13 +357,12 @@ def _redact_value(value: Any, *, sensitive: bool = False) -> Any:
 
 
 def _redact_text(value: str) -> str:
+    redacted = _URL.sub(lambda match: _sanitize_url(match.group(0)), value)
     redacted = _SENSITIVE_ASSIGNMENT.sub(
         lambda match: f"{match.group('key')}{match.group('separator')}[redacted]",
-        value,
+        redacted,
     )
     redacted = _BEARER.sub("Bearer [redacted]", redacted)
-    if redacted.startswith(("http://", "https://")):
-        redacted = _sanitize_url(redacted)
     return redacted
 
 

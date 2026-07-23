@@ -304,6 +304,12 @@ class Tool(CapabilityModel):
         return self
 
 
+class BuiltinToolOverride(CapabilityModel):
+    tool_name: Identifier
+    enabled: bool
+    revision: int = Field(default=0, ge=0)
+
+
 class Resource(CapabilityModel):
     snapshot_id: Identifier
     server_id: Identifier

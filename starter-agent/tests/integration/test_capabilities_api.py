@@ -10,9 +10,14 @@ from fastapi.testclient import TestClient
 
 from starter_agent.capabilities.confirmations import ConfirmationService
 from starter_agent.capabilities.gate import PreToolCallGate
-from starter_agent.capabilities.models import Server
-from starter_agent.capabilities.models import PolicyRule
+from starter_agent.capabilities.models import (
+    AuditEvent,
+    PolicyRule,
+    Server,
+    canonical_json_sha256,
+)
 from starter_agent.capabilities.registry import ExecutionCapability
+from starter_agent.capabilities.registry import UnifiedToolRegistry
 from starter_agent.capabilities.store import CapabilityStore
 from starter_agent.interfaces.capabilities_api import (
     CapabilityApiServices,
@@ -22,6 +27,7 @@ from starter_agent.interfaces.capabilities_api import (
     get_management_principal,
 )
 from starter_agent.skills.models import SkillDefinition, SkillSnapshot
+from starter_agent.tools.registry import ToolRegistry
 
 
 class _Manager:
@@ -184,8 +190,7 @@ def test_authoritative_tool_skill_trace_context_queries_and_dangerous_barriers()
             f"/v1/capabilities/context-snapshots/{uuid4()}",
             params={"turn_id": "turn-1", "revision": 7},
         )
-        assert context.status_code == 200
-        assert context.json()["revision"] == 7
+        assert context.status_code == 404
 
         tool_proposal = client.post(
             "/v1/capabilities/tools/write_job/enable",
@@ -313,6 +318,42 @@ def test_health_policy_trace_and_context_endpoints_use_authoritative_state() -> 
         created_by="test-admin",
     )
     store.create_policy_rule(rule)
+    session_id = uuid4()
+    store.append_audit_event(
+        AuditEvent(
+            event_id="audit-context-snapshot",
+            actor="runtime",
+            action="model.context.snapshot",
+            target="provider:test:model",
+            decision="allow",
+            reason_code="provider_request_prepared",
+            session_id=str(session_id),
+            turn_id="turn-1",
+            call_id="model-call-1",
+            payload={
+                "model_call": 1,
+                "context_revision": 6,
+                "provider_tools_hash": canonical_json_sha256(
+                    [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "write_job",
+                                "parameters": {"type": "object"},
+                            },
+                        }
+                    ]
+                ),
+                "callable_tools": [
+                    {
+                        "name": "write_job",
+                        "schema_hash": canonical_json_sha256({"type": "object"}),
+                    }
+                ],
+            },
+            created_at=datetime.now(UTC),
+        )
+    )
     services = CapabilityApiServices(
         manager=manager,
         registry=registry,
@@ -339,8 +380,8 @@ def test_health_policy_trace_and_context_endpoints_use_authoritative_state() -> 
             json={"expected_revision": 0},
         )
         context = client.get(
-            f"/v1/capabilities/context-snapshots/{uuid4()}",
-            params={"turn_id": "turn-1", "revision": 7},
+            f"/v1/capabilities/context-snapshots/{session_id}",
+            params={"turn_id": "turn-1", "revision": 6},
         )
         traces = client.get(
             "/v1/capabilities/traces", params={"turn_id": "turn-1"}
@@ -352,6 +393,65 @@ def test_health_policy_trace_and_context_endpoints_use_authoritative_state() -> 
     assert deleted.status_code == 200
     assert store.get_policy_rule(rule.id) is None
     assert context.json()["callable_tools"] == [
-        {"name": "write_job", "schema_hash": "c" * 64}
+        {
+            "name": "write_job",
+            "schema_hash": canonical_json_sha256({"type": "object"}),
+        }
     ]
     assert traces.status_code == 200
+
+
+def test_builtin_enable_override_is_cas_persistent_and_review_is_stable_4xx() -> None:
+    store = CapabilityStore("sqlite:///:memory:", Path("."))
+    registry = UnifiedToolRegistry(ToolRegistry(["get_current_time"]))
+    services = CapabilityApiServices(
+        manager=_Manager(),
+        registry=registry,
+        skill_registry=None,
+        confirmations=ConfirmationService(
+            store, PreToolCallGate(store, registry=registry)
+        ),
+        store=store,
+        application=None,
+    )
+    app = FastAPI()
+    app.include_router(create_capabilities_router())
+    app.dependency_overrides[get_capability_services] = lambda: services
+    app.dependency_overrides[get_management_principal] = lambda: ManagementPrincipal(
+        subject="test-admin", role="admin"
+    )
+
+    with TestClient(app) as client:
+        disabled = client.post(
+            "/v1/capabilities/tools/get_current_time/disable",
+            json={"expected_revision": 0},
+        )
+        stale = client.post(
+            "/v1/capabilities/tools/get_current_time/disable",
+            json={"expected_revision": 0},
+        )
+        review = client.post(
+            "/v1/capabilities/tools/get_current_time/review",
+            json={"expected_revision": 1, "review_state": "approved"},
+        )
+        invalid = client.post(
+            "/v1/capabilities/tools/get_current_time/disable",
+            json={"expected_revision": -1},
+        )
+
+    assert disabled.status_code == 200
+    assert disabled.json()["revision"] == 1
+    assert registry.model_snapshot().provider_tools() == []
+    assert stale.status_code == 409
+    assert review.status_code == 409
+    assert review.json()["detail"]["code"] == "builtin_review_unsupported"
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"]["authoritative_state"]["operation_id"]
+    assert any(
+        event.reason_code == "validation_error"
+        for event in store.list_audit_events()
+    )
+    restarted = UnifiedToolRegistry(ToolRegistry(["get_current_time"]))
+    for override in store.list_builtin_tool_overrides():
+        restarted.set_tool_enabled(override.tool_name, override.enabled)
+    assert restarted.resolve_execution("get_current_time").enabled is False
