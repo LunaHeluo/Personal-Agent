@@ -405,12 +405,7 @@ class AgentRuntime:
                     )
                 tool = self.tools.get(call.name)
                 capability = self.gate.registry.resolve_execution(call.name)
-                tool_ok = False
-                tool_error_code: str | None = None
-                tool_display = ""
-                tool_retryable = False
-                tool_failure_type: str | None = None
-                tool_metadata: dict[str, object] = (
+                trusted_provenance = (
                     {
                         "server_id": capability.server_id,
                         "call_id": call.id,
@@ -418,8 +413,14 @@ class AgentRuntime:
                         "schema_hash": capability.schema_hash,
                     }
                     if capability is not None
-                    else {}
+                    else {"call_id": call.id}
                 )
+                tool_ok = False
+                tool_error_code: str | None = None
+                tool_display = ""
+                tool_retryable = False
+                tool_failure_type: str | None = None
+                tool_metadata: dict[str, object] = dict(trusted_provenance)
                 if tool is None and capability is None:
                     tool_error_code = "unknown_tool"
                     tool_display = "模型请求了未注册的工具"
@@ -470,10 +471,6 @@ class AgentRuntime:
                             "recipient_count",
                             "sent_at",
                             "message_ref",
-                            "server_id",
-                            "call_id",
-                            "snapshot_id",
-                            "schema_hash",
                             "requested_url",
                             "final_url",
                             "source_url",
@@ -484,6 +481,7 @@ class AgentRuntime:
                             for key, value in result.metadata.items()
                             if key in safe_metadata_keys
                         }
+                        tool_metadata.update(trusted_provenance)
                         logger.info(
                             "tool.completed",
                             tool=call.name,
@@ -577,41 +575,48 @@ class AgentRuntime:
                         }
                     )
                     persisted_source_ref = raw_source_ref
+                def safe_optional_text(value: object) -> str | None:
+                    if not isinstance(value, str) or not value:
+                        return None
+                    return redact_tool_result_content(value)
+
                 completed_payload = {
                     "tool_name": call.name,
                     "ok": tool_ok,
-                    "error_code": tool_error_code,
+                    "error_code": safe_optional_text(tool_error_code),
                     "server_id": tool_metadata.get("server_id"),
+                    "call_id": call.id,
                     "snapshot_id": tool_metadata.get("snapshot_id"),
                     "schema_hash": tool_metadata.get("schema_hash"),
                     "raw_source_ref": (
                         persisted_source_ref or guarded.raw_source_ref
                     ),
-                    "requested_url": tool_metadata.get("requested_url"),
-                    "final_url": tool_metadata.get("final_url"),
-                    "source_url": tool_metadata.get(
-                        "source_url", tool_metadata.get("final_url")
+                    "requested_url": safe_optional_text(
+                        tool_metadata.get("requested_url")
+                    ),
+                    "final_url": safe_optional_text(
+                        tool_metadata.get("final_url")
+                    ),
+                    "source_url": safe_optional_text(
+                        tool_metadata.get(
+                            "source_url", tool_metadata.get("final_url")
+                        )
                     ),
                     "content_sha256": guarded.content_sha256,
-                    "is_truncated": guarded.is_truncated,
-                    "truncation_reason": guarded.truncation_reason,
-                    "raw_result_bytes": guarded.raw_result_bytes,
-                    "raw_result_chars": guarded.raw_result_chars,
-                    "raw_result_tokens": guarded.raw_result_tokens,
-                    "kept_result_bytes": guarded.kept_result_bytes,
-                    "kept_result_chars": guarded.kept_result_chars,
-                    "kept_result_tokens": guarded.kept_result_tokens,
-                    "context_result_tokens": guarded.context_result_tokens,
+                    "is_truncated": bool(guarded.is_truncated),
+                    "truncation_reason": safe_optional_text(
+                        guarded.truncation_reason
+                    ),
+                    "raw_result_bytes": int(guarded.raw_result_bytes),
+                    "raw_result_chars": int(guarded.raw_result_chars),
+                    "raw_result_tokens": int(guarded.raw_result_tokens),
+                    "kept_result_bytes": int(guarded.kept_result_bytes),
+                    "kept_result_chars": int(guarded.kept_result_chars),
+                    "kept_result_tokens": int(guarded.kept_result_tokens),
+                    "context_result_tokens": int(
+                        guarded.context_result_tokens
+                    ),
                 }
-                completed_payload = json.loads(
-                    redact_tool_result_content(
-                        json.dumps(
-                            completed_payload,
-                            ensure_ascii=False,
-                            default=str,
-                        )
-                    )
-                )
                 self._append_audit(
                     action="tool.completed",
                     target=f"tool:{call.name}",

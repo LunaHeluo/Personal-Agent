@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from starter_agent.agent.runtime import AgentRuntime
 from starter_agent.capabilities.models import Server, Tool, canonical_json_sha256
 from starter_agent.capabilities.registry import UnifiedToolRegistry
-from starter_agent.domain.models import Message, ModelResponse
+from starter_agent.domain.models import Message, ModelResponse, ToolCall
 from starter_agent.interfaces import api as api_module
 from starter_agent.interfaces.api import create_api
 from starter_agent.providers.base import Provider
@@ -72,6 +72,36 @@ class _RecordingProvider(Provider):
         self.events.append("provider.complete")
         self.requests.append(tools)
         return ModelResponse(content="done", provider=self.name, model=model)
+
+    async def health(self, model: str) -> tuple[bool, str]:
+        return True, model
+
+
+class _BuiltinCallingProvider(Provider):
+    name = "builtin-calling"
+
+    async def complete(
+        self,
+        messages: list[Message],
+        model: str,
+        tools: list[dict[str, Any]],
+        on_delta: Callable[[str], Awaitable[None]] | None = None,
+        tool_choice: str | None = None,
+    ) -> ModelResponse:
+        del tools, on_delta, tool_choice
+        if messages[-1].role == "tool":
+            return ModelResponse(content="done", provider=self.name, model=model)
+        return ModelResponse(
+            provider=self.name,
+            model=model,
+            tool_calls=[
+                ToolCall(
+                    id="call-builtin-real",
+                    name="get_current_time",
+                    arguments={"timezone": "UTC"},
+                )
+            ],
+        )
 
     async def health(self, model: str) -> tuple[bool, str]:
         return True, model
@@ -189,6 +219,46 @@ async def test_runtime_persists_the_exact_provider_tool_payload_for_each_turn() 
     assert snapshots[0].payload["provider_tools_hash"] == canonical_json_sha256(
         provider.requests[0]
     )
+
+
+@pytest.mark.asyncio
+async def test_real_builtin_completed_audit_uses_canonical_capability_provenance() -> None:
+    registry = UnifiedToolRegistry(ToolRegistry(["get_current_time"]))
+    runtime = AgentRuntime(
+        registry,
+        ToolPolicy(["read"]),
+        RuntimeConfig(max_model_calls=2),
+    )
+
+    await runtime.run(
+        _BuiltinCallingProvider(),
+        "test-model",
+        [Message(role="user", content="time")],
+        uuid4(),
+        uuid4(),
+    )
+
+    completed = next(
+        event
+        for event in runtime.gate.store.list_audit_events()
+        if event.action == "tool.completed"
+    )
+    capability = registry.resolve_execution("get_current_time")
+    assert capability is not None
+    assert completed.payload["server_id"] == "builtin"
+    assert completed.payload["snapshot_id"] == capability.snapshot_id
+    assert completed.payload["schema_hash"] == capability.schema_hash
+    assert completed.payload["call_id"] == "call-builtin-real"
+    for field in (
+        "raw_result_bytes",
+        "raw_result_chars",
+        "raw_result_tokens",
+        "kept_result_bytes",
+        "kept_result_chars",
+        "kept_result_tokens",
+        "context_result_tokens",
+    ):
+        assert type(completed.payload[field]) is int
 
 
 def test_tools_api_is_compatible_and_does_not_leak_schema(monkeypatch) -> None:

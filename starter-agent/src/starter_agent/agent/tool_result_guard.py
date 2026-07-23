@@ -375,8 +375,9 @@ def _sanitize_url(value: str) -> str:
         return "[invalid-url]"
     query = urlencode(
         [
-            (key, "[redacted]" if _SENSITIVE_KEY.search(key) else item)
+            (key, item)
             for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+            if not _SENSITIVE_KEY.search(key)
         ]
     )
     return urlunsplit((parsed.scheme, f"{hostname}{port}", parsed.path, query, ""))

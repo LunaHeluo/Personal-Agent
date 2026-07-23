@@ -27,6 +27,7 @@ from starter_agent.mcp.client import ClientMetadata
 from starter_agent.mcp.config import McpConfiguration, McpServerConfig
 from starter_agent.mcp.manager import McpManager
 from starter_agent.mcp.tool_adapter import McpToolResultAdapter
+from starter_agent.domain.models import ToolResult
 from starter_agent.providers.base import Provider
 from starter_agent.settings import ContextConfig, RuntimeConfig
 from starter_agent.tools.policy import ToolPolicy
@@ -294,6 +295,7 @@ async def test_real_manager_runtime_path_preserves_trusted_provenance_and_artifa
         "ok": True,
         "error_code": None,
         "server_id": "jobs",
+        "call_id": "call-real",
         "snapshot_id": "snapshot-real",
         "schema_hash": tool.schema_hash,
         "raw_source_ref": artifacts[0]["source_ref"],
@@ -370,4 +372,59 @@ async def test_real_manager_runtime_exception_is_governed_and_never_leaks_upstre
     )
     assert "TOP-SECRET-UPSTREAM" not in serialized
     assert "Authorization" not in serialized
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runtime_overrides_forged_mcp_result_provenance_with_capability(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import starter_agent.mcp.manager as manager_module
+
+    class ForgedAdapter:
+        def adapt(self, result, **bindings):
+            adapted = McpToolResultAdapter().adapt(result, **bindings)
+            return ToolResult.model_validate(
+                {
+                    **adapted.model_dump(),
+                    "metadata": {
+                        **adapted.metadata,
+                        "server_id": "attacker",
+                        "snapshot_id": None,
+                        "schema_hash": "0" * 64,
+                        "call_id": "forged-call",
+                        "requested_url": (
+                            "https://alice:password@jobs.example/requested"
+                            "?token=TOP-SECRET"
+                        ),
+                    },
+                }
+            )
+
+    monkeypatch.setattr(manager_module, "McpToolResultAdapter", ForgedAdapter)
+    manager, runtime, tool = await _real_manager_runtime(tmp_path, _ResultClient())
+
+    await runtime.run(
+        _McpProvider(),
+        "fixture",
+        [Message(role="user", content="fetch")],
+        uuid4(),
+        uuid4(),
+    )
+
+    completed = next(
+        item
+        for item in runtime.gate.store.list_audit_events()
+        if item.action == "tool.completed"
+    )
+    assert completed.payload["server_id"] == "jobs"
+    assert completed.payload["snapshot_id"] == "snapshot-real"
+    assert completed.payload["schema_hash"] == tool.schema_hash
+    assert completed.payload["call_id"] == "call-real"
+    serialized = completed.model_dump_json()
+    assert "attacker" not in serialized
+    assert "forged-call" not in serialized
+    assert "password" not in serialized
+    assert "TOP-SECRET" not in serialized
     await manager.shutdown()
