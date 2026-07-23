@@ -15,6 +15,7 @@ from starter_agent.capabilities.models import Server, Snapshot
 from starter_agent.capabilities.store import (
     CapabilityStore,
     RecordAlreadyExistsError,
+    RevisionConflictError,
 )
 from starter_agent.mcp.client import (
     ClientMetadata,
@@ -173,6 +174,40 @@ class McpManager:
             server_id: handle.status
             for server_id, handle in self._handles.items()
         }
+
+    def set_enabled(
+        self,
+        server_id: str,
+        enabled: bool,
+        *,
+        expected_revision: int,
+    ) -> Server:
+        handle = self._get_handle(server_id)
+        if self.store is not None:
+            current = self.store.get_server(server_id)
+            if current is None:
+                raise McpManagerError("server_not_found")
+            try:
+                handle.status = self.store.update_server(
+                    server_id,
+                    expected_revision=expected_revision,
+                    enabled=enabled,
+                )
+            except RevisionConflictError as exc:
+                latest = self.store.get_server(server_id)
+                if latest is not None:
+                    handle.status = latest
+                raise McpManagerError("revision_conflict") from exc
+            return handle.status
+        if handle.status.revision != expected_revision:
+            raise McpManagerError("revision_conflict")
+        handle.status = handle.status.model_copy(
+            update={
+                "enabled": enabled,
+                "revision": handle.status.revision + 1,
+            }
+        )
+        return handle.status
 
     async def call_tool(
         self,

@@ -6,6 +6,7 @@ from pathlib import Path
 from threading import Lock
 
 from starter_agent.capabilities.models import SkillRecord
+from starter_agent.capabilities.store import RevisionConflictError
 from starter_agent.skills.models import (
     SkillDefinition,
     SkillDependency,
@@ -69,7 +70,13 @@ class SkillRegistry:
             )
             return self._snapshot
 
-    def set_enabled(self, name: str, enabled: bool) -> SkillSnapshot:
+    def set_enabled(
+        self,
+        name: str,
+        enabled: bool,
+        *,
+        expected_revision: int | None = None,
+    ) -> SkillSnapshot:
         with self._write_lock:
             current = self._snapshot
             skill = next(
@@ -82,9 +89,20 @@ class SkillRegistry:
                 record = self.store.get_skill(name)
                 if record is None:
                     raise KeyError(name)
+                if (
+                    expected_revision is not None
+                    and record.revision != expected_revision
+                ):
+                    raise RevisionConflictError(
+                        f"Skill revision conflict: {name} expected {expected_revision}"
+                    )
                 self.store.update_skill(
                     name,
-                    expected_revision=record.revision,
+                    expected_revision=(
+                        record.revision
+                        if expected_revision is None
+                        else expected_revision
+                    ),
                     enabled=enabled,
                     load_state=(
                         "disabled"

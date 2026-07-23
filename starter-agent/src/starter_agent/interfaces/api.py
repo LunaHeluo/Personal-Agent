@@ -40,6 +40,7 @@ from starter_agent.tools.base import ToolContext
 from starter_agent.capabilities.gate import ToolExecutionDenied
 from starter_agent.capabilities.models import Confirmation, canonical_json_sha256
 from starter_agent.capabilities.store import RecordAlreadyExistsError
+from starter_agent.interfaces.capabilities_api import create_capabilities_router
 
 
 class ChatRequest(BaseModel):
@@ -318,8 +319,9 @@ def create_api() -> FastAPI:
             "http://localhost:8001",
         ],
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", "If-Match", "Idempotency-Key", "Authorization"],
     )
+    api.include_router(create_capabilities_router())
 
     @api.get("/health")
     async def health() -> dict[str, str]:
