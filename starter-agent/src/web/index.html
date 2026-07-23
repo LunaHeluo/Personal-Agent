@@ -65,7 +65,7 @@
 
     .primary-nav {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 8px;
       padding: 10px 12px;
       border-bottom: 1px solid var(--line);
@@ -122,6 +122,209 @@
       margin: 8px 0;
       border-radius: 8px;
       background: var(--soft);
+    }
+
+    .capability-view {
+      min-width: 0;
+      height: 100vh;
+      overflow: auto;
+      padding: 22px;
+      background: var(--bg);
+    }
+
+    .capability-shell {
+      max-width: 1240px;
+      margin: 0 auto;
+    }
+
+    .capability-header,
+    .capability-toolbar,
+    .capability-actions,
+    .capability-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .capability-header {
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+
+    .capability-header h1,
+    .capability-panel h2,
+    .capability-panel h3 {
+      margin-top: 0;
+    }
+
+    .capability-tabs {
+      margin-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .capability-tabs button {
+      border-bottom-left-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+
+    .capability-tabs button[aria-selected="true"] {
+      border-color: var(--accent);
+      background: var(--soft);
+      color: var(--accent-dark);
+      font-weight: 650;
+    }
+
+    .capability-refresh-time {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .capability-error,
+    .capability-stale,
+    .capability-confirmation {
+      margin-bottom: 12px;
+      padding: 11px 13px;
+      border: 1px solid #f2b8b5;
+      border-radius: 9px;
+      color: var(--warn);
+      background: #fff4f2;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .capability-stale {
+      border-color: #d8b45b;
+      color: #7a5600;
+      background: #fff8df;
+    }
+
+    .capability-confirmation {
+      border-color: #d8b45b;
+      color: var(--text);
+      background: #fffaf0;
+    }
+
+    .capability-layout {
+      display: grid;
+      grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.7fr);
+      gap: 14px;
+      align-items: start;
+    }
+
+    .capability-panel {
+      min-width: 0;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+
+    .capability-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .capability-list-item {
+      width: 100%;
+      display: grid;
+      gap: 4px;
+      padding: 11px;
+      text-align: left;
+    }
+
+    .capability-list-item[aria-current="true"] {
+      border-color: var(--accent);
+      background: var(--soft);
+    }
+
+    .capability-item-title {
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .capability-meta,
+    .capability-note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .capability-status-grid {
+      display: grid;
+      grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
+      gap: 7px 12px;
+      margin: 12px 0;
+    }
+
+    .capability-status-grid dt {
+      color: var(--muted);
+      font-weight: 650;
+    }
+
+    .capability-status-grid dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .capability-subsection {
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+
+    .capability-code {
+      max-height: 360px;
+      overflow: auto;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f6f8fa;
+      color: #24292f;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+
+    .capability-empty {
+      padding: 28px 12px;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .capability-skeleton {
+      display: grid;
+      gap: 9px;
+    }
+
+    .capability-skeleton span {
+      height: 42px;
+      border-radius: 8px;
+      background: linear-gradient(90deg, #edf0f3 25%, #f8f9fa 50%, #edf0f3 75%);
+      background-size: 200% 100%;
+      animation: capability-shimmer 1.2s infinite linear;
+    }
+
+    @keyframes capability-shimmer {
+      to { background-position: -200% 0; }
+    }
+
+    .capability-badge {
+      display: inline-flex;
+      width: fit-content;
+      padding: 2px 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: #fff;
+      font-size: 12px;
+    }
+
+    .capability-danger {
+      border-color: #e6aaa5;
+      color: var(--warn);
+      background: #fff7f6;
     }
 
     .app {
@@ -923,6 +1126,19 @@
       .composer {
         grid-template-columns: 1fr;
       }
+
+      .capability-view {
+        height: 100%;
+        padding: 12px;
+      }
+
+      .capability-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .capability-status-grid {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
@@ -945,6 +1161,7 @@
       <nav class="primary-nav" aria-label="主导航">
         <button id="chatNavButton" type="button" aria-current="page">对话</button>
         <button id="knowledgeNavButton" type="button">知识库</button>
+        <button id="capabilitiesNavButton" type="button">能力管理</button>
       </nav>
       <div class="sidebar-clear-row">
         <button id="clearAllSessionsButton" class="clear-all-sessions" type="button">
@@ -1033,6 +1250,64 @@
           <h2>Chunk 预览</h2>
           <div id="knowledgeChunkPreview"></div>
         </section>
+      </div>
+    </section>
+
+    <section id="capabilitiesView" class="capability-view" hidden>
+      <div class="capability-shell">
+        <header class="capability-header">
+          <div>
+            <h1>能力管理</h1>
+            <div id="capabilityRefreshTime" class="capability-refresh-time">
+              尚未刷新
+            </div>
+          </div>
+          <div class="capability-toolbar">
+            <button id="capabilityRefreshButton" type="button">刷新当前页</button>
+          </div>
+        </header>
+        <nav class="capability-tabs" role="tablist" aria-label="能力类型">
+          <button
+            id="capabilityServersTab"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="capabilityList"
+          >MCP Servers</button>
+          <button
+            id="capabilitySkillsTab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="capabilityDetail"
+          >Skills</button>
+        </nav>
+        <div
+          id="capabilityGlobalError"
+          class="capability-error"
+          role="alert"
+          aria-live="assertive"
+          hidden
+        ></div>
+        <div
+          id="capabilityConfirmation"
+          class="capability-confirmation"
+          aria-live="polite"
+          hidden
+        ></div>
+        <div class="capability-layout">
+          <aside
+            id="capabilityList"
+            class="capability-panel capability-list"
+            aria-label="能力列表"
+          ></aside>
+          <section
+            id="capabilityDetail"
+            class="capability-panel"
+            aria-label="能力详情"
+            tabindex="-1"
+          ></section>
+        </div>
       </div>
     </section>
   </main>
@@ -1129,6 +1404,24 @@
       pendingEmailDrafts: []
     };
 
+    const capabilityState = {
+      route: "mcp-servers",
+      servers: [],
+      serverDetails: new Map(),
+      tools: [],
+      toolDetails: new Map(),
+      skills: [],
+      skillDetails: new Map(),
+      skillRegistryRevision: 0,
+      skillsStale: false,
+      skillsLastError: null,
+      selectedServerId: null,
+      selectedToolName: null,
+      selectedSkillName: null,
+      pendingOperations: new Set(),
+      lastRefreshAt: null
+    };
+
     const apiBaseInput = document.querySelector("#apiBase");
     const providerSelect = document.querySelector("#providerSelect");
     const modelSelect = document.querySelector("#modelSelect");
@@ -1159,8 +1452,18 @@
     const memoryList = document.querySelector("#memoryList");
     const chatView = document.querySelector("#chatView");
     const knowledgeView = document.querySelector("#knowledgeView");
+    const capabilitiesView = document.querySelector("#capabilitiesView");
     const chatNavButton = document.querySelector("#chatNavButton");
     const knowledgeNavButton = document.querySelector("#knowledgeNavButton");
+    const capabilitiesNavButton = document.querySelector("#capabilitiesNavButton");
+    const capabilityServersTab = document.querySelector("#capabilityServersTab");
+    const capabilitySkillsTab = document.querySelector("#capabilitySkillsTab");
+    const capabilityRefreshButton = document.querySelector("#capabilityRefreshButton");
+    const capabilityRefreshTime = document.querySelector("#capabilityRefreshTime");
+    const capabilityGlobalError = document.querySelector("#capabilityGlobalError");
+    const capabilityConfirmation = document.querySelector("#capabilityConfirmation");
+    const capabilityList = document.querySelector("#capabilityList");
+    const capabilityDetail = document.querySelector("#capabilityDetail");
     const knowledgeUploadForm = document.querySelector("#knowledgeUploadForm");
     const knowledgeFile = document.querySelector("#knowledgeFile");
     const knowledgeDocumentType = document.querySelector("#knowledgeDocumentType");
@@ -2327,7 +2630,1006 @@
       await loadProviders();
       await loadTools();
       await loadSessions();
+      if (!capabilitiesView.hidden) await refreshCapabilityRoute();
     });
+
+    function capabilityElement(tagName, className = "", text = null) {
+      const element = document.createElement(tagName);
+      if (className) element.className = className;
+      if (text !== null && text !== undefined) element.textContent = String(text);
+      return element;
+    }
+
+    function capabilityButton(label, onClick, options = {}) {
+      const button = capabilityElement("button", options.className || "", label);
+      button.type = "button";
+      button.disabled = Boolean(options.disabled);
+      if (options.ariaLabel) button.setAttribute("aria-label", options.ariaLabel);
+      button.addEventListener("click", onClick);
+      return button;
+    }
+
+    function appendCapabilityField(container, label, value) {
+      const term = capabilityElement("dt", "", label);
+      const description = capabilityElement(
+        "dd",
+        "",
+        value === null || value === undefined || value === "" ? "—" : value
+      );
+      container.append(term, description);
+    }
+
+    function renderCapabilityError(error) {
+      const message = error?.message || "能力管理请求失败";
+      capabilityGlobalError.textContent = message;
+      capabilityGlobalError.hidden = false;
+    }
+
+    function clearCapabilityError() {
+      capabilityGlobalError.textContent = "";
+      capabilityGlobalError.hidden = true;
+    }
+
+    function updateCapabilityRefreshTime() {
+      capabilityState.lastRefreshAt = new Date();
+      capabilityRefreshTime.textContent =
+        `最后刷新：${capabilityState.lastRefreshAt.toLocaleString()}`;
+    }
+
+    function renderCapabilitySkeleton(target) {
+      target.replaceChildren();
+      const skeleton = capabilityElement("div", "capability-skeleton");
+      skeleton.setAttribute("aria-label", "正在加载");
+      for (let index = 0; index < 4; index += 1) {
+        skeleton.appendChild(capabilityElement("span"));
+      }
+      target.appendChild(skeleton);
+    }
+
+    function renderCapabilityEmpty(target, message) {
+      target.replaceChildren(
+        capabilityElement("div", "capability-empty", message)
+      );
+    }
+
+    function renderCapabilityStale(container, message) {
+      container.appendChild(
+        capabilityElement(
+          "div",
+          "capability-stale",
+          message || "当前显示的是上次成功加载的权威状态。"
+        )
+      );
+    }
+
+    async function capabilityRequest(path, options = {}) {
+      const response = await fetch(`${apiBase()}${path}`, options);
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch (_error) {
+        payload = null;
+      }
+      if (!response.ok) {
+        const detail = payload?.detail;
+        const message = detail?.message || payload?.message ||
+          `能力管理请求失败（HTTP ${response.status}）`;
+        const error = new Error(message);
+        error.code = detail?.code || `http_${response.status}`;
+        error.authoritativeState = detail?.authoritative_state || null;
+        throw error;
+      }
+      return payload || {};
+    }
+
+    async function capabilityMutation(path, revision, extra = {}, method = "POST") {
+      return capabilityRequest(path, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+          "If-Match": String(revision)
+        },
+        body: JSON.stringify({ expected_revision: revision, ...extra })
+      });
+    }
+
+    function capabilityServerActionPath(serverId, action) {
+      const encoded = encodeURIComponent(serverId);
+      const paths = {
+        connect: `/v1/capabilities/servers/${encoded}/connect`,
+        disconnect: `/v1/capabilities/servers/${encoded}/disconnect`,
+        enable: `/v1/capabilities/servers/${encoded}/enable`,
+        disable: `/v1/capabilities/servers/${encoded}/disable`,
+        "health-check": `/v1/capabilities/servers/${encoded}/health-check`
+      };
+      return paths[action];
+    }
+
+    function capabilityToolActionPath(toolName, action) {
+      const encoded = encodeURIComponent(toolName);
+      const paths = {
+        enable: `/v1/capabilities/tools/${encoded}/enable`,
+        disable: `/v1/capabilities/tools/${encoded}/disable`
+      };
+      return paths[action];
+    }
+
+    function capabilitySkillActionPath(skillName, action) {
+      const encoded = encodeURIComponent(skillName);
+      const paths = {
+        enable: `/v1/capabilities/skills/${encoded}/enable`,
+        disable: `/v1/capabilities/skills/${encoded}/disable`
+      };
+      return paths[action];
+    }
+
+    function isCapabilityOperationPending(key) {
+      return capabilityState.pendingOperations.has(key);
+    }
+
+    async function withCapabilityOperation(key, operation) {
+      if (isCapabilityOperationPending(key)) return;
+      capabilityState.pendingOperations.add(key);
+      renderCurrentCapabilityState();
+      try {
+        return await operation();
+      } finally {
+        capabilityState.pendingOperations.delete(key);
+        renderCurrentCapabilityState();
+      }
+    }
+
+    function renderCurrentCapabilityState() {
+      if (capabilityState.route === "skills") {
+        renderCapabilitySkills();
+        const detail = capabilityState.skillDetails.get(
+          capabilityState.selectedSkillName
+        );
+        if (detail) renderCapabilitySkillDetail(detail);
+      } else {
+        renderCapabilityServers();
+        const detail = capabilityState.serverDetails.get(
+          capabilityState.selectedServerId
+        );
+        if (detail) renderCapabilityServerDetail(detail);
+      }
+    }
+
+    function renderCapabilityServers() {
+      capabilityList.replaceChildren();
+      if (!capabilityState.servers.length) {
+        renderCapabilityEmpty(capabilityList, "暂无 MCP Server");
+        return;
+      }
+      for (const server of capabilityState.servers) {
+        const selected = server.id === capabilityState.selectedServerId;
+        const item = capabilityButton(
+          server.name || server.id,
+          async () => {
+            capabilityState.selectedServerId = server.id;
+            capabilityState.selectedToolName = null;
+            renderCapabilityServers();
+            await loadCapabilityServer(server.id, true);
+          },
+          {
+            className: "capability-list-item",
+            ariaLabel: `查看 MCP Server ${server.name || server.id}`
+          }
+        );
+        item.setAttribute("aria-current", selected ? "true" : "false");
+        item.appendChild(
+          capabilityElement(
+            "span",
+            "capability-meta",
+            `${server.connection_state} · ${server.health_state} · revision ${server.revision}`
+          )
+        );
+        const badge = capabilityElement(
+          "span",
+          "capability-badge",
+          server.enabled ? "已启用" : "已停用"
+        );
+        item.appendChild(badge);
+        capabilityList.appendChild(item);
+      }
+    }
+
+    function renderCapabilityServerDetail(payload) {
+      const server = payload.server;
+      const snapshot = payload.snapshot;
+      const tools = payload.tools || [];
+      capabilityDetail.replaceChildren();
+      capabilityDetail.appendChild(
+        capabilityElement("h2", "", server.name || server.id)
+      );
+      if (snapshot?.stale || snapshot?.error) {
+        renderCapabilityStale(
+          capabilityDetail,
+          snapshot.error || "此 Server 的能力快照已过期。"
+        );
+      }
+
+      const pendingPrefix = `server:${server.id}:`;
+      const actions = capabilityElement("div", "capability-actions");
+      const connected = server.connection_state === "ready";
+      actions.append(
+        capabilityButton(
+          connected ? "Disconnect" : "Connect",
+          () => mutateCapabilityServer(
+            server.id,
+            connected ? "disconnect" : "connect"
+          ),
+          { disabled: [...capabilityState.pendingOperations].some(
+            key => key.startsWith(pendingPrefix)
+          ) }
+        ),
+        capabilityButton(
+          server.enabled ? "Disable" : "Enable",
+          () => mutateCapabilityServer(
+            server.id,
+            server.enabled ? "disable" : "enable"
+          ),
+          { disabled: [...capabilityState.pendingOperations].some(
+            key => key.startsWith(pendingPrefix)
+          ) }
+        ),
+        capabilityButton(
+          "Health check",
+          () => mutateCapabilityServer(server.id, "health-check"),
+          { disabled: [...capabilityState.pendingOperations].some(
+            key => key.startsWith(pendingPrefix)
+          ) }
+        ),
+        capabilityButton(
+          "Refresh",
+          () => refreshCapabilityServer(server.id),
+          { disabled: [...capabilityState.pendingOperations].some(
+            key => key.startsWith(pendingPrefix)
+          ) }
+        )
+      );
+      capabilityDetail.appendChild(actions);
+
+      const statusGrid = capabilityElement("dl", "capability-status-grid");
+      appendCapabilityField(statusGrid, "Connection", server.connection_state);
+      appendCapabilityField(statusGrid, "Health", server.health_state);
+      appendCapabilityField(statusGrid, "Operation", server.operation_state);
+      appendCapabilityField(statusGrid, "Revision", server.revision);
+      appendCapabilityField(statusGrid, "Transport", server.transport);
+      appendCapabilityField(statusGrid, "Runtime", [
+        server.runtime_name,
+        server.runtime_version
+      ].filter(Boolean).join(" "));
+      appendCapabilityField(statusGrid, "Last checked", server.last_checked_at);
+      appendCapabilityField(
+        statusGrid,
+        "Last error",
+        server.last_error || server.error_code
+      );
+      capabilityDetail.appendChild(statusGrid);
+
+      const toolsSection = capabilityElement(
+        "section",
+        "capability-subsection"
+      );
+      toolsSection.appendChild(capabilityElement("h3", "", `Tools (${tools.length})`));
+      if (!tools.length) {
+        toolsSection.appendChild(
+          capabilityElement("p", "capability-note", "此快照没有可见 Tool。")
+        );
+      }
+      for (const tool of tools) {
+        const toolButton = capabilityButton(
+          tool.name,
+          async () => {
+            capabilityState.selectedToolName = tool.name;
+            await loadCapabilityTool(tool.name, true);
+          },
+          { className: "capability-list-item" }
+        );
+        toolButton.appendChild(
+          capabilityElement(
+            "span",
+            "capability-meta",
+            `${tool.review || "unreviewed"} · ${tool.enabled ? "enabled" : "disabled"}`
+          )
+        );
+        toolsSection.appendChild(toolButton);
+      }
+      capabilityDetail.appendChild(toolsSection);
+
+      const resources = capabilityElement("section", "capability-subsection");
+      resources.append(
+        capabilityElement(
+          "h3",
+          "",
+          `Resources (${snapshot?.resource_count || 0})`
+        ),
+        capabilityElement(
+          "p",
+          "capability-note",
+          "Task11 API 当前仅提供 Resource 数量，不提供资源明细。"
+        )
+      );
+      capabilityDetail.appendChild(resources);
+
+      const prompts = capabilityElement("section", "capability-subsection");
+      prompts.append(
+        capabilityElement(
+          "h3",
+          "",
+          `Prompts (${snapshot?.prompt_count || 0})`
+        ),
+        capabilityElement(
+          "p",
+          "capability-note",
+          "Task11 API 当前仅提供 Prompt 数量，不提供提示词明细。"
+        )
+      );
+      capabilityDetail.appendChild(prompts);
+
+      const selectedTool = capabilityState.toolDetails.get(
+        capabilityState.selectedToolName
+      );
+      if (selectedTool?.tool?.server_id === server.id) {
+        capabilityDetail.appendChild(renderCapabilityToolDetail(selectedTool, true));
+      }
+    }
+
+    function renderCapabilityToolDetail(payload, returnNode = false) {
+      const tool = payload.tool;
+      const root = capabilityElement("section", "capability-subsection");
+      root.appendChild(capabilityElement("h3", "", `Tool · ${tool.name}`));
+      const operationKey = `tool:${tool.name}`;
+      const actions = capabilityElement("div", "capability-actions");
+      actions.append(
+        capabilityButton(
+          tool.enabled ? "Disable Tool" : "Enable Tool",
+          () => mutateCapabilityTool(
+            tool.name,
+            tool.enabled ? "disable" : "enable"
+          ),
+          { disabled: isCapabilityOperationPending(operationKey) }
+        ),
+        capabilityButton(
+          "Approve review",
+          () => reviewCapabilityTool(tool.name, "approved"),
+          { disabled: isCapabilityOperationPending(operationKey) }
+        ),
+        capabilityButton(
+          "Require review",
+          () => reviewCapabilityTool(tool.name, "review_required"),
+          { disabled: isCapabilityOperationPending(operationKey) }
+        )
+      );
+      root.appendChild(actions);
+
+      const fields = capabilityElement("dl", "capability-status-grid");
+      appendCapabilityField(fields, "Risk", tool.risk_level);
+      appendCapabilityField(fields, "Review", tool.review_state);
+      appendCapabilityField(fields, "Revision", tool.revision);
+      appendCapabilityField(fields, "Schema hash", tool.schema_hash);
+      appendCapabilityField(
+        fields,
+        "Context exposure",
+        tool.enabled && tool.connected && tool.review_state === "approved"
+          ? "当前可进入模型工具上下文"
+          : "当前不会进入模型工具上下文"
+      );
+      root.appendChild(fields);
+
+      root.appendChild(capabilityElement("h3", "", "Policy scope"));
+      if (!(payload.policies || []).length) {
+        root.appendChild(
+          capabilityElement("p", "capability-note", "没有持久化 Policy rule。")
+        );
+      }
+      for (const policy of payload.policies || []) {
+        const policyBlock = capabilityElement("div", "capability-code");
+        policyBlock.textContent = JSON.stringify({
+          id: policy.id,
+          effect: policy.effect,
+          schemes: policy.schemes,
+          domains: policy.domains,
+          actions: policy.actions,
+          data_classes: policy.data_classes,
+          roles: policy.roles,
+          enabled: policy.enabled,
+          revision: policy.revision
+        }, null, 2);
+        root.appendChild(policyBlock);
+      }
+
+      root.appendChild(capabilityElement("h3", "", "Tool Schema"));
+      const schema = capabilityElement("pre", "capability-code");
+      schema.textContent = JSON.stringify(payload.schema?.schema || tool.schema || {}, null, 2);
+      root.appendChild(schema);
+      if (returnNode) return root;
+      capabilityDetail.replaceChildren(root);
+      return root;
+    }
+
+    function renderCapabilitySkills() {
+      capabilityList.replaceChildren();
+      if (capabilityState.skillsStale) {
+        renderCapabilityStale(
+          capabilityList,
+          capabilityState.skillsLastError ||
+            "Skill registry 刷新失败，保留上次成功定义。"
+        );
+      }
+      if (!capabilityState.skills.length) {
+        capabilityList.appendChild(
+          capabilityElement("div", "capability-empty", "暂无 Skill")
+        );
+        return;
+      }
+      for (const skill of capabilityState.skills) {
+        const selected = skill.name === capabilityState.selectedSkillName;
+        const item = capabilityButton(
+          skill.name,
+          async () => {
+            capabilityState.selectedSkillName = skill.name;
+            renderCapabilitySkills();
+            await loadCapabilitySkill(skill.name, true);
+          },
+          {
+            className: "capability-list-item",
+            ariaLabel: `查看 Skill ${skill.name}`
+          }
+        );
+        item.setAttribute("aria-current", selected ? "true" : "false");
+        item.append(
+          capabilityElement("span", "capability-meta", skill.description),
+          capabilityElement(
+            "span",
+            "capability-badge",
+            skill.enabled ? "已启用" : "已停用"
+          )
+        );
+        capabilityList.appendChild(item);
+      }
+    }
+
+    function appendCapabilityStringList(container, title, values, fallback) {
+      const section = capabilityElement("section", "capability-subsection");
+      section.appendChild(capabilityElement("h3", "", title));
+      if (!Array.isArray(values) || !values.length) {
+        section.appendChild(capabilityElement("p", "capability-note", fallback));
+      } else {
+        const list = capabilityElement("ul");
+        for (const value of values) {
+          list.appendChild(capabilityElement("li", "", value));
+        }
+        section.appendChild(list);
+      }
+      container.appendChild(section);
+    }
+
+    function renderCapabilityRawDefinition(container, raw, rawError) {
+      const section = capabilityElement("section", "capability-subsection");
+      section.appendChild(capabilityElement("h3", "", "Raw definition"));
+      if (raw?.definition) {
+        const definition = capabilityElement("pre", "capability-code");
+        definition.textContent = raw.definition;
+        section.appendChild(definition);
+      } else {
+        section.appendChild(
+          capabilityElement(
+            "p",
+            "capability-note",
+            rawError || "Raw definition 需要管理员权限。"
+          )
+        );
+      }
+      container.appendChild(section);
+    }
+
+    function renderCapabilitySkillDetail(payload) {
+      const skill = payload.skill;
+      const record = payload.record;
+      const health = payload.health || {};
+      capabilityDetail.replaceChildren();
+      capabilityDetail.appendChild(capabilityElement("h2", "", skill.name));
+      if (
+        capabilityState.skillsStale ||
+        record?.load_state === "stale" ||
+        health.last_error
+      ) {
+        renderCapabilityStale(
+          capabilityDetail,
+          health.last_error || capabilityState.skillsLastError ||
+            "Skill 定义已过期，当前保留上次成功加载的定义。"
+        );
+      }
+
+      const revision = record?.revision ?? capabilityState.skillRegistryRevision;
+      const operationKey = `skill:${skill.name}`;
+      const actions = capabilityElement("div", "capability-actions");
+      actions.append(
+        capabilityButton(
+          skill.enabled ? "Disable Skill" : "Enable Skill",
+          () => mutateCapabilitySkill(
+            skill.name,
+            skill.enabled ? "disable" : "enable",
+            revision
+          ),
+          { disabled: isCapabilityOperationPending(operationKey) }
+        ),
+        capabilityButton(
+          "Reload Skill",
+          () => reloadCapabilitySkill(skill.name),
+          {
+            className: "capability-danger",
+            disabled: isCapabilityOperationPending(operationKey)
+          }
+        )
+      );
+      capabilityDetail.appendChild(actions);
+
+      const fields = capabilityElement("dl", "capability-status-grid");
+      appendCapabilityField(fields, "Description", skill.description);
+      appendCapabilityField(fields, "Version", skill.version);
+      appendCapabilityField(fields, "Source", skill.source);
+      appendCapabilityField(fields, "Dependency state", skill.dependency_state);
+      appendCapabilityField(fields, "Load state", record?.load_state);
+      appendCapabilityField(fields, "Revision", revision);
+      appendCapabilityField(fields, "Snapshot hash", skill.snapshot_hash);
+      appendCapabilityField(fields, "Last error", health.last_error);
+      capabilityDetail.appendChild(fields);
+
+      appendCapabilityStringList(
+        capabilityDetail,
+        "Dependencies",
+        (skill.dependencies || []).map(
+          dependency => `${dependency.kind}:${dependency.name}` +
+            (dependency.required ? "（必需）" : "（可选）")
+        ),
+        "没有声明依赖。"
+      );
+      appendCapabilityStringList(
+        capabilityDetail,
+        "Trigger examples · trigger_examples",
+        skill.trigger_examples,
+        "完整示例仅在管理员 Raw definition 中提供。"
+      );
+      appendCapabilityStringList(
+        capabilityDetail,
+        "Negative examples · negative_examples",
+        skill.negative_examples,
+        "完整反例仅在管理员 Raw definition 中提供。"
+      );
+      appendCapabilityStringList(
+        capabilityDetail,
+        "Validation · validation",
+        skill.validation,
+        "验证规则仅在管理员 Raw definition 中提供。"
+      );
+      appendCapabilityStringList(
+        capabilityDetail,
+        "Failure policy · failure_policy",
+        skill.failure_policy,
+        "失败策略仅在管理员 Raw definition 中提供。"
+      );
+      renderCapabilityRawDefinition(capabilityDetail, payload.raw, payload.rawError);
+    }
+
+    async function loadCapabilityServers() {
+      if (!capabilityState.servers.length) {
+        renderCapabilitySkeleton(capabilityList);
+        renderCapabilitySkeleton(capabilityDetail);
+      }
+      clearCapabilityError();
+      try {
+        const payload = await capabilityRequest("/v1/capabilities/servers");
+        capabilityState.servers = payload.servers || [];
+        if (!capabilityState.servers.some(
+          server => server.id === capabilityState.selectedServerId
+        )) {
+          capabilityState.selectedServerId = capabilityState.servers[0]?.id || null;
+          capabilityState.selectedToolName = null;
+        }
+        renderCapabilityServers();
+        if (capabilityState.selectedServerId) {
+          await loadCapabilityServer(capabilityState.selectedServerId);
+        } else {
+          renderCapabilityEmpty(capabilityDetail, "选择一个 MCP Server 查看详情");
+        }
+      } catch (error) {
+        renderCapabilityError(error);
+        renderCapabilityServers();
+        if (capabilityState.servers.length) {
+          renderCapabilityStale(capabilityList, error.message);
+        }
+      } finally {
+        updateCapabilityRefreshTime();
+      }
+    }
+
+    async function loadCapabilityServer(serverId, focusDetail = false) {
+      try {
+        const [payload, catalog] = await Promise.all([
+          capabilityRequest(
+            `/v1/capabilities/servers/${encodeURIComponent(serverId)}`
+          ),
+          capabilityRequest("/v1/capabilities/tools")
+        ]);
+        capabilityState.tools = catalog.capabilities || [];
+        payload.tools = capabilityState.tools.filter(
+          tool => tool.server === serverId
+        );
+        capabilityState.serverDetails.set(serverId, payload);
+        const serverIndex = capabilityState.servers.findIndex(
+          server => server.id === serverId
+        );
+        if (serverIndex >= 0) {
+          capabilityState.servers.splice(serverIndex, 1, payload.server);
+        }
+        renderCapabilityServers();
+        if (capabilityState.selectedServerId === serverId) {
+          renderCapabilityServerDetail(payload);
+          if (focusDetail) capabilityDetail.focus();
+        }
+      } catch (error) {
+        renderCapabilityError(error);
+        const cached = capabilityState.serverDetails.get(serverId);
+        if (cached) {
+          renderCapabilityServerDetail(cached);
+          renderCapabilityStale(capabilityDetail, error.message);
+        }
+      } finally {
+        updateCapabilityRefreshTime();
+      }
+    }
+
+    async function loadCapabilityTool(toolName, focusDetail = false) {
+      try {
+        const [detail, schema, policies] = await Promise.all([
+          capabilityRequest(
+            `/v1/capabilities/tools/${encodeURIComponent(toolName)}`
+          ),
+          capabilityRequest(
+            `/v1/capabilities/tools/${encodeURIComponent(toolName)}/schema`
+          ),
+          capabilityRequest(
+            `/v1/capabilities/tools/${encodeURIComponent(toolName)}/policies`
+          )
+        ]);
+        const payload = {
+          tool: detail.tool,
+          schema,
+          policies: policies.policies || []
+        };
+        capabilityState.toolDetails.set(toolName, payload);
+        const serverPayload = capabilityState.serverDetails.get(
+          detail.tool.server_id
+        );
+        if (serverPayload && capabilityState.selectedServerId === detail.tool.server_id) {
+          renderCapabilityServerDetail(serverPayload);
+        } else {
+          renderCapabilityToolDetail(payload);
+        }
+        if (focusDetail) capabilityDetail.focus();
+      } catch (error) {
+        renderCapabilityError(error);
+        const cached = capabilityState.toolDetails.get(toolName);
+        if (cached) renderCapabilityToolDetail(cached);
+      } finally {
+        updateCapabilityRefreshTime();
+      }
+    }
+
+    async function loadCapabilitySkills() {
+      if (!capabilityState.skills.length) {
+        renderCapabilitySkeleton(capabilityList);
+        renderCapabilitySkeleton(capabilityDetail);
+      }
+      clearCapabilityError();
+      try {
+        const payload = await capabilityRequest("/v1/capabilities/skills");
+        capabilityState.skillRegistryRevision = payload.revision || 0;
+        capabilityState.skills = payload.skills || [];
+        capabilityState.skillsStale = Boolean(payload.stale);
+        capabilityState.skillsLastError = payload.last_error || null;
+        if (!capabilityState.skills.some(
+          skill => skill.name === capabilityState.selectedSkillName
+        )) {
+          capabilityState.selectedSkillName = capabilityState.skills[0]?.name || null;
+        }
+        renderCapabilitySkills();
+        if (capabilityState.selectedSkillName) {
+          await loadCapabilitySkill(capabilityState.selectedSkillName);
+        } else {
+          renderCapabilityEmpty(capabilityDetail, "选择一个 Skill 查看详情");
+        }
+      } catch (error) {
+        capabilityState.skillsStale = true;
+        capabilityState.skillsLastError = error.message;
+        renderCapabilityError(error);
+        renderCapabilitySkills();
+      } finally {
+        updateCapabilityRefreshTime();
+      }
+    }
+
+    async function loadCapabilitySkill(skillName, focusDetail = false) {
+      try {
+        const [detail, health] = await Promise.all([
+          capabilityRequest(
+            `/v1/capabilities/skills/${encodeURIComponent(skillName)}`
+          ),
+          capabilityRequest(
+            `/v1/capabilities/skills/${encodeURIComponent(skillName)}/health`
+          )
+        ]);
+        let raw = null;
+        let rawError = null;
+        try {
+          raw = await capabilityRequest(
+            `/v1/capabilities/skills/${encodeURIComponent(skillName)}/raw`
+          );
+        } catch (error) {
+          rawError = error.message;
+        }
+        const payload = {
+          skill: detail.skill,
+          record: detail.record,
+          health,
+          raw,
+          rawError
+        };
+        capabilityState.skillDetails.set(skillName, payload);
+        if (capabilityState.selectedSkillName === skillName) {
+          renderCapabilitySkillDetail(payload);
+          if (focusDetail) capabilityDetail.focus();
+        }
+      } catch (error) {
+        renderCapabilityError(error);
+        const cached = capabilityState.skillDetails.get(skillName);
+        if (cached) {
+          renderCapabilitySkillDetail(cached);
+          renderCapabilityStale(capabilityDetail, error.message);
+        }
+      } finally {
+        updateCapabilityRefreshTime();
+      }
+    }
+
+    async function mutateCapabilityServer(serverId, action) {
+      const key = `server:${serverId}:${action}`;
+      await withCapabilityOperation(key, async () => {
+        const cached = capabilityState.serverDetails.get(serverId);
+        const revision = cached?.server?.revision;
+        if (revision === undefined) return;
+        try {
+          const result = await capabilityMutation(
+            capabilityServerActionPath(serverId, action),
+            revision
+          );
+          if (result.confirmation) renderCapabilityConfirmation(result.confirmation);
+          clearCapabilityError();
+        } catch (error) {
+          renderCapabilityError(error);
+        } finally {
+          await loadCapabilityServer(serverId);
+        }
+      });
+    }
+
+    async function refreshCapabilityServer(serverId) {
+      const key = `server:${serverId}:refresh`;
+      await withCapabilityOperation(key, async () => {
+        const cached = capabilityState.serverDetails.get(serverId);
+        const revision = cached?.server?.revision;
+        if (revision === undefined) return;
+        try {
+          const result = await capabilityMutation(
+            `/v1/capabilities/servers/${encodeURIComponent(serverId)}/refresh`,
+            revision
+          );
+          if (result.confirmation) renderCapabilityConfirmation(result.confirmation);
+          clearCapabilityError();
+        } catch (error) {
+          renderCapabilityError(error);
+        } finally {
+          await loadCapabilityServer(serverId);
+        }
+      });
+    }
+
+    async function mutateCapabilityTool(toolName, action) {
+      const key = `tool:${toolName}`;
+      await withCapabilityOperation(key, async () => {
+        const cached = capabilityState.toolDetails.get(toolName);
+        const revision = cached?.tool?.revision;
+        if (revision === undefined) return;
+        try {
+          const result = await capabilityMutation(
+            capabilityToolActionPath(toolName, action),
+            revision
+          );
+          if (result.confirmation) renderCapabilityConfirmation(result.confirmation);
+          clearCapabilityError();
+        } catch (error) {
+          renderCapabilityError(error);
+        } finally {
+          await loadCapabilityTool(toolName);
+        }
+      });
+    }
+
+    async function reviewCapabilityTool(toolName, reviewState) {
+      const key = `tool:${toolName}`;
+      await withCapabilityOperation(key, async () => {
+        const revision = capabilityState.toolDetails.get(toolName)?.tool?.revision;
+        if (revision === undefined) return;
+        try {
+          await capabilityMutation(
+            `/v1/capabilities/tools/${encodeURIComponent(toolName)}/review`,
+            revision,
+            { review_state: reviewState }
+          );
+          clearCapabilityError();
+        } catch (error) {
+          renderCapabilityError(error);
+        } finally {
+          await loadCapabilityTool(toolName);
+        }
+      });
+    }
+
+    async function mutateCapabilitySkill(skillName, action, revision) {
+      const key = `skill:${skillName}`;
+      await withCapabilityOperation(key, async () => {
+        try {
+          await capabilityMutation(
+            capabilitySkillActionPath(skillName, action),
+            revision
+          );
+          clearCapabilityError();
+        } catch (error) {
+          renderCapabilityError(error);
+        } finally {
+          await loadCapabilitySkills();
+          await loadCapabilitySkill(skillName);
+        }
+      });
+    }
+
+    async function reloadCapabilitySkill(skillName) {
+      const key = `skill:${skillName}`;
+      await withCapabilityOperation(key, async () => {
+        try {
+          const result = await capabilityMutation(
+            `/v1/capabilities/skills/${encodeURIComponent(skillName)}/reload`,
+            capabilityState.skillRegistryRevision
+          );
+          if (result.confirmation) renderCapabilityConfirmation(result.confirmation);
+          clearCapabilityError();
+        } catch (error) {
+          renderCapabilityError(error);
+        } finally {
+          await loadCapabilitySkills();
+          await loadCapabilitySkill(skillName);
+        }
+      });
+    }
+
+    function renderCapabilityConfirmation(confirmation) {
+      capabilityConfirmation.replaceChildren();
+      capabilityConfirmation.hidden = false;
+      capabilityConfirmation.appendChild(
+        capabilityElement("strong", "", "需要管理员确认")
+      );
+      const summary = confirmation.arguments_summary || {};
+      const details = capabilityElement("div", "capability-meta");
+      details.textContent = [
+        summary.operation || confirmation.tool_name,
+        summary.target || confirmation.destination,
+        summary.risk || confirmation.risk,
+        ...(summary.impact || [])
+      ].filter(Boolean).join(" · ");
+      capabilityConfirmation.appendChild(details);
+      const actions = capabilityElement("div", "capability-actions");
+      actions.append(
+        capabilityButton(
+          "确认并执行",
+          () => decideCapabilityConfirmation(confirmation, "once")
+        ),
+        capabilityButton(
+          "取消",
+          () => decideCapabilityConfirmation(confirmation, "cancel")
+        )
+      );
+      capabilityConfirmation.appendChild(actions);
+      actions.querySelector("button")?.focus();
+    }
+
+    async function refreshCapabilityAuthorityForConfirmation(confirmation) {
+      const summary = confirmation.arguments_summary || {};
+      const operation = summary.operation || "";
+      const target = summary.target;
+      if (operation.startsWith("server.") && target) {
+        await loadCapabilityServer(target);
+      } else if (operation.startsWith("tool.") && target) {
+        await loadCapabilityTool(target);
+      } else if (operation.startsWith("skill.") && target) {
+        await loadCapabilitySkills();
+        await loadCapabilitySkill(target);
+      } else {
+        await refreshCapabilityRoute();
+      }
+    }
+
+    async function decideCapabilityConfirmation(confirmation, decision) {
+      const key = `confirmation:${confirmation.id}`;
+      await withCapabilityOperation(key, async () => {
+        try {
+          const idempotencyKey = globalThis.crypto?.randomUUID?.() ||
+            `capability-${Date.now()}-${Math.random()}`;
+          const decisionPayload = decision === "once"
+            ? { decision: "once" }
+            : { decision: "cancel" };
+          await capabilityMutation(
+            `/v1/capabilities/confirmations/${encodeURIComponent(confirmation.id)}/decisions`,
+            confirmation.revision,
+            {
+              ...decisionPayload,
+              idempotency_key: idempotencyKey
+            }
+          );
+          capabilityConfirmation.replaceChildren();
+          capabilityConfirmation.hidden = true;
+          clearCapabilityError();
+        } catch (error) {
+          renderCapabilityError(error);
+        } finally {
+          await refreshCapabilityAuthorityForConfirmation(confirmation);
+        }
+      });
+    }
+
+    async function refreshCapabilityRoute() {
+      capabilityRefreshButton.disabled = true;
+      try {
+        if (capabilityState.route === "skills") {
+          await loadCapabilitySkills();
+        } else {
+          await loadCapabilityServers();
+        }
+      } finally {
+        capabilityRefreshButton.disabled = false;
+      }
+    }
+
+    function setCapabilityRoute(route, updateHash = true) {
+      capabilityState.route = route === "skills" ? "skills" : "mcp-servers";
+      capabilityServersTab.setAttribute(
+        "aria-selected",
+        capabilityState.route === "mcp-servers" ? "true" : "false"
+      );
+      capabilitySkillsTab.setAttribute(
+        "aria-selected",
+        capabilityState.route === "skills" ? "true" : "false"
+      );
+      if (updateHash) {
+        const nextHash = `#/capabilities/${capabilityState.route}`;
+        if (window.location.hash !== nextHash) {
+          window.location.hash = nextHash;
+          return;
+        }
+      }
+      showPrimaryView("capabilities");
+      refreshCapabilityRoute();
+    }
+
+    function applyCapabilityHashRoute() {
+      if (window.location.hash === "#/capabilities/skills") {
+        setCapabilityRoute("skills", false);
+      } else if (window.location.hash === "#/capabilities/mcp-servers") {
+        setCapabilityRoute("mcp-servers", false);
+      }
+    }
 
     function setKnowledgeStatus(message, isError = false) {
       knowledgeStatus.textContent = message;
@@ -2336,10 +3638,19 @@
 
     function showPrimaryView(view) {
       const knowledge = view === "knowledge";
-      chatView.hidden = knowledge;
+      const capabilities = view === "capabilities";
+      chatView.hidden = knowledge || capabilities;
       knowledgeView.hidden = !knowledge;
-      chatNavButton.setAttribute("aria-current", knowledge ? "false" : "page");
+      capabilitiesView.hidden = !capabilities;
+      chatNavButton.setAttribute(
+        "aria-current",
+        !knowledge && !capabilities ? "page" : "false"
+      );
       knowledgeNavButton.setAttribute("aria-current", knowledge ? "page" : "false");
+      capabilitiesNavButton.setAttribute(
+        "aria-current",
+        capabilities ? "page" : "false"
+      );
       if (knowledge) loadKnowledgeBase();
     }
 
@@ -2493,8 +3804,48 @@
         knowledgeUploadButton.disabled = false;
       }
     });
-    chatNavButton.addEventListener("click", () => showPrimaryView("chat"));
-    knowledgeNavButton.addEventListener("click", () => showPrimaryView("knowledge"));
+    function leaveCapabilityRoute(view) {
+      if (window.location.hash.startsWith("#/capabilities/")) {
+        history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+      }
+      showPrimaryView(view);
+    }
+
+    chatNavButton.addEventListener("click", () => leaveCapabilityRoute("chat"));
+    knowledgeNavButton.addEventListener(
+      "click",
+      () => leaveCapabilityRoute("knowledge")
+    );
+    capabilitiesNavButton.addEventListener(
+      "click",
+      () => setCapabilityRoute(capabilityState.route)
+    );
+    capabilityServersTab.addEventListener(
+      "click",
+      () => setCapabilityRoute("mcp-servers")
+    );
+    capabilitySkillsTab.addEventListener(
+      "click",
+      () => setCapabilityRoute("skills")
+    );
+    capabilityRefreshButton.addEventListener("click", refreshCapabilityRoute);
+    for (const tab of [capabilityServersTab, capabilitySkillsTab]) {
+      tab.addEventListener("keydown", (event) => {
+        if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+        event.preventDefault();
+        const next = tab === capabilityServersTab
+          ? capabilitySkillsTab
+          : capabilityServersTab;
+        next.focus();
+        next.click();
+      });
+    }
+    window.addEventListener("hashchange", applyCapabilityHashRoute);
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || capabilitiesView.hidden) return;
+      const selected = capabilityList.querySelector('[aria-current="true"]');
+      selected?.focus();
+    });
     chatKnowledgeMode.addEventListener("change", async () => {
       if (chatKnowledgeMode.checked && !activeKnowledgeBaseId) {
         await loadKnowledgeBase();
@@ -2513,7 +3864,11 @@
       await loadProviders();
       await loadTools();
       await loadSessions();
-      messageInput.focus();
+      if (window.location.hash.startsWith("#/capabilities/")) {
+        applyCapabilityHashRoute();
+      } else {
+        messageInput.focus();
+      }
     }
 
     boot();
