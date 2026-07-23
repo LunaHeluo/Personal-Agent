@@ -17,7 +17,11 @@ from starter_agent.domain.errors import (
 )
 from starter_agent.domain.models import Message, ModelResponse
 from starter_agent.agent.token_counter import TokenCounter
-from starter_agent.agent.tool_result_guard import GuardedToolResult, ToolResultGuard
+from starter_agent.agent.tool_result_guard import (
+    GuardedToolResult,
+    ToolResultGuard,
+    redact_tool_result_content,
+)
 from starter_agent.observability.logging import get_logger
 from starter_agent.providers.base import Provider
 from starter_agent.settings import ContextConfig, RuntimeConfig
@@ -520,24 +524,6 @@ class AgentRuntime:
                             tool=call.name,
                             error_type=type(exc).__name__,
                         )
-                self._append_audit(
-                    action="tool.completed",
-                    target=f"tool:{call.name}",
-                    decision="allow" if tool_ok else "error",
-                    reason_code=(
-                        "tool_completed"
-                        if tool_ok
-                        else (tool_error_code or "tool_execution_error")
-                    ),
-                    session_id=str(session_id),
-                    turn_id=str(turn_id),
-                    call_id=call.id,
-                    payload={
-                        "tool_name": call.name,
-                        "ok": tool_ok,
-                        "error_code": tool_error_code,
-                    },
-                )
                 raw_source_ref = f"tool:{call.name}:{turn_id}:{call.id}"
                 remaining_tool_tokens = max(
                     100,
@@ -591,6 +577,55 @@ class AgentRuntime:
                         }
                     )
                     persisted_source_ref = raw_source_ref
+                completed_payload = {
+                    "tool_name": call.name,
+                    "ok": tool_ok,
+                    "error_code": tool_error_code,
+                    "server_id": tool_metadata.get("server_id"),
+                    "snapshot_id": tool_metadata.get("snapshot_id"),
+                    "schema_hash": tool_metadata.get("schema_hash"),
+                    "raw_source_ref": (
+                        persisted_source_ref or guarded.raw_source_ref
+                    ),
+                    "requested_url": tool_metadata.get("requested_url"),
+                    "final_url": tool_metadata.get("final_url"),
+                    "source_url": tool_metadata.get(
+                        "source_url", tool_metadata.get("final_url")
+                    ),
+                    "content_sha256": guarded.content_sha256,
+                    "is_truncated": guarded.is_truncated,
+                    "truncation_reason": guarded.truncation_reason,
+                    "raw_result_bytes": guarded.raw_result_bytes,
+                    "raw_result_chars": guarded.raw_result_chars,
+                    "raw_result_tokens": guarded.raw_result_tokens,
+                    "kept_result_bytes": guarded.kept_result_bytes,
+                    "kept_result_chars": guarded.kept_result_chars,
+                    "kept_result_tokens": guarded.kept_result_tokens,
+                    "context_result_tokens": guarded.context_result_tokens,
+                }
+                completed_payload = json.loads(
+                    redact_tool_result_content(
+                        json.dumps(
+                            completed_payload,
+                            ensure_ascii=False,
+                            default=str,
+                        )
+                    )
+                )
+                self._append_audit(
+                    action="tool.completed",
+                    target=f"tool:{call.name}",
+                    decision="allow" if tool_ok else "error",
+                    reason_code=(
+                        "tool_completed"
+                        if tool_ok
+                        else (tool_error_code or "tool_execution_error")
+                    ),
+                    session_id=str(session_id),
+                    turn_id=str(turn_id),
+                    call_id=call.id,
+                    payload=completed_payload,
+                )
                 tool_message = Message(
                     role="tool",
                     content=guarded.content,

@@ -99,7 +99,23 @@ principal_resolver = PrincipalResolver()
 
 
 async def get_management_principal(request: Request) -> ManagementPrincipal:
-    return await principal_resolver(request)
+    cached = getattr(request.state, "management_principal", None)
+    if isinstance(cached, ManagementPrincipal):
+        return cached
+    try:
+        resolved = await principal_resolver(request)
+    except HTTPException as exc:
+        request.state.management_auth_error = exc
+        resolved = ManagementPrincipal(subject="anonymous", role="viewer")
+    except Exception:
+        request.state.management_auth_error = _http_error(
+            503,
+            "management_identity_resolution_failed",
+            "Remote management identity resolution failed.",
+        )
+        resolved = ManagementPrincipal(subject="anonymous", role="viewer")
+    request.state.management_principal = resolved
+    return resolved
 
 
 def require_role(principal: ManagementPrincipal, required: Role) -> None:
@@ -278,6 +294,33 @@ async def _mutation_exception_boundary(
     services: CapabilityApiServices = Depends(get_capability_services),
     actor: ManagementPrincipal = Depends(get_management_principal),
 ):
+    auth_error = getattr(request.state, "management_auth_error", None)
+    if isinstance(auth_error, HTTPException):
+        operation_id = f"operation-{uuid4().hex}"
+        detail = (
+            dict(auth_error.detail)
+            if isinstance(auth_error.detail, dict)
+            else {
+                "code": "management_auth_failed",
+                "message": str(auth_error.detail),
+            }
+        )
+        detail["operation_id"] = operation_id
+        auth_error.detail = detail
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            _audit_mutation(
+                services,
+                actor=actor.subject,
+                operation_id=operation_id,
+                action="management.request",
+                target=request.url.path,
+                decision="error",
+                reason_code=str(detail.get("code", "management_auth_failed")),
+                before_revision=None,
+                after_revision=None,
+                result="failed",
+            )
+        raise auth_error
     if request.method in {"GET", "HEAD", "OPTIONS"}:
         yield
         return

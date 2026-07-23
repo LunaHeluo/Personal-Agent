@@ -246,17 +246,22 @@ async def test_real_manager_runtime_path_preserves_trusted_provenance_and_artifa
     events: list[dict] = []
 
     async def artifact(event):
+        assert not any(
+            item.action == "tool.completed"
+            for item in runtime.gate.store.list_audit_events()
+        )
         artifacts.append(event)
 
     async def event(item):
         events.append(item)
 
+    session_id, turn_id = uuid4(), uuid4()
     await runtime.run(
         _McpProvider(),
         "fixture",
         [Message(role="user", content="fetch")],
-        uuid4(),
-        uuid4(),
+        session_id,
+        turn_id,
         on_tool_artifact=artifact,
         on_tool_event=event,
     )
@@ -274,6 +279,38 @@ async def test_real_manager_runtime_path_preserves_trusted_provenance_and_artifa
     assert artifacts[0]["final_url"] == "https://jobs.example/final"
     assert artifacts[0]["call_id"] == "call-real"
     assert artifacts[0]["content_sha256"]
+    audit = next(
+        item
+        for item in runtime.gate.store.list_audit_events()
+        if item.action == "tool.completed"
+    )
+    assert (audit.session_id, audit.turn_id, audit.call_id) == (
+        str(session_id),
+        str(turn_id),
+        "call-real",
+    )
+    assert audit.payload == {
+        "tool_name": "fetch_job",
+        "ok": True,
+        "error_code": None,
+        "server_id": "jobs",
+        "snapshot_id": "snapshot-real",
+        "schema_hash": tool.schema_hash,
+        "raw_source_ref": artifacts[0]["source_ref"],
+        "requested_url": "https://jobs.example/requested",
+        "final_url": "https://jobs.example/final",
+        "source_url": "https://jobs.example/final",
+        "content_sha256": artifacts[0]["content_sha256"],
+        "is_truncated": True,
+        "truncation_reason": "token_budget",
+        "raw_result_bytes": audit.payload["raw_result_bytes"],
+        "raw_result_chars": audit.payload["raw_result_chars"],
+        "raw_result_tokens": audit.payload["raw_result_tokens"],
+        "kept_result_bytes": audit.payload["kept_result_bytes"],
+        "kept_result_chars": audit.payload["kept_result_chars"],
+        "kept_result_tokens": audit.payload["kept_result_tokens"],
+        "context_result_tokens": audit.payload["context_result_tokens"],
+    }
     await manager.shutdown()
 
 
@@ -305,13 +342,30 @@ async def test_real_manager_runtime_exception_is_governed_and_never_leaks_upstre
 
     tool_message = next(item for item in generated if item.role == "tool")
     completed = next(item for item in events if item["type"] == "tool_completed")
+    audit = next(
+        item
+        for item in runtime.gate.store.list_audit_events()
+        if item.action == "tool.completed"
+    )
     assert json.loads(tool_message.content)["error_code"] == "tool_execution_error"
     assert completed["error_code"] == "tool_execution_error"
+    assert audit.decision == "error"
+    assert audit.payload["error_code"] == "tool_execution_error"
+    assert audit.payload["server_id"] == "jobs"
+    assert audit.payload["snapshot_id"] == "snapshot-real"
+    assert audit.payload["content_sha256"]
+    assert "raw_result_bytes" in audit.payload
+    assert "is_truncated" in audit.payload
     assert artifacts
     assert artifacts[0]["server_id"] == "jobs"
     assert artifacts[0]["snapshot_id"] == "snapshot-real"
     serialized = json.dumps(
-        {"message": tool_message.content, "event": completed, "artifact": artifacts[0]},
+        {
+            "message": tool_message.content,
+            "event": completed,
+            "artifact": artifacts[0],
+            "audit": audit.model_dump(mode="json"),
+        },
         default=str,
     )
     assert "TOP-SECRET-UPSTREAM" not in serialized

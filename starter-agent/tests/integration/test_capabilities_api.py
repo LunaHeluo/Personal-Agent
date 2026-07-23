@@ -77,6 +77,43 @@ def test_server_list_is_read_from_manager() -> None:
     assert response.json()["servers"][0]["revision"] == 0
 
 
+def test_remote_oidc_unconfigured_mutation_is_audited_once() -> None:
+    store = CapabilityStore("sqlite:///:memory:", Path("."))
+    services = CapabilityApiServices(
+        manager=_Manager(),
+        registry=SimpleNamespace(context_revision=0),
+        skill_registry=None,
+        confirmations=None,
+        store=store,
+        application=None,
+    )
+    app = FastAPI()
+    app.include_router(create_capabilities_router())
+    app.dependency_overrides[get_capability_services] = lambda: services
+
+    with TestClient(app, client=("10.0.0.7", 1234)) as client:
+        response = client.post(
+            "/v1/capabilities/servers/alpha/health-check",
+            json={"expected_revision": 0},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "management_auth_unconfigured"
+    assert response.json()["detail"]["operation_id"]
+    failures = [
+        event
+        for event in store.list_audit_events()
+        if event.action == "management.request"
+        and event.decision == "error"
+        and event.reason_code == "management_auth_unconfigured"
+    ]
+    assert len(failures) == 1
+    assert failures[0].actor == "anonymous"
+    assert failures[0].payload["operation_id"] == response.json()["detail"][
+        "operation_id"
+    ]
+
+
 def test_authoritative_tool_skill_trace_context_queries_and_dangerous_barriers() -> None:
     manager = _Manager()
     store = CapabilityStore("sqlite:///:memory:", Path("."))
@@ -354,6 +391,42 @@ def test_health_policy_trace_and_context_endpoints_use_authoritative_state() -> 
             created_at=datetime.now(UTC),
         )
     )
+    store.append_audit_event(
+        AuditEvent(
+            event_id="audit-tool-completed",
+            actor="runtime",
+            action="tool.completed",
+            target="tool:write_job",
+            decision="allow",
+            reason_code="tool_completed",
+            session_id=str(session_id),
+            turn_id="turn-1",
+            call_id="call-1",
+            payload={
+                "tool_name": "write_job",
+                "ok": True,
+                "error_code": None,
+                "server_id": "alpha",
+                "snapshot_id": "snapshot-alpha",
+                "schema_hash": canonical_json_sha256({"type": "object"}),
+                "raw_source_ref": "tool:write_job:turn-1:call-1",
+                "requested_url": None,
+                "final_url": None,
+                "source_url": None,
+                "content_sha256": "d" * 64,
+                "is_truncated": False,
+                "truncation_reason": None,
+                "raw_result_bytes": 10,
+                "raw_result_chars": 10,
+                "raw_result_tokens": 3,
+                "kept_result_bytes": 10,
+                "kept_result_chars": 10,
+                "kept_result_tokens": 3,
+                "context_result_tokens": 3,
+            },
+            created_at=datetime.now(UTC),
+        )
+    )
     services = CapabilityApiServices(
         manager=manager,
         registry=registry,
@@ -399,6 +472,13 @@ def test_health_policy_trace_and_context_endpoints_use_authoritative_state() -> 
         }
     ]
     assert traces.status_code == 200
+    completed_trace = next(
+        item
+        for item in traces.json()["traces"]
+        if item["action"] == "tool.completed"
+    )
+    assert completed_trace["call_id"] == "call-1"
+    assert completed_trace["payload"]["content_sha256"] == "d" * 64
 
 
 def test_builtin_enable_override_is_cas_persistent_and_review_is_stable_4xx() -> None:
