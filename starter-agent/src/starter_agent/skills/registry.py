@@ -18,6 +18,14 @@ from starter_agent.skills.parser import SkillParseError, SkillParser
 DependencyResolver = Callable[[SkillDependency], bool]
 
 
+class SkillReloadError(RuntimeError):
+    pass
+
+
+class SkillCandidateChangedError(SkillReloadError):
+    pass
+
+
 class SkillRegistry:
     """Publish immutable Skill snapshots after complete candidate validation."""
 
@@ -67,6 +75,79 @@ class SkillRegistry:
                 revision=current.revision + 1,
                 skills=candidates,
                 loaded_at=datetime.now(UTC),
+            )
+            return self._snapshot
+
+    def prepare_reload(self, name: str) -> SkillDefinition:
+        path = (self.root / name / "SKILL.md").resolve()
+        try:
+            path.relative_to(self.root)
+        except ValueError as exc:
+            raise SkillReloadError("skill_path_outside_root") from exc
+        if not path.is_file():
+            raise KeyError(name)
+        try:
+            candidate = self.parser.parse_file(path)
+        except SkillParseError as exc:
+            raise SkillReloadError(str(exc)) from exc
+        if candidate.name != name:
+            raise SkillReloadError("skill_directory_name_mismatch")
+        try:
+            missing = tuple(
+                item.key
+                for item in candidate.dependencies
+                if item.required and not self.dependency_resolver(item)
+            )
+            persisted = None if self.store is None else self.store.get_skill(name)
+        except Exception as exc:
+            raise SkillReloadError(str(exc)[:2_000]) from exc
+        enabled = self._enabled_overrides.get(
+            name,
+            persisted.enabled if persisted is not None else candidate.enabled,
+        )
+        return candidate.model_copy(
+            update={
+                "enabled": enabled,
+                "dependency_state": (
+                    "dependency_unavailable" if missing else "available"
+                ),
+                "missing_dependencies": missing,
+            }
+        )
+
+    def reload_one(
+        self,
+        name: str,
+        *,
+        expected_revision: int,
+        expected_candidate_hash: str,
+    ) -> SkillSnapshot:
+        with self._write_lock:
+            current = self._snapshot
+            if current.revision != expected_revision:
+                raise RevisionConflictError(
+                    f"Skill registry revision conflict: expected {expected_revision}"
+                )
+            candidate = self.prepare_reload(name)
+            if candidate.snapshot_hash != expected_candidate_hash:
+                raise SkillCandidateChangedError("skill_candidate_changed")
+            if not any(item.name == name for item in current.skills):
+                raise KeyError(name)
+            try:
+                self._persist_candidates((candidate,))
+            except Exception as exc:
+                raise SkillReloadError("skill_persist_failed") from exc
+            skills = tuple(
+                candidate if item.name == name else item for item in current.skills
+            )
+            self._snapshot = current.model_copy(
+                update={
+                    "revision": current.revision + 1,
+                    "skills": skills,
+                    "loaded_at": datetime.now(UTC),
+                    "stale": False,
+                    "last_error": None,
+                }
             )
             return self._snapshot
 

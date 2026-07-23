@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from starter_agent.capabilities.confirmations import ConfirmationService
 from starter_agent.capabilities.gate import PreToolCallGate
 from starter_agent.capabilities.models import Server
+from starter_agent.capabilities.models import PolicyRule
 from starter_agent.capabilities.registry import ExecutionCapability
 from starter_agent.capabilities.store import CapabilityStore
 from starter_agent.interfaces.capabilities_api import (
@@ -116,6 +117,20 @@ def test_authoritative_tool_skill_trace_context_queries_and_dangerous_barriers()
         def set_tool_enabled(self, _name, _enabled):
             self.enable_calls += 1
 
+        def model_snapshot(self):
+            return SimpleNamespace(
+                context_revision=7,
+                provider_tools=lambda: [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "write_job",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+            )
+
     class Skills:
         def __init__(self):
             self.reload_calls = 0
@@ -130,6 +145,9 @@ def test_authoritative_tool_skill_trace_context_queries_and_dangerous_barriers()
 
         def get(self, name):
             return skill if name == skill.name else None
+
+        def prepare_reload(self, _name):
+            return skill
 
         def reload(self):
             self.reload_calls += 1
@@ -162,9 +180,12 @@ def test_authoritative_tool_skill_trace_context_queries_and_dangerous_barriers()
             "definition"
         ] == "# Research"
         assert client.get("/v1/capabilities/traces").json() == {"traces": []}
-        context = client.get(f"/v1/capabilities/context-snapshots/{uuid4()}")
+        context = client.get(
+            f"/v1/capabilities/context-snapshots/{uuid4()}",
+            params={"turn_id": "turn-1", "revision": 7},
+        )
         assert context.status_code == 200
-        assert context.json()["tool_context_revision"] == 7
+        assert context.json()["revision"] == 7
 
         tool_proposal = client.post(
             "/v1/capabilities/tools/write_job/enable",
@@ -174,6 +195,7 @@ def test_authoritative_tool_skill_trace_context_queries_and_dangerous_barriers()
             "/v1/capabilities/skills/research/reload",
             json={"expected_revision": 4},
         )
+        raw_as_admin = client.get("/v1/capabilities/skills/research/raw")
 
     assert tool_proposal.status_code == 202
     assert tool_proposal.json()["confirmation"]["arguments_summary"]["diff"]
@@ -181,3 +203,155 @@ def test_authoritative_tool_skill_trace_context_queries_and_dangerous_barriers()
     assert skill_proposal.status_code == 202
     assert skill_proposal.json()["confirmation"]["arguments_summary"]["risk"]
     assert skills.reload_calls == 0
+    assert raw_as_admin.status_code == 200
+
+
+def test_skill_detail_is_lightweight_and_raw_requires_admin() -> None:
+    skill = SkillDefinition(
+        name="research",
+        description="Research jobs",
+        version="1",
+        source="project",
+        source_path="skills/research/SKILL.md",
+        enabled=True,
+        trigger_examples=("research jobs",),
+        negative_examples=("send email",),
+        validation=("return sources",),
+        failure_policy=("fail closed",),
+        definition="# Research\nsecret=should-not-leak",
+        snapshot_hash="b" * 64,
+    )
+    skills = SimpleNamespace(
+        get=lambda _name: skill,
+        snapshot=lambda: SkillSnapshot(
+            revision=1, skills=(skill,), loaded_at=datetime.now(UTC)
+        ),
+    )
+    services = CapabilityApiServices(
+        manager=SimpleNamespace(),
+        registry=SimpleNamespace(context_revision=0),
+        skill_registry=skills,
+        confirmations=None,
+        store=None,
+        application=None,
+    )
+    app = FastAPI()
+    app.include_router(create_capabilities_router())
+    app.dependency_overrides[get_capability_services] = lambda: services
+    app.dependency_overrides[get_management_principal] = lambda: ManagementPrincipal(
+        subject="viewer", role="viewer"
+    )
+    with TestClient(app) as client:
+        detail = client.get("/v1/capabilities/skills/research")
+        raw = client.get("/v1/capabilities/skills/research/raw")
+
+    assert detail.status_code == 200
+    assert "definition" not in detail.text
+    assert raw.status_code == 403
+
+
+def test_health_policy_trace_and_context_endpoints_use_authoritative_state() -> None:
+    store = CapabilityStore("sqlite:///:memory:", Path("."))
+
+    class Manager(_Manager):
+        def __init__(self):
+            super().__init__()
+            self.ping_calls = 0
+
+        async def ping(self, _server_id):
+            self.ping_calls += 1
+            self.server = self.server.model_copy(
+                update={
+                    "health_state": "healthy",
+                    "revision": self.server.revision + 1,
+                }
+            )
+            return self.server
+
+    class Registry:
+        context_revision = 7
+
+        def resolve_execution(self, _name):
+            return ExecutionCapability(
+                server_id="alpha",
+                canonical_name="write_job",
+                model_alias="write_job",
+                snapshot_id="snapshot-alpha",
+                schema_hash="c" * 64,
+                input_schema={"type": "object"},
+                metadata={},
+                risk_level="write",
+                enabled=True,
+                connected=True,
+                review_state="approved",
+                browser=False,
+            )
+
+        def model_snapshot(self):
+            return SimpleNamespace(
+                context_revision=7,
+                provider_tools=lambda: [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "write_job",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+            )
+
+        def notify_policy_changed(self):
+            return self.model_snapshot()
+
+    manager, registry = Manager(), Registry()
+    rule = PolicyRule(
+        id="policy-one",
+        server_id="alpha",
+        tool_name="write_job",
+        effect="deny",
+        created_by="test-admin",
+    )
+    store.create_policy_rule(rule)
+    services = CapabilityApiServices(
+        manager=manager,
+        registry=registry,
+        skill_registry=None,
+        confirmations=ConfirmationService(store, PreToolCallGate(store)),
+        store=store,
+        application=None,
+    )
+    app = FastAPI()
+    app.include_router(create_capabilities_router())
+    app.dependency_overrides[get_capability_services] = lambda: services
+    app.dependency_overrides[get_management_principal] = lambda: ManagementPrincipal(
+        subject="test-admin", role="admin"
+    )
+    with TestClient(app) as client:
+        health = client.post(
+            "/v1/capabilities/servers/alpha/health-check",
+            json={"expected_revision": 0},
+        )
+        policies = client.get("/v1/capabilities/tools/write_job/policies")
+        deleted = client.request(
+            "DELETE",
+            "/v1/capabilities/tools/write_job/policies/policy-one",
+            json={"expected_revision": 0},
+        )
+        context = client.get(
+            f"/v1/capabilities/context-snapshots/{uuid4()}",
+            params={"turn_id": "turn-1", "revision": 7},
+        )
+        traces = client.get(
+            "/v1/capabilities/traces", params={"turn_id": "turn-1"}
+        )
+
+    assert health.status_code == 200
+    assert manager.ping_calls == 1
+    assert policies.json()["policies"][0]["id"] == rule.id
+    assert deleted.status_code == 200
+    assert store.get_policy_rule(rule.id) is None
+    assert context.json()["callable_tools"] == [
+        {"name": "write_job", "schema_hash": "c" * 64}
+    ]
+    assert traces.status_code == 200

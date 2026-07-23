@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    delete,
     event,
     select,
     update,
@@ -510,11 +511,16 @@ class CapabilityStore:
                         update={
                             "enabled": old_tool.enabled,
                             "review_state": old_tool.review_state,
+                            "revision": old_tool.revision,
                         }
                     )
                 elif old_tool is not None:
                     tool = tool.model_copy(
-                        update={"enabled": False, "review_state": "review_required"}
+                        update={
+                            "enabled": False,
+                            "review_state": "review_required",
+                            "revision": old_tool.revision + 1,
+                        }
                     )
                 row.enabled = tool.enabled
                 row.review_state = tool.review_state
@@ -622,6 +628,53 @@ class CapabilityStore:
             ).all()
             return [Tool.model_validate_json(row.payload_json) for row in rows]
 
+    def update_tool(
+        self,
+        snapshot_id: str,
+        upstream_name: str,
+        *,
+        expected_revision: int,
+        **changes: Any,
+    ) -> Tool:
+        allowed = {"enabled", "review_state"}
+        unknown = set(changes) - allowed
+        if unknown:
+            raise ValueError(f"Unsupported Tool changes: {sorted(unknown)}")
+        with Session(self.engine) as db:
+            row = db.get(McpToolRow, (snapshot_id, upstream_name))
+            if row is None:
+                raise RecordNotFoundError(
+                    f"Tool not found: {snapshot_id}/{upstream_name}"
+                )
+            current = Tool.model_validate_json(row.payload_json)
+            if current.revision != expected_revision:
+                raise RevisionConflictError(
+                    f"Tool revision conflict: {upstream_name} expected {expected_revision}"
+                )
+            candidate = current.model_copy(
+                update={**changes, "revision": expected_revision + 1}
+            )
+            result = db.execute(
+                update(McpToolRow)
+                .where(
+                    McpToolRow.snapshot_id == snapshot_id,
+                    McpToolRow.upstream_name == upstream_name,
+                    McpToolRow.payload_json == current.model_dump_json(),
+                )
+                .values(
+                    enabled=candidate.enabled,
+                    review_state=candidate.review_state,
+                    payload_json=candidate.model_dump_json(),
+                )
+            )
+            if result.rowcount != 1:
+                db.rollback()
+                raise RevisionConflictError(
+                    f"Tool revision conflict: {upstream_name} expected {expected_revision}"
+                )
+            db.commit()
+            return candidate
+
     def list_resources(self, snapshot_id: str) -> list[Resource]:
         with Session(self.engine) as db:
             rows = db.scalars(
@@ -715,6 +768,31 @@ class CapabilityStore:
                 )
             db.commit()
             return candidate
+
+    def delete_policy_rule(
+        self,
+        rule_id: str,
+        *,
+        expected_revision: int,
+    ) -> PolicyRule:
+        with Session(self.engine) as db:
+            row = db.get(PolicyRuleRow, rule_id)
+            if row is None:
+                raise RecordNotFoundError(f"Policy rule not found: {rule_id}")
+            current = PolicyRule.model_validate_json(row.payload_json)
+            result = db.execute(
+                delete(PolicyRuleRow).where(
+                    PolicyRuleRow.id == rule_id,
+                    PolicyRuleRow.revision == expected_revision,
+                )
+            )
+            if result.rowcount != 1:
+                db.rollback()
+                raise RevisionConflictError(
+                    f"Policy rule revision conflict: {rule_id} expected {expected_revision}"
+                )
+            db.commit()
+            return current
 
     def create_confirmation(self, confirmation: Confirmation) -> Confirmation:
         row = ConfirmationRow(

@@ -295,6 +295,7 @@ class Tool(CapabilityModel):
     outbound_scope: tuple[str, ...] = Field(default_factory=tuple, max_length=100)
     enabled: bool = False
     review_state: ReviewState = "unreviewed"
+    revision: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def bind_schema_hash_to_input_schema(self) -> "Tool":
