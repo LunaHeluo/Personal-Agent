@@ -36,10 +36,8 @@ def test_capability_details_cover_mcp_and_skill_governance() -> None:
         "disconnect",
         "health-check",
         "refresh",
-        "trigger_examples",
-        "negative_examples",
-        "validation",
-        "failure_policy",
+        "管理员 Raw definition",
+        "完整定义，包含示例、验证规则与失败策略",
         "/raw",
         "/health",
         "reload",
@@ -79,4 +77,3 @@ def test_capability_layout_is_keyboard_and_narrow_screen_accessible() -> None:
         'event.key === "Escape"',
     ):
         assert contract in HTML
-
