@@ -47,6 +47,12 @@ _SENSITIVE_ASSIGNMENT = re.compile(
 _BEARER = re.compile(r"\bBearer\s+[^\s,;\"']+", re.IGNORECASE)
 _URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+_URL_LIKE_QUERY_KEY = re.compile(
+    r"(?:url|uri|redirect|return|next|continue|callback|target|destination|link)",
+    re.IGNORECASE,
+)
+_MAX_PROVENANCE_URL_DEPTH = 4
+_MAX_PROVENANCE_URL_CHARS = 8_000
 
 
 @dataclass(frozen=True)
@@ -366,21 +372,70 @@ def _redact_text(value: str) -> str:
     return redacted
 
 
-def _sanitize_url(value: str) -> str:
+def sanitize_provenance_url(
+    value: object,
+    *,
+    _depth: int = 0,
+) -> str | None:
+    """Strictly sanitize an http(s) provenance URL without regex truncation."""
+
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > _MAX_PROVENANCE_URL_CHARS
+        or _depth > _MAX_PROVENANCE_URL_DEPTH
+        or "\\" in value
+        or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        return None
     try:
         parsed = urlsplit(value)
-        hostname = parsed.hostname or ""
+        hostname = parsed.hostname
+        if (
+            parsed.scheme.casefold() not in {"http", "https"}
+            or not hostname
+        ):
+            return None
         port = f":{parsed.port}" if parsed.port is not None else ""
-    except ValueError:
-        return "[invalid-url]"
-    query = urlencode(
-        [
-            (key, item)
-            for key, item in parse_qsl(parsed.query, keep_blank_values=True)
-            if not _SENSITIVE_KEY.search(key)
-        ]
+        query_items = parse_qsl(
+            parsed.query,
+            keep_blank_values=True,
+            max_num_fields=100,
+        )
+    except (TypeError, ValueError):
+        return None
+    sanitized_query: list[tuple[str, str]] = []
+    for key, item in query_items:
+        if _SENSITIVE_KEY.search(key):
+            continue
+        is_url_like_key = bool(_URL_LIKE_QUERY_KEY.search(key))
+        looks_like_url = item.casefold().startswith(("http://", "https://"))
+        if is_url_like_key or looks_like_url:
+            if _depth >= _MAX_PROVENANCE_URL_DEPTH:
+                continue
+            nested = sanitize_provenance_url(item, _depth=_depth + 1)
+            if nested is None:
+                continue
+            sanitized_query.append((key, nested))
+            continue
+        if "://" in item:
+            continue
+        sanitized_query.append((key, item))
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    query = urlencode(sanitized_query)
+    return urlunsplit(
+        (
+            parsed.scheme.casefold(),
+            f"{host}{port}",
+            parsed.path,
+            query,
+            "",
+        )
     )
-    return urlunsplit((parsed.scheme, f"{hostname}{port}", parsed.path, query, ""))
+
+
+def _sanitize_url(value: str) -> str:
+    return sanitize_provenance_url(value) or "[invalid-url]"
 
 
 def _safe_trace_metadata(value: object) -> dict[str, object]:

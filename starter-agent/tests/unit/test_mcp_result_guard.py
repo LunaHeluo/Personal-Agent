@@ -1,4 +1,5 @@
 import json
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 from uuid import uuid4
 
 from starter_agent.agent.token_counter import TokenCounter
@@ -6,6 +7,7 @@ from starter_agent.agent.tool_result_guard import (
     ToolResultGuard,
     redact_tool_result_content,
 )
+import starter_agent.agent.tool_result_guard as guard_module
 from starter_agent.infrastructure.session_store import SQLiteSessionStore
 from starter_agent.interfaces.api import ChatRequest
 
@@ -74,6 +76,69 @@ def test_shared_redactor_handles_multiline_inline_spaced_and_url_secrets() -> No
     for secret in ("TOP-SECRET", "value with spaces", "INLINE-SECRET", "PASS", "URL-TOKEN"):
         assert secret not in redacted
     assert "\\1" not in redacted
+
+
+def test_provenance_url_sanitizer_rejects_ambiguous_or_invalid_whole_values() -> None:
+    sanitizer = getattr(guard_module, "sanitize_provenance_url", None)
+    assert sanitizer is not None
+
+    assert sanitizer("https://example.test/?token=value with spaces") is None
+    assert sanitizer("https://example.test/\nnext") is None
+    assert sanitizer("https://") is None
+    assert sanitizer("file:///private/path") is None
+
+
+def test_provenance_url_sanitizer_strips_userinfo_and_sensitive_query() -> None:
+    sanitizer = getattr(guard_module, "sanitize_provenance_url", None)
+    assert sanitizer is not None
+
+    sanitized = sanitizer(
+        "https://alice:password@example.test/path?token=secret&ok=yes"
+    )
+
+    assert sanitized == "https://example.test/path?ok=yes"
+
+
+def test_provenance_url_sanitizer_recurses_nested_urls_with_a_depth_limit() -> None:
+    sanitizer = getattr(guard_module, "sanitize_provenance_url", None)
+    assert sanitizer is not None
+    nested = "https://user:password@leaf.test/path?token=secret&ok=leaf"
+    for index in range(8):
+        nested = (
+            f"https://level-{index}.test/path?"
+            f"next={quote(nested, safe='')}&ok=level-{index}"
+        )
+
+    sanitized = sanitizer(nested)
+
+    assert sanitized is not None
+    expanded = sanitized
+    for _ in range(10):
+        expanded = unquote(expanded)
+    assert "password" not in expanded
+    assert "secret" not in expanded
+    assert "user@" not in expanded
+    assert len(expanded) < len(unquote(nested)) * 2
+
+
+def test_provenance_url_sanitizer_removes_untrusted_url_like_parameters() -> None:
+    sanitizer = getattr(guard_module, "sanitize_provenance_url", None)
+    assert sanitizer is not None
+    safe_nested = quote(
+        "https://user:password@inner.test/path?api_key=secret&ok=inner",
+        safe="",
+    )
+
+    sanitized = sanitizer(
+        "https://outer.test/path?"
+        f"redirect={safe_nested}&redirect_hint=not-a-url&ok=outer"
+    )
+
+    assert sanitized is not None
+    query = parse_qs(urlsplit(sanitized).query)
+    assert query["ok"] == ["outer"]
+    assert "redirect_hint" not in query
+    assert query["redirect"] == ["https://inner.test/path?ok=inner"]
 
 
 def test_tool_artifact_store_is_restricted_and_never_persists_unredacted_content(

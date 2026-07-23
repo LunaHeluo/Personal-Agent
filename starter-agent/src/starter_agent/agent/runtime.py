@@ -21,6 +21,7 @@ from starter_agent.agent.tool_result_guard import (
     GuardedToolResult,
     ToolResultGuard,
     redact_tool_result_content,
+    sanitize_provenance_url,
 )
 from starter_agent.observability.logging import get_logger
 from starter_agent.providers.base import Provider
@@ -541,6 +542,14 @@ class AgentRuntime:
                     call.id,
                     raw_source_ref,
                 )
+                for url_field in ("requested_url", "final_url", "source_url"):
+                    sanitized_url = sanitize_provenance_url(
+                        tool_metadata.get(url_field)
+                    )
+                    if sanitized_url is None:
+                        tool_metadata.pop(url_field, None)
+                    else:
+                        tool_metadata[url_field] = sanitized_url
                 persisted_source_ref = None
                 if on_tool_artifact:
                     await on_tool_artifact(
@@ -591,16 +600,10 @@ class AgentRuntime:
                     "raw_source_ref": (
                         persisted_source_ref or guarded.raw_source_ref
                     ),
-                    "requested_url": safe_optional_text(
-                        tool_metadata.get("requested_url")
-                    ),
-                    "final_url": safe_optional_text(
-                        tool_metadata.get("final_url")
-                    ),
-                    "source_url": safe_optional_text(
-                        tool_metadata.get(
-                            "source_url", tool_metadata.get("final_url")
-                        )
+                    "requested_url": tool_metadata.get("requested_url"),
+                    "final_url": tool_metadata.get("final_url"),
+                    "source_url": tool_metadata.get(
+                        "source_url", tool_metadata.get("final_url")
                     ),
                     "content_sha256": guarded.content_sha256,
                     "is_truncated": bool(guarded.is_truncated),
