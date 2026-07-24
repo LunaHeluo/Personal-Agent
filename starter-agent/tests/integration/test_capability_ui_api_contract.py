@@ -232,3 +232,50 @@ def test_async_capability_loads_guard_commits_with_request_context() -> None:
         source = function_source(function_name, next_name)
         assert "captureCapabilityRequest" in source
         assert "isCapabilityRequestCurrent" in source
+
+
+def test_management_pending_snapshot_replaces_terminal_records_and_filters_identity() -> None:
+    result = run_capability_logic(
+        """CapabilityUiLogic.reconcileManagementConfirmations(
+          [
+            {id: "kept", server_id: "management", session_id: "management"},
+            {id: "foreign-server", server_id: "playwright", session_id: "management"},
+            {id: "foreign-session", server_id: "management", session_id: "chat-1"}
+          ],
+          [
+            {id: "terminal", server_id: "management", session_id: "management"},
+            {id: "proposal", server_id: "management", session_id: "management"}
+          ],
+          ["proposal"]
+        ).map(item => item.id)"""
+    )
+    assert result == ["kept", "proposal"]
+
+
+def test_management_pending_request_is_scoped_and_decisions_reconcile_authority() -> None:
+    load_pending = function_source(
+        "loadCapabilityConfirmations", "refreshCapabilityAuthorityForConfirmation"
+    )
+    decide = function_source(
+        "decideCapabilityConfirmation", "refreshCapabilityRoute"
+    )
+    assert (
+        '"/v1/capabilities/confirmations/pending?session_id=management"'
+        in load_pending
+    )
+    assert "reconcileManagementConfirmations" in load_pending
+    assert "await loadCapabilityConfirmations()" in decide
+    assert "await refreshCapabilityAuthorityForConfirmation(confirmation)" in decide
+
+
+def test_raw_definition_clear_is_synchronously_reflected_before_new_requests() -> None:
+    clear_raw = function_source(
+        "clearCapabilityRawState", "renderCapabilityRawDefinition"
+    )
+    load_raw = function_source(
+        "loadCapabilityRawDefinition", "renderCapabilitySkillDetail"
+    )
+    assert "renderCurrentCapabilityState()" in clear_raw
+    assert load_raw.index("clearCapabilityRawState()") < load_raw.index(
+        "capabilityRequest("
+    )

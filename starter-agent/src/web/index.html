@@ -1427,6 +1427,35 @@
         return role === "admin" && expanded === true;
       },
 
+      isManagementConfirmation(confirmation) {
+        return confirmation?.server_id === "management"
+          && confirmation?.session_id === "management";
+      },
+
+      reconcileManagementConfirmations(authoritative, local, inFlightIds) {
+        const retained = new Map();
+        for (const confirmation of authoritative || []) {
+          if (
+            confirmation?.id
+            && this.isManagementConfirmation(confirmation)
+          ) {
+            retained.set(confirmation.id, confirmation);
+          }
+        }
+        const inFlight = new Set(inFlightIds || []);
+        for (const confirmation of local || []) {
+          if (
+            confirmation?.id
+            && inFlight.has(confirmation.id)
+            && this.isManagementConfirmation(confirmation)
+            && !retained.has(confirmation.id)
+          ) {
+            retained.set(confirmation.id, confirmation);
+          }
+        }
+        return [...retained.values()];
+      },
+
       isRequestCurrent(token, current) {
         return token.epoch === current.epoch
           && token.route === current.route
@@ -1477,6 +1506,7 @@
       confirmations: new Map(),
       confirmationDecisionLocks: new Set(),
       confirmationIdempotencyKeys: new Map(),
+      confirmationProposalIds: new Set(),
       confirmationExpiryTimer: null,
       requestEpoch: 0,
       requestController: new AbortController(),
@@ -3229,6 +3259,7 @@
         definition: null,
         lease: nextLease
       };
+      renderCurrentCapabilityState();
     }
 
     function renderCapabilityRawDefinition(container, skillName) {
@@ -3788,6 +3819,7 @@
       capabilityState.confirmations.clear();
       capabilityState.confirmationDecisionLocks.clear();
       capabilityState.confirmationIdempotencyKeys.clear();
+      capabilityState.confirmationProposalIds.clear();
       if (capabilityState.confirmationExpiryTimer) {
         clearTimeout(capabilityState.confirmationExpiryTimer);
         capabilityState.confirmationExpiryTimer = null;
@@ -3804,6 +3836,7 @@
           capabilityState.confirmations.delete(id);
           capabilityState.confirmationDecisionLocks.delete(id);
           capabilityState.confirmationIdempotencyKeys.delete(id);
+          capabilityState.confirmationProposalIds.delete(id);
         }
       }
     }
@@ -3819,10 +3852,21 @@
       if (!expiries.length) return;
       const delay = Math.min(Math.min(...expiries) - Date.now() + 20, 2_147_000_000);
       capabilityState.confirmationExpiryTimer = setTimeout(() => {
+        const expired = [...capabilityState.confirmations.values()].filter(
+          item => {
+            const expiresAt = Date.parse(item.expires_at || "");
+            return Number.isFinite(expiresAt) && expiresAt <= Date.now();
+          }
+        );
         pruneExpiredCapabilityConfirmations();
         renderCapabilityConfirmations();
         renderCurrentCapabilityState();
-        scheduleCapabilityConfirmationExpiry();
+        void (async () => {
+          await loadCapabilityConfirmations();
+          for (const confirmation of expired) {
+            await refreshCapabilityAuthorityForConfirmation(confirmation);
+          }
+        })();
       }, Math.max(20, delay));
     }
 
@@ -3834,8 +3878,12 @@
     }
 
     function addCapabilityConfirmation(confirmation) {
-      if (!confirmation?.id) return;
+      if (
+        !confirmation?.id
+        || !CapabilityUiLogic.isManagementConfirmation(confirmation)
+      ) return;
       capabilityState.confirmations.set(confirmation.id, confirmation);
+      capabilityState.confirmationProposalIds.add(confirmation.id);
       pruneExpiredCapabilityConfirmations();
       renderCapabilityConfirmations();
       renderCurrentCapabilityState();
@@ -3917,25 +3965,35 @@
 
     async function loadCapabilityConfirmations() {
       const request = captureCapabilityRequest();
-      const requestApplies = !capabilitiesView.hidden;
+      const proposalIdsAtRequest = new Set(
+        capabilityState.confirmationProposalIds
+      );
       try {
         const payload = await capabilityRequest(
-          "/v1/capabilities/confirmations/pending",
+          "/v1/capabilities/confirmations/pending?session_id=management",
           { signal: capabilityState.requestController.signal }
         );
-        if (!requestApplies || !isCapabilityRequestCurrent(request)) return;
-        const next = new Map(capabilityState.confirmations);
+        if (!isCapabilityRequestCurrent(request)) return;
+        const arrivedAfterRequest = [...capabilityState.confirmationProposalIds]
+          .filter(id => !proposalIdsAtRequest.has(id));
+        const reconciled = CapabilityUiLogic.reconcileManagementConfirmations(
+          payload.confirmations,
+          [...capabilityState.confirmations.values()],
+          arrivedAfterRequest
+        );
+        capabilityState.confirmations = new Map(
+          reconciled.map(item => [item.id, item])
+        );
+        capabilityState.confirmationProposalIds = new Set(arrivedAfterRequest);
         for (const confirmation of payload.confirmations || []) {
-          if (confirmation?.id) next.set(confirmation.id, confirmation);
+          capabilityState.confirmationProposalIds.delete(confirmation?.id);
         }
-        capabilityState.confirmations = next;
         renderCapabilityConfirmations();
         renderCurrentCapabilityState();
         scheduleCapabilityConfirmationExpiry();
       } catch (error) {
         if (
-          requestApplies
-          && !isCapabilityAbort(error)
+          !isCapabilityAbort(error)
           && isCapabilityRequestCurrent(request)
         ) {
           renderCapabilityError(error);
@@ -3960,6 +4018,7 @@
     }
 
     async function decideCapabilityConfirmation(confirmation, decision) {
+      if (!CapabilityUiLogic.isManagementConfirmation(confirmation)) return;
       if (capabilityState.confirmationDecisionLocks.has(confirmation.id)) return;
       const request = captureCapabilityRequest();
       capabilityState.confirmationDecisionLocks.add(confirmation.id);

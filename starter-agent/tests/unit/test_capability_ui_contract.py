@@ -77,3 +77,15 @@ def test_capability_layout_is_keyboard_and_narrow_screen_accessible() -> None:
         'event.key === "Escape"',
     ):
         assert contract in HTML
+
+
+def test_management_confirmation_and_raw_definition_state_are_isolated() -> None:
+    for contract in (
+        "reconcileManagementConfirmations",
+        "isManagementConfirmation",
+        "pending?session_id=management",
+        "confirmationProposalIds",
+        "clearCapabilityRawState",
+        "renderCurrentCapabilityState()",
+    ):
+        assert contract in HTML
