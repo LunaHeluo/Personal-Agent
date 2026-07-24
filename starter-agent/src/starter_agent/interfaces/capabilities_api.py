@@ -453,6 +453,7 @@ def _tool(services: CapabilityApiServices, name: str) -> dict[str, Any]:
         "enabled": capability.enabled,
         "connected": capability.connected,
         "review_state": capability.review_state,
+        "reviewed_at": capability.reviewed_at,
         "browser": capability.browser,
         "revision": _tool_revision(services, capability),
         "context_revision": _registry_revision(services),

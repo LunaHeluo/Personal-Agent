@@ -125,6 +125,13 @@ async def test_refresh_swaps_only_valid_candidate_and_invalidates_changed_schema
     await manager.start()
     old_snapshot = await manager.discover("alpha")
     old_tool = store.list_tools(old_snapshot.id)[0]
+    old_tool = store.update_tool(
+        old_snapshot.id,
+        old_tool.upstream_name,
+        expected_revision=0,
+        review_state="approved",
+    )
+    assert old_tool.reviewed_at is not None
     now = datetime.now(UTC)
     rule = PolicyRule(
         id="auto-find-jobs",
@@ -176,6 +183,7 @@ async def test_refresh_swaps_only_valid_candidate_and_invalidates_changed_schema
     assert changed_tool.schema_hash != old_tool.schema_hash
     assert changed_tool.enabled is False
     assert changed_tool.review_state == "review_required"
+    assert changed_tool.reviewed_at is None
     assert store.get_policy_rule(rule.id).enabled is False
     assert store.get_confirmation(confirmation.id).status == "invalidated"
     assert store.get_execution_permit(permit.id).consumed_at is not None

@@ -124,6 +124,10 @@ class McpToolRow(CapabilityBase):
     schema_hash: Mapped[str] = mapped_column(String(64), index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, index=True)
     review_state: Mapped[str] = mapped_column(String(40), index=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     payload_json: Mapped[str] = mapped_column(Text)
 
 
@@ -262,7 +266,23 @@ class CapabilityStore:
                 cursor.close()
 
         CapabilityBase.metadata.create_all(self.engine)
+        self._migrate_sqlite_schema()
         ACTIVE_SNAPSHOT_INDEX.create(self.engine, checkfirst=True)
+
+    def _migrate_sqlite_schema(self) -> None:
+        if self.engine.dialect.name != "sqlite":
+            return
+        with self.engine.begin() as connection:
+            columns = {
+                str(row[1])
+                for row in connection.exec_driver_sql(
+                    "PRAGMA table_info(mcp_tools)"
+                )
+            }
+            if "reviewed_at" not in columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE mcp_tools ADD COLUMN reviewed_at DATETIME"
+                )
 
     def close(self) -> None:
         self.engine.dispose()
@@ -345,7 +365,9 @@ class CapabilityStore:
     ) -> Snapshot:
         if snapshot.active:
             raise ValueError("Snapshots must be created inactive and activated explicitly")
-        tool_items = tuple(tools)
+        tool_items = tuple(
+            tool.model_copy(update={"reviewed_at": None}) for tool in tools
+        )
         resource_items = tuple(resources)
         prompt_items = tuple(prompts)
         if (
@@ -377,6 +399,7 @@ class CapabilityStore:
                 schema_hash=tool.schema_hash,
                 enabled=tool.enabled,
                 review_state=tool.review_state,
+                reviewed_at=tool.reviewed_at,
                 payload_json=tool.model_dump_json(),
             )
             for tool in tool_items
@@ -521,6 +544,7 @@ class CapabilityStore:
                         update={
                             "enabled": old_tool.enabled,
                             "review_state": old_tool.review_state,
+                            "reviewed_at": old_tool.reviewed_at,
                             "revision": old_tool.revision,
                         }
                     )
@@ -529,11 +553,13 @@ class CapabilityStore:
                         update={
                             "enabled": False,
                             "review_state": "review_required",
+                            "reviewed_at": None,
                             "revision": old_tool.revision + 1,
                         }
                     )
                 row.enabled = tool.enabled
                 row.review_state = tool.review_state
+                row.reviewed_at = tool.reviewed_at
                 row.payload_json = tool.model_dump_json()
 
             if changed_names:
@@ -661,8 +687,23 @@ class CapabilityStore:
                 raise RevisionConflictError(
                     f"Tool revision conflict: {upstream_name} expected {expected_revision}"
                 )
-            candidate = current.model_copy(
-                update={**changes, "revision": expected_revision + 1}
+            requested_review = changes.get("review_state")
+            if requested_review in {"unreviewed", "review_required"}:
+                reviewed_at = None
+            elif (
+                requested_review in {"approved", "rejected"}
+                and requested_review != current.review_state
+            ):
+                reviewed_at = datetime.now(UTC)
+            else:
+                reviewed_at = current.reviewed_at
+            candidate = Tool.model_validate(
+                {
+                    **current.model_dump(mode="python"),
+                    **changes,
+                    "reviewed_at": reviewed_at,
+                    "revision": expected_revision + 1,
+                }
             )
             result = db.execute(
                 update(McpToolRow)
@@ -674,6 +715,7 @@ class CapabilityStore:
                 .values(
                     enabled=candidate.enabled,
                     review_state=candidate.review_state,
+                    reviewed_at=candidate.reviewed_at,
                     payload_json=candidate.model_dump_json(),
                 )
             )

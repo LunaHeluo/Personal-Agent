@@ -4,7 +4,9 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -15,6 +17,7 @@ from starter_agent.capabilities.models import (
     canonical_json_sha256,
 )
 from starter_agent.capabilities.registry import UnifiedToolRegistry
+from starter_agent.capabilities.store import CapabilityStore
 from starter_agent.interfaces.capabilities_api import (
     CapabilityApiServices,
     ManagementPrincipal,
@@ -31,20 +34,24 @@ OPERATIONS = PROJECT_ROOT / "docs" / "job-research-operations.md"
 ACCEPTANCE = PROJECT_ROOT / "docs" / "job-research-acceptance.md"
 
 
-def _server() -> Server:
+def _server(
+    *,
+    runtime_name: str = "@playwright/mcp",
+    runtime_version: str = "test-runtime-version",
+) -> Server:
     return Server(
         id="playwright",
         name="playwright",
         config_source="config/mcp.json",
         config_hash="a" * 64,
         connection_state="ready",
-        runtime_name="@playwright/mcp",
-        runtime_version="test-runtime-version",
+        runtime_name=runtime_name,
+        runtime_version=runtime_version,
         stderr_summary="authorization=Bearer must-not-leak",
     )
 
 
-def _reviewed_tool() -> Tool:
+def _discovered_tool() -> Tool:
     schema = {
         "type": "object",
         "properties": {
@@ -66,52 +73,84 @@ def _reviewed_tool() -> Tool:
         },
         outbound_scope=("public_url",),
         enabled=True,
-        review_state="approved",
     )
 
 
-def test_catalog_export_contains_only_allowlisted_reviewed_runtime_fields() -> None:
-    registry = UnifiedToolRegistry(ToolRegistry(["get_current_time"]))
-    tool = _reviewed_tool()
+def _manager(store: CapabilityStore, server: Server) -> SimpleNamespace:
+    return SimpleNamespace(
+        store=store,
+        statuses=lambda: {server.id: store.get_server(server.id)},
+    )
+
+
+def _registry_from_store(
+    store: CapabilityStore,
+    server: Server,
+    *,
+    builtins: list[str] | None = None,
+) -> UnifiedToolRegistry:
+    registry = UnifiedToolRegistry(ToolRegistry(builtins or []))
+    registry.refresh_from_manager(_manager(store, server))
+    return registry
+
+
+def _create_snapshot(
+    store: CapabilityStore,
+    *,
+    activate: bool,
+    stale: bool = False,
+) -> tuple[Snapshot, Tool]:
+    tool = _discovered_tool()
     snapshot = Snapshot(
         id=tool.snapshot_id,
         server_id=tool.server_id,
         version=1,
         schema_hash="b" * 64,
         discovered_at=datetime(2026, 7, 24, tzinfo=UTC),
-        active=True,
         tool_count=1,
     )
-    registry.refresh_server(_server(), [tool], snapshot=snapshot)
+    store.create_snapshot(snapshot, tools=(tool,))
+    if activate:
+        store.activate_snapshot(snapshot.server_id, snapshot.id)
+    if stale:
+        store.mark_active_snapshot_stale(snapshot.server_id, error="refresh_failed")
+    return snapshot, tool
+
+
+def test_catalog_export_matches_store_reviewed_tool_identity_and_schema(
+    tmp_path: Path,
+) -> None:
+    store = CapabilityStore("sqlite:///:memory:", tmp_path)
+    server = _server()
+    store.create_server(server)
+    snapshot, tool = _create_snapshot(store, activate=True)
+    reviewed = store.update_tool(
+        snapshot.id,
+        tool.upstream_name,
+        expected_revision=0,
+        review_state="approved",
+    )
+    registry = _registry_from_store(
+        store,
+        server,
+        builtins=["get_current_time"],
+    )
 
     exported = registry.catalog_export()
 
     assert exported["authority"] == "runtime_registry"
     assert exported["context_revision"] == registry.context_revision
-    assert exported["builtins"] == [
-        {
-            "name": "get_current_time",
-            "server_id": "builtin",
-            "capability_type": "builtin",
-            "enabled": True,
-            "review_state": "approved",
-            "schema_hash": canonical_json_sha256(
-                ToolRegistry(["get_current_time"]).get(
-                    "get_current_time"
-                ).input_schema
-            ),
-        }
-    ]
+    exported_tool = exported["mcp_servers"][0]["tools"][0]
+    assert exported_tool["upstream_name"] == reviewed.upstream_name
+    assert exported_tool["model_alias"] == reviewed.model_alias
+    assert exported_tool["schema_hash"] == reviewed.schema_hash
+    assert exported_tool["reviewed_at"] == reviewed.reviewed_at.isoformat().replace(
+        "+00:00", "Z"
+    )
+    assert exported_tool["review_conclusion"] == "approved"
+    assert exported_tool["reviewed"] is True
     assert exported["mcp_servers"][0]["discovery_state"] == "discovered"
-    assert exported["mcp_servers"][0]["tools"] == [
-        {
-            "upstream_name": tool.upstream_name,
-            "model_alias": tool.model_alias,
-            "schema_hash": tool.schema_hash,
-            "review_state": "approved",
-            "enabled": True,
-        }
-    ]
+    assert exported["mcp_servers"][0]["review_state"] == "approved"
     serialized = json.dumps(exported, ensure_ascii=False).casefold()
     for forbidden in (
         "must-not-leak",
@@ -127,61 +166,84 @@ def test_catalog_export_contains_only_allowlisted_reviewed_runtime_fields() -> N
         assert forbidden not in serialized
 
 
-def test_catalog_export_does_not_invent_schema_for_undiscovered_server() -> None:
-    registry = UnifiedToolRegistry(ToolRegistry([]))
-    registry.refresh_server(_server(), [])
+@pytest.mark.parametrize("snapshot_state", ["inactive", "stale"])
+def test_catalog_export_hides_inactive_or_stale_snapshot_capabilities(
+    tmp_path: Path,
+    snapshot_state: str,
+) -> None:
+    store = CapabilityStore("sqlite:///:memory:", tmp_path)
+    server = _server()
+    store.create_server(server)
+    snapshot, tool = _create_snapshot(
+        store,
+        activate=snapshot_state == "stale",
+        stale=snapshot_state == "stale",
+    )
+    registry = _registry_from_store(store, server)
 
     exported = registry.catalog_export()
 
-    assert exported["mcp_servers"] == [
-        {
-            "server_id": "playwright",
-            "capability_type": "mcp",
-            "enabled": True,
-            "connection_state": "ready",
-            "health_state": "unknown",
-            "transport": "stdio",
-            "runtime_name": "@playwright/mcp",
-            "runtime_version": "test-runtime-version",
-            "discovery_state": "not_discovered",
-            "review_state": "not_reviewed",
-            "snapshot_id": None,
-            "snapshot_version": None,
-            "discovered_at": None,
-            "tools": [],
-        }
-    ]
+    server_export = exported["mcp_servers"][0]
+    assert server_export["discovery_state"] == "not_discovered"
+    assert server_export["review_state"] == "not_reviewed"
+    assert server_export["snapshot_id"] is None
+    assert server_export["snapshot_version"] is None
+    assert server_export["discovered_at"] is None
+    assert server_export["tools"] == []
+    serialized = json.dumps(exported, ensure_ascii=False)
+    assert tool.upstream_name not in serialized
+    assert tool.model_alias not in serialized
+    assert tool.schema_hash not in serialized
+    if snapshot_state == "stale":
+        assert store.get_active_snapshot(snapshot.server_id).stale is True
+
+
+def test_catalog_export_reports_store_without_snapshot_as_not_discovered(
+    tmp_path: Path,
+) -> None:
+    store = CapabilityStore("sqlite:///:memory:", tmp_path)
+    server = _server()
+    store.create_server(server)
+    registry = _registry_from_store(store, server)
+
+    exported = registry.catalog_export()
+
+    assert exported["mcp_servers"][0]["discovery_state"] == "not_discovered"
+    assert exported["mcp_servers"][0]["review_state"] == "not_reviewed"
+    assert exported["mcp_servers"][0]["tools"] == []
     assert "schema_hash" not in json.dumps(exported)
 
 
-def test_catalog_export_redacts_sensitive_values_in_allowlisted_text_fields() -> None:
-    registry = UnifiedToolRegistry(ToolRegistry([]))
-    server = _server().model_copy(
-        update={
-            "runtime_name": "login=jane@example.com",
-            "runtime_version": "authorization: Bearer top-secret",
-        }
-    )
-    registry.refresh_server(server, [])
-
-    exported = registry.catalog_export()
-
-    assert exported["mcp_servers"][0]["runtime_name"] == "<redacted>"
-    assert exported["mcp_servers"][0]["runtime_version"] == "<redacted>"
-    serialized = json.dumps(exported, ensure_ascii=False).casefold()
-    assert "jane@example.com" not in serialized
-    assert "top-secret" not in serialized
-    assert "bearer" not in serialized
-
-
-def test_catalog_export_api_is_read_only_and_uses_registry_authority() -> None:
-    registry = UnifiedToolRegistry(ToolRegistry(["get_current_time"]))
+@pytest.mark.parametrize(
+    "sensitive",
+    [
+        "auth=top-secret",
+        "authorization: Basic dXNlcjpwYXNz",
+        "userinfo=user:pass",
+        "https://user:pass@example.test/private",
+        "user:pass",
+        "token=top-secret",
+        "cookie=session-value",
+        "jane@example.com",
+        "email=private-user",
+        "login=user:pass",
+        "resume=private resume body",
+    ],
+)
+def test_catalog_export_and_viewer_api_redact_sensitive_allowlisted_text(
+    tmp_path: Path,
+    sensitive: str,
+) -> None:
+    store = CapabilityStore("sqlite:///:memory:", tmp_path)
+    server = _server(runtime_name=sensitive, runtime_version=sensitive)
+    store.create_server(server)
+    registry = _registry_from_store(store, server)
     services = CapabilityApiServices(
-        manager=object(),
+        manager=_manager(store, server),
         registry=registry,
         skill_registry=None,
         confirmations=None,
-        store=None,
+        store=store,
         application=None,
     )
     app = FastAPI()
@@ -191,11 +253,15 @@ def test_catalog_export_api_is_read_only_and_uses_registry_authority() -> None:
         subject="catalog-viewer", role="viewer"
     )
 
+    exported = registry.catalog_export()
     with TestClient(app) as client:
         response = client.get("/v1/capabilities/catalog/export")
 
+    assert exported["mcp_servers"][0]["runtime_name"] == "<redacted>"
+    assert exported["mcp_servers"][0]["runtime_version"] == "<redacted>"
     assert response.status_code == 200
-    assert response.json() == registry.catalog_export()
+    assert response.json() == exported
+    assert sensitive.casefold() not in response.text.casefold()
 
 
 def test_capability_catalog_documents_required_fields_without_fake_snapshot() -> None:

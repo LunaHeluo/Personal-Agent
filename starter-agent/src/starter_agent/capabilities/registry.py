@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from datetime import datetime
 from threading import Lock
 from typing import Any, Iterable, Literal, Mapping
 
@@ -22,8 +23,11 @@ _CATALOG_SENSITIVE_TEXT = re.compile(
     r"(?:"
     r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
     r"|\bbearer\s+\S+"
-    r"|(?:api[_-]?key|authorization|cookie|credential|login|pass(?:word|wd)?"
-    r"|resume|secret|token)\s*[:=]\s*\S+"
+    r"|(?:[A-Za-z][A-Za-z0-9+.-]*://)?[^:/\s]+:[^@/\s]+@"
+    r"|\buser\s*:\s*pass\b"
+    r"|(?:api[_-]?key|auth(?:entication|orization)?|cookie|credential|email"
+    r"|login|pass(?:word|wd)?|resume|secret|token|user(?:info|name)?)"
+    r"\s*[:=]\s*\S+"
     r")",
     flags=re.IGNORECASE,
 )
@@ -102,6 +106,7 @@ class ExecutionCapability:
     connected: bool
     review_state: str
     browser: bool
+    reviewed_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,7 +172,7 @@ class UnifiedToolRegistry:
         state = self._state
         builtins = [
             {
-                "name": record.tool.name,
+                "name": _catalog_text(record.tool.name),
                 "server_id": "builtin",
                 "capability_type": "builtin",
                 "enabled": record.enabled and record.policy_allowed,
@@ -179,22 +184,42 @@ class UnifiedToolRegistry:
         servers: list[dict[str, object]] = []
         for record in state.servers:
             snapshot = record.snapshot
-            discovered = snapshot is not None
+            discovered = (
+                snapshot is not None
+                and snapshot.active
+                and not snapshot.stale
+            )
             tools = record.tools if discovered else ()
-            exported_tools = [
-                {
-                    "upstream_name": _catalog_text(tool.upstream_name),
-                    "model_alias": _catalog_text(tool.model_alias),
-                    "schema_hash": tool.schema_hash,
-                    "review_state": (
-                        "not_reviewed"
-                        if tool.review_state == "unreviewed"
-                        else tool.review_state
-                    ),
-                    "enabled": tool.enabled,
-                }
-                for tool in tools
-            ]
+            exported_tools: list[dict[str, object]] = []
+            for tool in tools:
+                reviewed = (
+                    tool.review_state == "approved"
+                    and tool.reviewed_at is not None
+                )
+                review_conclusion = (
+                    tool.review_state
+                    if tool.reviewed_at is not None
+                    and tool.review_state != "unreviewed"
+                    else "not_reviewed"
+                )
+                exported_tools.append(
+                    {
+                        "upstream_name": _catalog_text(tool.upstream_name),
+                        "model_alias": _catalog_text(tool.model_alias),
+                        "schema_hash": tool.schema_hash,
+                        "review_state": review_conclusion,
+                        "reviewed_at": (
+                            None
+                            if tool.reviewed_at is None
+                            else tool.reviewed_at.isoformat().replace(
+                                "+00:00", "Z"
+                            )
+                        ),
+                        "review_conclusion": review_conclusion,
+                        "reviewed": reviewed,
+                        "enabled": tool.enabled,
+                    }
+                )
             review_states = {item["review_state"] for item in exported_tools}
             if not review_states:
                 review_state = "not_reviewed"
@@ -219,15 +244,15 @@ class UnifiedToolRegistry:
                     "review_state": review_state,
                     "snapshot_id": (
                         None
-                        if snapshot is None
+                        if not discovered
                         else _catalog_text(snapshot.id)
                     ),
                     "snapshot_version": (
-                        None if snapshot is None else snapshot.version
+                        None if not discovered else snapshot.version
                     ),
                     "discovered_at": (
                         None
-                        if snapshot is None
+                        if not discovered
                         else snapshot.discovered_at.isoformat().replace(
                             "+00:00", "Z"
                         )
@@ -287,6 +312,7 @@ class UnifiedToolRegistry:
                         key.casefold().endswith(("url", "uri"))
                         for key in record.tool.input_schema.get("properties", {})
                     ),
+                    reviewed_at=None,
                 )
         for server_record in state.servers:
             for tool in server_record.tools:
@@ -310,6 +336,7 @@ class UnifiedToolRegistry:
                     review_state=tool.review_state,
                     browser=bool(tool.metadata.get("browser"))
                     or "public_url" in tool.outbound_scope,
+                    reviewed_at=tool.reviewed_at,
                 )
         return None
 

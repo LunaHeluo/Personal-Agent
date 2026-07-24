@@ -482,3 +482,121 @@ def test_skill_revision_update_is_persisted_and_stale_write_conflicts(
     assert store.get_skill(skill.name) == updated
     with pytest.raises(RevisionConflictError):
         store.update_skill(skill.name, expected_revision=0, enabled=False)
+
+
+def test_tool_review_cas_sets_and_persists_trusted_reviewed_at(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'review.db'}"
+    store = CapabilityStore(database_url, tmp_path)
+    store.create_server(_server())
+    schema = {"type": "object", "additionalProperties": False}
+    snapshot = Snapshot(
+        id="snapshot-review",
+        server_id="playwright",
+        version=1,
+        schema_hash=HASH,
+        discovered_at=datetime.now(UTC),
+        tool_count=1,
+    )
+    tool = Tool(
+        snapshot_id=snapshot.id,
+        server_id=snapshot.server_id,
+        upstream_name="observed_tool",
+        model_alias="mcp__playwright__observed_tool",
+        input_schema=schema,
+        schema_hash=canonical_json_sha256(schema),
+    )
+    store.create_snapshot(snapshot, tools=(tool,))
+    store.activate_snapshot(snapshot.server_id, snapshot.id)
+
+    before = datetime.now(UTC)
+    reviewed = store.update_tool(
+        snapshot.id,
+        tool.upstream_name,
+        expected_revision=0,
+        review_state="approved",
+    )
+    after = datetime.now(UTC)
+
+    assert reviewed.review_state == "approved"
+    assert reviewed.reviewed_at is not None
+    assert before <= reviewed.reviewed_at <= after
+    with pytest.raises(RevisionConflictError):
+        store.update_tool(
+            snapshot.id,
+            tool.upstream_name,
+            expected_revision=0,
+            review_state="rejected",
+        )
+    toggled = store.update_tool(
+        snapshot.id,
+        tool.upstream_name,
+        expected_revision=1,
+        enabled=True,
+    )
+    assert toggled.reviewed_at == reviewed.reviewed_at
+    store.close()
+
+    reopened = CapabilityStore(database_url, tmp_path)
+    persisted = reopened.list_tools(snapshot.id)[0]
+    assert persisted.reviewed_at == reviewed.reviewed_at
+    assert persisted.review_state == "approved"
+    review_required = reopened.update_tool(
+        snapshot.id,
+        tool.upstream_name,
+        expected_revision=2,
+        review_state="review_required",
+    )
+    assert review_required.reviewed_at is None
+    rejected_before = datetime.now(UTC)
+    rejected = reopened.update_tool(
+        snapshot.id,
+        tool.upstream_name,
+        expected_revision=3,
+        review_state="rejected",
+    )
+    rejected_after = datetime.now(UTC)
+    assert rejected.reviewed_at is not None
+    assert rejected_before <= rejected.reviewed_at <= rejected_after
+    with sqlite3.connect(tmp_path / "review.db") as connection:
+        row = connection.execute(
+            "SELECT review_state, reviewed_at FROM mcp_tools "
+            "WHERE snapshot_id = ? AND upstream_name = ?",
+            (snapshot.id, tool.upstream_name),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == "rejected"
+    assert row[1] is not None
+
+
+def test_store_adds_reviewed_at_column_to_legacy_mcp_tools_table(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "legacy-review.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE mcp_tools (
+                snapshot_id VARCHAR(160) NOT NULL,
+                upstream_name VARCHAR(200) NOT NULL,
+                server_id VARCHAR(160) NOT NULL,
+                model_alias VARCHAR(200) NOT NULL,
+                schema_hash VARCHAR(64) NOT NULL,
+                enabled BOOLEAN NOT NULL,
+                review_state VARCHAR(40) NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (snapshot_id, upstream_name)
+            )
+            """
+        )
+
+    store = CapabilityStore(f"sqlite:///{database_path}", tmp_path)
+
+    with sqlite3.connect(database_path) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(mcp_tools)").fetchall()
+        }
+    assert "reviewed_at" in columns
+    store.close()
