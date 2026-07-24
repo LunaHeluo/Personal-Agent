@@ -279,3 +279,52 @@ def test_raw_definition_clear_is_synchronously_reflected_before_new_requests() -
     assert load_raw.index("clearCapabilityRawState()") < load_raw.index(
         "capabilityRequest("
     )
+
+
+def test_background_authority_refresh_ignores_route_but_rejects_identity_or_api_changes() -> None:
+    result = run_capability_logic(
+        """(() => {
+          const token = {apiBase: "http://a", identityRevision: 4};
+          return [
+            CapabilityUiLogic.isAuthorityRequestCurrent(
+              token,
+              {apiBase: "http://a", identityRevision: 4, route: "skills"}
+            ),
+            CapabilityUiLogic.isAuthorityRequestCurrent(
+              token,
+              {apiBase: "http://b", identityRevision: 4}
+            ),
+            CapabilityUiLogic.isAuthorityRequestCurrent(
+              token,
+              {apiBase: "http://a", identityRevision: 5}
+            )
+          ];
+        })()"""
+    )
+    assert result == [True, False, False]
+
+
+def test_confirmation_authority_refresh_updates_cache_without_rendering_or_loaders() -> None:
+    source = function_source(
+        "refreshCapabilityAuthorityForConfirmation",
+        "decideCapabilityConfirmation",
+    )
+    for contract in (
+        "captureCapabilityAuthorityRequest",
+        "isCapabilityAuthorityRequestCurrent",
+        "capabilityState.serverDetails.set",
+        "capabilityState.toolDetails.set",
+        "capabilityState.skillDetails.set",
+        "/v1/capabilities/servers/",
+        "/v1/capabilities/tools/",
+        "/v1/capabilities/skills/",
+    ):
+        assert contract in source
+    for forbidden in (
+        "loadCapabilityServer(",
+        "loadCapabilityTool(",
+        "loadCapabilitySkill(",
+        "renderCapability",
+        "refreshCapabilityRoute(",
+    ):
+        assert forbidden not in source

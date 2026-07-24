@@ -1456,6 +1456,11 @@
         return [...retained.values()];
       },
 
+      isAuthorityRequestCurrent(token, current) {
+        return token.apiBase === current.apiBase
+          && token.identityRevision === current.identityRevision;
+      },
+
       isRequestCurrent(token, current) {
         return token.epoch === current.epoch
           && token.route === current.route
@@ -1605,6 +1610,20 @@
         token,
         currentCapabilityRequestState()
       );
+    }
+
+    function captureCapabilityAuthorityRequest() {
+      return {
+        apiBase: apiBase(),
+        identityRevision: capabilityState.identityRevision
+      };
+    }
+
+    function isCapabilityAuthorityRequestCurrent(token) {
+      return CapabilityUiLogic.isAuthorityRequestCurrent(token, {
+        apiBase: apiBase(),
+        identityRevision: capabilityState.identityRevision
+      });
     }
 
     function advanceCapabilityRequestEpoch() {
@@ -4005,15 +4024,68 @@
       const summary = confirmation.arguments_summary || {};
       const operation = summary.operation || "";
       const target = summary.target;
-      if (operation.startsWith("server.") && target) {
-        await loadCapabilityServer(target);
-      } else if (operation.startsWith("tool.") && target) {
-        await loadCapabilityTool(target);
-      } else if (operation.startsWith("skill.") && target) {
-        await loadCapabilitySkills();
-        await loadCapabilitySkill(target);
-      } else {
-        await refreshCapabilityRoute();
+      if (!target) return;
+      const request = captureCapabilityAuthorityRequest();
+      try {
+        if (operation.startsWith("server.")) {
+          const payload = await capabilityRequest(
+            `/v1/capabilities/servers/${encodeURIComponent(target)}`
+          );
+          if (!isCapabilityAuthorityRequestCurrent(request)) return;
+          const cached = capabilityState.serverDetails.get(target);
+          capabilityState.serverDetails.set(target, {
+            ...(cached || {}),
+            ...payload
+          });
+          const index = capabilityState.servers.findIndex(
+            server => server.id === target
+          );
+          if (index >= 0 && payload.server) {
+            capabilityState.servers.splice(index, 1, payload.server);
+          }
+        } else if (operation.startsWith("tool.")) {
+          const [detail, schema, policies] = await Promise.all([
+            capabilityRequest(
+              `/v1/capabilities/tools/${encodeURIComponent(target)}`
+            ),
+            capabilityRequest(
+              `/v1/capabilities/tools/${encodeURIComponent(target)}/schema`
+            ),
+            capabilityRequest(
+              `/v1/capabilities/tools/${encodeURIComponent(target)}/policies`
+            )
+          ]);
+          if (!isCapabilityAuthorityRequestCurrent(request)) return;
+          capabilityState.toolDetails.set(target, {
+            tool: detail.tool,
+            schema,
+            policies: policies.policies || []
+          });
+        } else if (operation.startsWith("skill.")) {
+          const [detail, health] = await Promise.all([
+            capabilityRequest(
+              `/v1/capabilities/skills/${encodeURIComponent(target)}`
+            ),
+            capabilityRequest(
+              `/v1/capabilities/skills/${encodeURIComponent(target)}/health`
+            )
+          ]);
+          if (!isCapabilityAuthorityRequestCurrent(request)) return;
+          capabilityState.skillDetails.set(target, {
+            skill: detail.skill,
+            record: detail.record,
+            health
+          });
+          const index = capabilityState.skills.findIndex(
+            skill => skill.name === target
+          );
+          if (index >= 0 && detail.skill) {
+            capabilityState.skills.splice(index, 1, detail.skill);
+          }
+        }
+      } catch (_error) {
+        // A later foreground refresh reports errors; background reconciliation
+        // must never overwrite or redraw the current route.
       }
     }
 
