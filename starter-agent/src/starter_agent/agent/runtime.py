@@ -242,89 +242,12 @@ class AgentRuntime:
                     "trace_ref": trace_ref,
                 }
             )
-        try:
-            result = await self.executor.execute(
-                request,
-                permit_id=decision.permit.id,
-                forced=forced,
-                retry=retry,
-            )
-        except BaseException as exc:
-            error_code = getattr(exc, "code", None) or (
-                "tool_execution_cancelled"
-                if isinstance(exc, asyncio.CancelledError)
-                else "tool_execution_error"
-            )
-            completed_audit_ref = self._append_audit(
-                action="tool.completed",
-                target=f"tool:{request.server_id}:{request.tool_name}",
-                decision="error",
-                reason_code=error_code,
-                session_id=str(session_id),
-                turn_id=str(turn_id),
-                call_id=call_id,
-                payload={
-                    "confirmation_id": decision.permit.confirmation_id,
-                    "tool_invoked": self._tool_was_invoked(call_id),
-                },
-            )
-            if on_tool_event is not None:
-                await on_tool_event(
-                    {
-                        "type": "tool_completed",
-                        "name": tool_name,
-                        "call_id": call_id,
-                        "confirmation_id": decision.permit.confirmation_id,
-                        "session_id": str(session_id),
-                        "turn_id": str(turn_id),
-                        "server_id": request.server_id,
-                        "ok": False,
-                        "status": "failed",
-                        "error_code": error_code,
-                        "display": "Tool execution did not complete.",
-                        "tool_invoked": self._tool_was_invoked(call_id),
-                        "audit_ref": completed_audit_ref,
-                        "trace_ref": trace_ref,
-                    }
-                )
-            raise
-        completed_audit_ref = self._append_audit(
-            action="tool.completed",
-            target=f"tool:{request.server_id}:{request.tool_name}",
-            decision="allow" if getattr(result, "ok", True) else "error",
-            reason_code=(
-                "tool_invocation_completed"
-                if getattr(result, "ok", True)
-                else getattr(result, "error_code", None) or "tool_result_failed"
-            ),
-            session_id=str(session_id),
-            turn_id=str(turn_id),
-            call_id=call_id,
-            payload={
-                "confirmation_id": decision.permit.confirmation_id,
-                "tool_invoked": True,
-            },
+        return await self.executor.execute(
+            request,
+            permit_id=decision.permit.id,
+            forced=forced,
+            retry=retry,
         )
-        if on_tool_event is not None:
-            await on_tool_event(
-                {
-                    "type": "tool_completed",
-                    "name": tool_name,
-                    "call_id": call_id,
-                    "confirmation_id": decision.permit.confirmation_id,
-                    "session_id": str(session_id),
-                    "turn_id": str(turn_id),
-                    "server_id": request.server_id,
-                    "ok": getattr(result, "ok", True),
-                    "status": "completed",
-                    "error_code": getattr(result, "error_code", None),
-                    "display": getattr(result, "display", None),
-                    "tool_invoked": True,
-                    "audit_ref": completed_audit_ref,
-                    "trace_ref": trace_ref,
-                }
-            )
-        return result
 
     def _append_audit(
         self,
@@ -526,6 +449,7 @@ class AgentRuntime:
                 tool_retryable = False
                 tool_failure_type: str | None = None
                 tool_metadata: dict[str, object] = dict(trusted_provenance)
+                execution_event_context: dict[str, object] = {}
                 if tool is None and capability is None:
                     tool_error_code = "unknown_tool"
                     tool_display = "模型请求了未注册的工具"
@@ -546,6 +470,22 @@ class AgentRuntime:
                                 else capability.risk_level
                             ),
                         )
+                        async def forward_tool_event(event: dict) -> None:
+                            if event.get("call_id") == call.id:
+                                for key in (
+                                    "confirmation_id",
+                                    "session_id",
+                                    "turn_id",
+                                    "server_id",
+                                    "audit_ref",
+                                    "trace_ref",
+                                ):
+                                    value = event.get(key)
+                                    if value is not None:
+                                        execution_event_context[key] = value
+                            if on_tool_event is not None:
+                                await on_tool_event(event)
+
                         result = await asyncio.wait_for(
                             self.execute_tool(
                                 tool_name=call.name,
@@ -555,7 +495,11 @@ class AgentRuntime:
                                 call_id=call.id,
                                 forced=required_tool_name == call.name,
                                 retry=repeated_calls[signature] > 1,
-                                on_tool_event=on_tool_event,
+                                on_tool_event=(
+                                    forward_tool_event
+                                    if on_tool_event is not None
+                                    else None
+                                ),
                             ),
                             timeout=self.budget.tool_timeout_seconds,
                         )
@@ -723,6 +667,13 @@ class AgentRuntime:
                     "context_result_tokens": int(
                         guarded.context_result_tokens
                     ),
+                    "confirmation_id": execution_event_context.get(
+                        "confirmation_id"
+                    ),
+                    "tool_invoked": self._tool_was_invoked(call.id),
+                    "trace_ref": (
+                        f"trace:{session_id}:{turn_id}:{call.id}"
+                    ),
                 }
                 completed_audit_ref = self._append_audit(
                     action="tool.completed",
@@ -754,6 +705,26 @@ class AgentRuntime:
                             "type": "tool_completed",
                             "call_id": call.id,
                             "name": call.name,
+                            "confirmation_id": execution_event_context.get(
+                                "confirmation_id"
+                            ),
+                            "session_id": str(session_id),
+                            "turn_id": str(turn_id),
+                            "status": (
+                                "completed"
+                                if tool_ok
+                                else (
+                                    "cancelled"
+                                    if tool_error_code
+                                    == "tool_confirmation_cancelled"
+                                    else (
+                                        "expired"
+                                        if tool_error_code
+                                        == "tool_confirmation_timeout"
+                                        else "failed"
+                                    )
+                                )
+                            ),
                             "ok": tool_ok,
                             "error_code": tool_error_code,
                             "is_truncated": guarded.is_truncated,

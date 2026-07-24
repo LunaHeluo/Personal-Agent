@@ -64,7 +64,10 @@ def test_pending_confirmations_are_read_from_persistent_store() -> None:
     )
 
     with TestClient(app) as client:
-        response = client.get("/v1/capabilities/confirmations/pending")
+        response = client.get(
+            "/v1/capabilities/confirmations/pending",
+            params={"session_id": "management"},
+        )
 
     assert response.status_code == 200
     assert response.json()["confirmations"][0]["id"] == pending.id
@@ -305,7 +308,10 @@ def test_pending_and_decision_are_principal_scoped_unless_admin() -> None:
         subject="bob", role="operator"
     )
     with TestClient(app) as client:
-        visible = client.get("/v1/capabilities/confirmations/pending")
+        visible = client.get(
+            "/v1/capabilities/confirmations/pending",
+            params={"session_id": "session-a"},
+        )
         denied = client.post(
             f"/v1/capabilities/confirmations/{pending.id}/decisions",
             json={

@@ -1608,7 +1608,7 @@ def create_capabilities_router() -> APIRouter:
 
     @router.get("/confirmations/pending")
     async def pending_confirmations(
-        session_id: str | None = None,
+        session_id: str = Query(min_length=1, max_length=200),
         services: CapabilityApiServices = Depends(get_capability_services),
         actor: ManagementPrincipal = Depends(get_management_principal),
     ) -> dict[str, Any]:
@@ -1621,20 +1621,20 @@ def create_capabilities_router() -> APIRouter:
             )
         else:
             values = services.confirmations.list_pending(session_id=session_id)
-        values = [
-            item
-            for item in values
-            if (
-                (
-                    item.server_id == "management"
-                    and (actor.role == "admin" or item.principal == actor.subject)
-                )
-                or (
-                    item.server_id != "management"
-                    and item.principal == actor.subject
-                )
-            )
-        ]
+        if session_id == "management":
+            values = [
+                item
+                for item in values
+                if item.server_id == "management"
+                and (actor.role == "admin" or item.principal == actor.subject)
+            ]
+        else:
+            values = [
+                item
+                for item in values
+                if item.server_id != "management"
+                and item.principal == actor.subject
+            ]
         return {
             "confirmations": [
                 _confirmation_authority(services, item) for item in values
@@ -1662,6 +1662,12 @@ def create_capabilities_router() -> APIRouter:
                 "confirmation_session_mismatch",
                 "Confirmation is bound to a different session.",
             )
+        if (current.server_id == "management") != (session_id == "management"):
+            raise _http_error(
+                403,
+                "confirmation_namespace_mismatch",
+                "Chat and management confirmations use separate namespaces.",
+            )
         if current.server_id == "management":
             if actor.role != "admin" and current.principal != actor.subject:
                 raise _http_error(403, "confirmation_principal_mismatch", "Forbidden.")
@@ -1688,6 +1694,12 @@ def create_capabilities_router() -> APIRouter:
         except RecordNotFoundError as exc:
             raise _http_error(404, "confirmation_not_found", "Not found.") from exc
         is_management = current.server_id == "management"
+        if is_management != (current.session_id == "management"):
+            raise _http_error(
+                403,
+                "confirmation_namespace_mismatch",
+                "Chat and management confirmations use separate namespaces.",
+            )
         if is_management:
             if current.principal != actor.subject and actor.role != "admin":
                 raise _http_error(403, "confirmation_principal_mismatch", "Forbidden.")
@@ -1698,6 +1710,16 @@ def create_capabilities_router() -> APIRouter:
                 403,
                 "confirmation_session_mismatch",
                 "Confirmation is bound to a different session.",
+            )
+        if (
+            is_management
+            and mutation.session_id is not None
+            and mutation.session_id != "management"
+        ):
+            raise _http_error(
+                403,
+                "confirmation_namespace_mismatch",
+                "Management confirmations require the management session.",
             )
         replay = _replay_result(services, current, mutation)
         if replay is not None:
