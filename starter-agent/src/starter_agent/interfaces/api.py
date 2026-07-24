@@ -322,6 +322,7 @@ def create_api() -> FastAPI:
         allow_headers=["Content-Type", "If-Match", "Idempotency-Key", "Authorization"],
     )
     api.include_router(create_capabilities_router())
+    active_chat_tasks: set[asyncio.Task] = set()
 
     @api.get("/health")
     async def health() -> dict[str, str]:
@@ -1003,6 +1004,8 @@ def create_api() -> FastAPI:
                     await queue.put(None)
 
             task = asyncio.create_task(run_chat())
+            active_chat_tasks.add(task)
+            task.add_done_callback(active_chat_tasks.discard)
             try:
                 while True:
                     event = await queue.get()
@@ -1010,7 +1013,16 @@ def create_api() -> FastAPI:
                         break
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             finally:
-                await task
+                if task.done():
+                    await task
+                else:
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        # A browser refresh closes only this SSE transport. The
+                        # persisted turn remains live so the same session can
+                        # recover and decide its pending confirmation.
+                        pass
 
         return StreamingResponse(
             events(),

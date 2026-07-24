@@ -156,6 +156,7 @@ class PolicyMutation(ManagementMutation):
 class ConfirmationDecisionRequest(ManagementMutation):
     decision: Literal["once", "allowlist", "cancel"]
     idempotency_key: str = Field(min_length=1, max_length=1000)
+    session_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class CapabilityApiServices:
@@ -656,6 +657,47 @@ def _confirmation_result(confirmation: Confirmation) -> dict[str, Any]:
         "state": _dump(confirmation),
         "confirmation": _dump(confirmation),
     }
+
+
+def _confirmation_authority(
+    services: CapabilityApiServices,
+    confirmation: Confirmation,
+) -> dict[str, Any]:
+    payload = dict(_dump(confirmation))
+    events = (
+        []
+        if services.store is None
+        else [
+            event
+            for event in services.store.list_audit_events()
+            if event.session_id == confirmation.session_id
+            and event.turn_id == confirmation.turn_id
+            and event.call_id == confirmation.call_id
+        ]
+    )
+    latest = events[-1] if events else None
+    payload.update(
+        {
+            "allowlist_allowed": confirmation.gate_reason_code != "always_confirm",
+            "allowlist_reason": (
+                None
+                if confirmation.gate_reason_code != "always_confirm"
+                else "always_confirm policy requires approval for every call"
+            ),
+            "audit_ref": None if latest is None else latest.event_id,
+            "trace_ref": (
+                f"trace:{confirmation.session_id}:"
+                f"{confirmation.turn_id}:{confirmation.call_id}"
+            ),
+            "reason_code": (
+                confirmation.gate_reason_code
+                if latest is None
+                else latest.reason_code
+            ),
+            "tool_invoked": any(event.action == "tool.invoked" for event in events),
+        }
+    )
+    return payload
 
 
 def _manager_error(
@@ -1579,9 +1621,53 @@ def create_capabilities_router() -> APIRouter:
             )
         else:
             values = services.confirmations.list_pending(session_id=session_id)
-        if actor.role != "admin":
-            values = [item for item in values if item.principal == actor.subject]
-        return {"confirmations": [_dump(item) for item in values]}
+        values = [
+            item
+            for item in values
+            if (
+                (
+                    item.server_id == "management"
+                    and (actor.role == "admin" or item.principal == actor.subject)
+                )
+                or (
+                    item.server_id != "management"
+                    and item.principal == actor.subject
+                )
+            )
+        ]
+        return {
+            "confirmations": [
+                _confirmation_authority(services, item) for item in values
+            ]
+        }
+
+    @router.get("/confirmations/{confirmation_id}")
+    async def get_confirmation(
+        confirmation_id: str,
+        session_id: str = Query(min_length=1, max_length=200),
+        services: CapabilityApiServices = Depends(get_capability_services),
+        actor: ManagementPrincipal = Depends(get_management_principal),
+    ) -> dict[str, Any]:
+        require_role(actor, "viewer")
+        if services.confirmations is None:
+            raise _http_error(503, "confirmation_service_unavailable", "Unavailable.")
+        services.confirmations.list_pending(session_id=session_id)
+        try:
+            current = services.confirmations.get(confirmation_id)
+        except RecordNotFoundError as exc:
+            raise _http_error(404, "confirmation_not_found", "Not found.") from exc
+        if current.session_id != session_id:
+            raise _http_error(
+                403,
+                "confirmation_session_mismatch",
+                "Confirmation is bound to a different session.",
+            )
+        if current.server_id == "management":
+            if actor.role != "admin" and current.principal != actor.subject:
+                raise _http_error(403, "confirmation_principal_mismatch", "Forbidden.")
+        elif current.principal != actor.subject:
+            raise _http_error(403, "confirmation_principal_mismatch", "Forbidden.")
+        return {"confirmation": _confirmation_authority(services, current)}
 
     @router.post("/confirmations/{confirmation_id}/decisions")
     async def decide_confirmation(
@@ -1602,8 +1688,17 @@ def create_capabilities_router() -> APIRouter:
         except RecordNotFoundError as exc:
             raise _http_error(404, "confirmation_not_found", "Not found.") from exc
         is_management = current.server_id == "management"
-        if current.principal != actor.subject and actor.role != "admin":
+        if is_management:
+            if current.principal != actor.subject and actor.role != "admin":
+                raise _http_error(403, "confirmation_principal_mismatch", "Forbidden.")
+        elif current.principal != actor.subject:
             raise _http_error(403, "confirmation_principal_mismatch", "Forbidden.")
+        if not is_management and mutation.session_id != current.session_id:
+            raise _http_error(
+                403,
+                "confirmation_session_mismatch",
+                "Confirmation is bound to a different session.",
+            )
         replay = _replay_result(services, current, mutation)
         if replay is not None:
             replay_status, replay_response = replay
@@ -1695,7 +1790,13 @@ def create_capabilities_router() -> APIRouter:
                 authoritative_state=_dump(latest),
             ) from exc
         if not is_management:
-            return _confirmation_result(decided)
+            authority = _confirmation_authority(services, decided)
+            return {
+                "operation_id": decided.turn_id,
+                "revision": decided.revision,
+                "state": authority,
+                "confirmation": authority,
+            }
         if mutation.decision == "cancel":
             result = _confirmation_result(decided)
             _record_management_terminal(

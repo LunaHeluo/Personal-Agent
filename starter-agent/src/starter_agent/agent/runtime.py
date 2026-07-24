@@ -182,7 +182,7 @@ class AgentRuntime:
                 confirmation_id=confirmation_id,
             )
         )
-        self._append_audit(
+        gate_audit_ref = self._append_audit(
             action="gate.evaluated",
             target=f"tool:{request.server_id}:{request.tool_name}",
             decision=decision.outcome,
@@ -213,12 +213,118 @@ class AgentRuntime:
             )
             raise ToolExecutionDenied(code)
         assert decision.permit is not None
-        return await self.executor.execute(
-            request,
-            permit_id=decision.permit.id,
-            forced=forced,
-            retry=retry,
+        trace_ref = f"trace:{session_id}:{turn_id}:{call_id}"
+        started_audit_ref = self._append_audit(
+            action="tool.started",
+            target=f"tool:{request.server_id}:{request.tool_name}",
+            decision="allow",
+            reason_code="gate_revalidated",
+            session_id=str(session_id),
+            turn_id=str(turn_id),
+            call_id=call_id,
+            payload={
+                "confirmation_id": decision.permit.confirmation_id,
+                "gate_audit_ref": gate_audit_ref,
+                "request_hash": request.request_hash,
+            },
         )
+        if on_tool_event is not None:
+            await on_tool_event(
+                {
+                    "type": "tool_started",
+                    "name": tool_name,
+                    "call_id": call_id,
+                    "confirmation_id": decision.permit.confirmation_id,
+                    "session_id": str(session_id),
+                    "turn_id": str(turn_id),
+                    "server_id": request.server_id,
+                    "audit_ref": started_audit_ref,
+                    "trace_ref": trace_ref,
+                }
+            )
+        try:
+            result = await self.executor.execute(
+                request,
+                permit_id=decision.permit.id,
+                forced=forced,
+                retry=retry,
+            )
+        except BaseException as exc:
+            error_code = getattr(exc, "code", None) or (
+                "tool_execution_cancelled"
+                if isinstance(exc, asyncio.CancelledError)
+                else "tool_execution_error"
+            )
+            completed_audit_ref = self._append_audit(
+                action="tool.completed",
+                target=f"tool:{request.server_id}:{request.tool_name}",
+                decision="error",
+                reason_code=error_code,
+                session_id=str(session_id),
+                turn_id=str(turn_id),
+                call_id=call_id,
+                payload={
+                    "confirmation_id": decision.permit.confirmation_id,
+                    "tool_invoked": self._tool_was_invoked(call_id),
+                },
+            )
+            if on_tool_event is not None:
+                await on_tool_event(
+                    {
+                        "type": "tool_completed",
+                        "name": tool_name,
+                        "call_id": call_id,
+                        "confirmation_id": decision.permit.confirmation_id,
+                        "session_id": str(session_id),
+                        "turn_id": str(turn_id),
+                        "server_id": request.server_id,
+                        "ok": False,
+                        "status": "failed",
+                        "error_code": error_code,
+                        "display": "Tool execution did not complete.",
+                        "tool_invoked": self._tool_was_invoked(call_id),
+                        "audit_ref": completed_audit_ref,
+                        "trace_ref": trace_ref,
+                    }
+                )
+            raise
+        completed_audit_ref = self._append_audit(
+            action="tool.completed",
+            target=f"tool:{request.server_id}:{request.tool_name}",
+            decision="allow" if getattr(result, "ok", True) else "error",
+            reason_code=(
+                "tool_invocation_completed"
+                if getattr(result, "ok", True)
+                else getattr(result, "error_code", None) or "tool_result_failed"
+            ),
+            session_id=str(session_id),
+            turn_id=str(turn_id),
+            call_id=call_id,
+            payload={
+                "confirmation_id": decision.permit.confirmation_id,
+                "tool_invoked": True,
+            },
+        )
+        if on_tool_event is not None:
+            await on_tool_event(
+                {
+                    "type": "tool_completed",
+                    "name": tool_name,
+                    "call_id": call_id,
+                    "confirmation_id": decision.permit.confirmation_id,
+                    "session_id": str(session_id),
+                    "turn_id": str(turn_id),
+                    "server_id": request.server_id,
+                    "ok": getattr(result, "ok", True),
+                    "status": "completed",
+                    "error_code": getattr(result, "error_code", None),
+                    "display": getattr(result, "display", None),
+                    "tool_invoked": True,
+                    "audit_ref": completed_audit_ref,
+                    "trace_ref": trace_ref,
+                }
+            )
+        return result
 
     def _append_audit(
         self,
@@ -231,21 +337,27 @@ class AgentRuntime:
         turn_id: str,
         call_id: str,
         payload: dict | None = None,
-    ) -> None:
-        self.gate.store.append_audit_event(
-            AuditEvent(
-                event_id=f"audit-{uuid4().hex}",
-                actor="runtime",
-                action=action,
-                target=target,
-                decision=decision,
-                reason_code=reason_code,
-                session_id=session_id,
-                turn_id=turn_id,
-                call_id=call_id,
-                payload=payload or {},
-                created_at=datetime.now(UTC),
-            )
+    ) -> str:
+        event = AuditEvent(
+            event_id=f"audit-{uuid4().hex}",
+            actor="runtime",
+            action=action,
+            target=target,
+            decision=decision,
+            reason_code=reason_code,
+            session_id=session_id,
+            turn_id=turn_id,
+            call_id=call_id,
+            payload=payload or {},
+            created_at=datetime.now(UTC),
+        )
+        self.gate.store.append_audit_event(event)
+        return event.event_id
+
+    def _tool_was_invoked(self, call_id: str) -> bool:
+        return any(
+            event.action == "tool.invoked" and event.call_id == call_id
+            for event in self.gate.store.list_audit_events()
         )
 
     def _context_for_request(self, request):
@@ -388,14 +500,6 @@ class AgentRuntime:
                     call_id=call.id,
                     payload={"tool_name": call.name},
                 )
-                if on_tool_event:
-                    await on_tool_event(
-                        {
-                            "type": "tool_started",
-                            "call_id": call.id,
-                            "name": call.name,
-                        }
-                    )
                 if tool_calls >= self.budget.max_tool_calls:
                     raise RuntimeBudgetExceeded("Maximum tool calls exceeded")
                 signature = f"{call.name}:{json.dumps(call.arguments, sort_keys=True)}"
@@ -620,7 +724,7 @@ class AgentRuntime:
                         guarded.context_result_tokens
                     ),
                 }
-                self._append_audit(
+                completed_audit_ref = self._append_audit(
                     action="tool.completed",
                     target=f"tool:{call.name}",
                     decision="allow" if tool_ok else "error",
@@ -683,6 +787,11 @@ class AgentRuntime:
                             "retryable": tool_retryable,
                             "failure_type": tool_failure_type,
                             "metadata": tool_metadata,
+                            "tool_invoked": self._tool_was_invoked(call.id),
+                            "audit_ref": completed_audit_ref,
+                            "trace_ref": (
+                                f"trace:{session_id}:{turn_id}:{call.id}"
+                            ),
                         }
                     )
 

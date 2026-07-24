@@ -290,30 +290,37 @@ class ConfirmationService:
         decision: str,
         reason_code: str,
         actor: str,
-    ) -> None:
-        self.store.append_audit_event(
-            AuditEvent(
-                event_id=f"audit-{uuid4().hex}",
-                actor=actor,
-                action=action,
-                target=f"confirmation:{confirmation.id}",
-                decision=decision,
-                reason_code=reason_code,
-                session_id=confirmation.session_id,
-                turn_id=confirmation.turn_id,
-                call_id=confirmation.call_id,
-                payload={
-                    "server_id": confirmation.server_id,
-                    "tool_name": confirmation.tool_name,
-                    "request_hash": confirmation.request_hash,
-                    "schema_hash": confirmation.schema_hash,
-                    "arguments_hash": confirmation.arguments_hash,
-                    "policy_revision": confirmation.policy_revision,
-                    "status": confirmation.status,
-                },
-                created_at=self._now(),
-            )
+    ) -> AuditEvent:
+        event = AuditEvent(
+            event_id=f"audit-{uuid4().hex}",
+            actor=actor,
+            action=action,
+            target=f"confirmation:{confirmation.id}",
+            decision=decision,
+            reason_code=reason_code,
+            session_id=confirmation.session_id,
+            turn_id=confirmation.turn_id,
+            call_id=confirmation.call_id,
+            payload={
+                "server_id": confirmation.server_id,
+                "tool_name": confirmation.tool_name,
+                "request_hash": confirmation.request_hash,
+                "schema_hash": confirmation.schema_hash,
+                "arguments_hash": confirmation.arguments_hash,
+                "policy_revision": confirmation.policy_revision,
+                "status": confirmation.status,
+            },
+            created_at=self._now(),
         )
+        self.store.append_audit_event(event)
+        return event
+
+    def latest_audit_ref(self, confirmation: Confirmation) -> str | None:
+        target = f"confirmation:{confirmation.id}"
+        for event in reversed(self.store.list_audit_events()):
+            if event.target == target:
+                return event.event_id
+        return None
 
 
 EventSink = Callable[[dict], Awaitable[None]]
@@ -338,37 +345,39 @@ class TurnCoordinator:
     ) -> GateDecision:
         pending = self.confirmations.create_pending(request, gate_decision)
         if on_event is not None:
-            await on_event(
-                {
-                    "type": "confirmation_required",
-                    "confirmation_id": pending.id,
-                    "server_id": pending.server_id,
-                    "tool_name": pending.tool_name,
-                    "arguments_summary": dict(pending.arguments_summary),
-                    "risk": pending.risk,
-                    "destination": pending.destination,
-                    "expires_at": pending.expires_at.isoformat(),
-                    "revision": pending.revision,
-                    "allowlist_allowed": pending.gate_reason_code != "always_confirm",
-                }
-            )
+            await on_event(self._required_event(pending))
         timeout = min(
             self.confirmation_timeout_seconds,
             max(0.001, (pending.expires_at - datetime.now(UTC)).total_seconds()),
         )
+        deadline = datetime.now(UTC) + timedelta(seconds=timeout)
         try:
-            await self.confirmations.broker.wait(pending.id, timeout=timeout)
-        except ConfirmationWaitTimeout as exc:
-            current = self.confirmations.get(pending.id)
-            if current.status == "pending":
-                self.confirmations.expire(
-                    pending.id, reason_code="confirmation_timeout"
-                )
-            raise ToolExecutionDenied("tool_confirmation_timeout") from exc
+            while True:
+                current = self.confirmations.get(pending.id)
+                if current.status != "pending":
+                    break
+                remaining = (deadline - datetime.now(UTC)).total_seconds()
+                if remaining <= 0:
+                    current = self.confirmations.expire(
+                        pending.id, reason_code="confirmation_timeout"
+                    )
+                    await self._emit_resolved(
+                        current,
+                        on_event=on_event,
+                        reason_code="confirmation_timeout",
+                    )
+                    raise ToolExecutionDenied("tool_confirmation_timeout")
+                try:
+                    await self.confirmations.broker.wait(
+                        pending.id,
+                        timeout=min(0.25, remaining),
+                    )
+                except ConfirmationWaitTimeout:
+                    continue
         except asyncio.CancelledError:
             current = self.confirmations.get(pending.id)
             if current.status == "pending":
-                self.confirmations.decide(
+                current = self.confirmations.decide(
                     pending.id,
                     expected_revision=current.revision,
                     idempotency_key=f"server-cancel-{pending.id}",
@@ -377,37 +386,56 @@ class TurnCoordinator:
                 )
             raise
         current = self.confirmations.get(pending.id)
-        if on_event is not None:
-            await on_event(
-                {
-                    "type": "confirmation_resolved",
-                    "confirmation_id": current.id,
-                    "status": current.status,
-                    "decision": current.decision,
-                }
-            )
         if current.status != "approved":
-            raise ToolExecutionDenied(
+            reason_code = (
                 "tool_confirmation_cancelled"
                 if current.status == "cancelled"
                 else f"tool_confirmation_{current.status}"
             )
+            if current.status == "invalidated":
+                latest = await self.confirmations.gate.evaluate(
+                    request, issue_permit=False
+                )
+                reason_code = latest.reason_code
+            await self._emit_resolved(
+                current,
+                on_event=on_event,
+                reason_code=reason_code,
+            )
+            raise ToolExecutionDenied(reason_code)
         rules = self.confirmations.store.list_policy_rules(
             request.server_id, request.tool_name
         )
         if current.policy_revision != _policy_revision(rules):
-            self.confirmations.invalidate(
+            current = self.confirmations.invalidate(
                 current.id, reason_code="confirmation_policy_changed"
+            )
+            await self._emit_resolved(
+                current,
+                on_event=on_event,
+                reason_code="confirmation_policy_changed",
             )
             raise ToolExecutionDenied("confirmation_policy_changed")
         latest = await self.confirmations.gate.evaluate(request, issue_permit=False)
         if latest.outcome == "deny":
-            self.confirmations.invalidate(current.id, reason_code=latest.reason_code)
+            current = self.confirmations.invalidate(
+                current.id, reason_code=latest.reason_code
+            )
+            await self._emit_resolved(
+                current,
+                on_event=on_event,
+                reason_code=latest.reason_code,
+            )
             raise ToolExecutionDenied(latest.reason_code)
         if current.decision == "allowlist":
             if latest.reason_code == "always_confirm":
-                self.confirmations.invalidate(
+                current = self.confirmations.invalidate(
                     current.id, reason_code="allowlist_forbidden_always_confirm"
+                )
+                await self._emit_resolved(
+                    current,
+                    on_event=on_event,
+                    reason_code="allowlist_forbidden_always_confirm",
                 )
                 raise ToolExecutionDenied("allowlist_forbidden_always_confirm")
             self._create_allowlist(request, current)
@@ -415,11 +443,90 @@ class TurnCoordinator:
             request, confirmation_id=current.id
         )
         if approved.outcome != "allow" or approved.permit is None:
-            self.confirmations.invalidate(
+            current = self.confirmations.invalidate(
                 current.id, reason_code=approved.reason_code
             )
+            await self._emit_resolved(
+                current,
+                on_event=on_event,
+                reason_code=approved.reason_code,
+            )
             raise ToolExecutionDenied(approved.reason_code)
+        await self._emit_resolved(
+            current,
+            on_event=on_event,
+            reason_code=approved.reason_code,
+            gate_revalidated=True,
+        )
         return approved
+
+    def _required_event(self, confirmation: Confirmation) -> dict:
+        allowlist_allowed = confirmation.gate_reason_code != "always_confirm"
+        return {
+            "type": "confirmation_required",
+            "confirmation_id": confirmation.id,
+            "principal": confirmation.principal,
+            "session_id": confirmation.session_id,
+            "turn_id": confirmation.turn_id,
+            "call_id": confirmation.call_id,
+            "server_id": confirmation.server_id,
+            "tool_name": confirmation.tool_name,
+            "arguments_summary": dict(confirmation.arguments_summary),
+            "risk": confirmation.risk,
+            "destination": confirmation.destination,
+            "data_classes": list(confirmation.data_classes or ()),
+            "expires_at": confirmation.expires_at.isoformat(),
+            "revision": confirmation.revision,
+            "status": confirmation.status,
+            "gate_reason_code": confirmation.gate_reason_code,
+            "allowlist_allowed": allowlist_allowed,
+            "allowlist_reason": (
+                None
+                if allowlist_allowed
+                else "always_confirm policy requires approval for every call"
+            ),
+            "tool_invoked": False,
+            "audit_ref": self.confirmations.latest_audit_ref(confirmation),
+            "trace_ref": self._trace_ref(confirmation),
+        }
+
+    async def _emit_resolved(
+        self,
+        confirmation: Confirmation,
+        *,
+        on_event: EventSink | None,
+        reason_code: str,
+        gate_revalidated: bool = False,
+    ) -> None:
+        if on_event is None:
+            return
+        await on_event(
+            {
+                "type": "confirmation_resolved",
+                "confirmation_id": confirmation.id,
+                "principal": confirmation.principal,
+                "session_id": confirmation.session_id,
+                "turn_id": confirmation.turn_id,
+                "call_id": confirmation.call_id,
+                "server_id": confirmation.server_id,
+                "tool_name": confirmation.tool_name,
+                "status": confirmation.status,
+                "decision": confirmation.decision,
+                "reason_code": reason_code,
+                "revision": confirmation.revision,
+                "gate_revalidated": gate_revalidated,
+                "tool_invoked": False,
+                "audit_ref": self.confirmations.latest_audit_ref(confirmation),
+                "trace_ref": self._trace_ref(confirmation),
+            }
+        )
+
+    @staticmethod
+    def _trace_ref(confirmation: Confirmation) -> str:
+        return (
+            f"trace:{confirmation.session_id}:"
+            f"{confirmation.turn_id}:{confirmation.call_id}"
+        )
 
     def _create_allowlist(
         self, request: ToolCallRequest, confirmation: Confirmation

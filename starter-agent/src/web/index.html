@@ -1140,6 +1140,58 @@
         grid-template-columns: 1fr;
       }
     }
+
+    .chat-confirmation-cards {
+      display: grid;
+      gap: 10px;
+      padding: 0 20px 12px;
+    }
+
+    .chat-confirmation-card {
+      padding: 14px;
+      border: 1px solid #d8b45b;
+      border-radius: 12px;
+      background: #fffaf0;
+      overflow-wrap: anywhere;
+    }
+
+    .chat-confirmation-card h3 {
+      margin: 0 0 10px;
+    }
+
+    .chat-confirmation-fields {
+      display: grid;
+      grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
+      gap: 6px 12px;
+      margin: 0;
+    }
+
+    .chat-confirmation-fields dt {
+      color: var(--muted);
+      font-weight: 650;
+    }
+
+    .chat-confirmation-fields dd {
+      margin: 0;
+      white-space: pre-wrap;
+    }
+
+    .chat-confirmation-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .chat-confirmation-status {
+      margin-top: 10px;
+      color: var(--muted);
+      white-space: pre-wrap;
+    }
+
+    .chat-confirmation-status.error {
+      color: var(--warn);
+    }
   </style>
 </head>
 <body>
@@ -1205,6 +1257,11 @@
       </header>
 
       <div id="messages" class="messages" aria-live="polite"></div>
+      <div
+        id="chatConfirmationCards"
+        class="chat-confirmation-cards"
+        aria-live="polite"
+      ></div>
 
       <footer class="composer-wrap">
         <div id="toolMenu" class="tool-menu" hidden></div>
@@ -1471,9 +1528,11 @@
     /* capability-ui-logic:end */
 
     const TOOL_GOVERNANCE_STORAGE_KEY = "starter-agent.tool-governance-enabled";
+    const CHAT_SESSION_STORAGE_KEY = "starter-agent.current-chat-session";
     const state = {
-      sessionId: null,
+      sessionId: sessionStorage.getItem(CHAT_SESSION_STORAGE_KEY),
       isSending: false,
+      chatPending: false,
       sessions: [],
       sessionOffset: 0,
       sessionLimit: 30,
@@ -1490,7 +1549,11 @@
       toolGovernanceEnabled: localStorage.getItem(TOOL_GOVERNANCE_STORAGE_KEY) !== "false",
       memories: [],
       editingMemoryId: null,
-      pendingEmailDrafts: []
+      pendingEmailDrafts: [],
+      chatConfirmations: new Map(),
+      confirmationDecisionLocks: new Set(),
+      confirmationIdempotencyKeys: new Map(),
+      confirmationExpiryTimer: null
     };
 
     const capabilityState = {
@@ -1533,6 +1596,7 @@
     const statusEl = document.querySelector("#status");
     const tokenBudgetEl = document.querySelector("#tokenBudget");
     const messagesEl = document.querySelector("#messages");
+    const chatConfirmationCards = document.querySelector("#chatConfirmationCards");
     const messageInput = document.querySelector("#messageInput");
     const sendButton = document.querySelector("#sendButton");
     const clearButton = document.querySelector("#clearButton");
@@ -1843,14 +1907,301 @@
       tokenBudgetEl.className = `token-budget ${budgetStatus === "normal" ? "" : budgetStatus}`.trim();
     }
 
+    function updateComposerAvailability() {
+      const blocked = state.isSending || state.chatPending;
+      messageInput.disabled = blocked;
+      sendButton.disabled = blocked;
+      clearButton.disabled = blocked;
+      newSessionButton.disabled = blocked;
+      clearAllSessionsButton.disabled = blocked;
+      sendButton.textContent = state.chatPending
+        ? "等待确认"
+        : state.isSending ? "发送中" : "发送";
+    }
+
     function setSending(value) {
       state.isSending = value;
-      messageInput.disabled = value;
-      sendButton.disabled = value;
-      clearButton.disabled = value;
-      newSessionButton.disabled = value;
-      clearAllSessionsButton.disabled = value;
-      sendButton.textContent = value ? "发送中" : "发送";
+      updateComposerAvailability();
+    }
+
+    function setChatPending(value) {
+      state.chatPending = Boolean(value);
+      updateComposerAvailability();
+    }
+
+    function appendToolConfirmationField(container, label, value) {
+      const term = document.createElement("dt");
+      term.textContent = label;
+      const description = document.createElement("dd");
+      description.textContent = value === null || value === undefined || value === ""
+        ? "—"
+        : String(value);
+      container.append(term, description);
+    }
+
+    function toolConfirmationStatusText(confirmation) {
+      const status = confirmation.status || "pending";
+      const reason = confirmation.reason_code || confirmation.gate_reason_code || "";
+      if (status === "pending") return "等待当前会话用户决定；Tool 尚未调用。";
+      if (status === "approved") return "已批准，服务端正在重新校验 Gate。";
+      if (status === "consumed") return "确认已消费，Tool 最多执行一次。";
+      if (status === "cancelled") return "已取消；Tool 未调用。";
+      if (status === "expired") return "确认已超时；Tool 未调用。";
+      if (status === "invalidated") {
+        return `确认已失效；Tool 未调用。${reason ? ` 原因：${reason}` : ""}`;
+      }
+      return `${status}${reason ? ` · ${reason}` : ""}`;
+    }
+
+    function renderToolConfirmation(confirmation) {
+      const card = document.createElement("section");
+      card.className = "chat-confirmation-card";
+      card.dataset.confirmationId = confirmation.id;
+      card.dataset.status = confirmation.status || "pending";
+
+      const title = document.createElement("h3");
+      title.textContent = "Tool 调用确认";
+      const fields = document.createElement("dl");
+      fields.className = "chat-confirmation-fields";
+      const summary = confirmation.arguments_summary || {};
+      appendToolConfirmationField(fields, "Server", confirmation.server_id);
+      appendToolConfirmationField(fields, "Tool", confirmation.tool_name);
+      appendToolConfirmationField(
+        fields,
+        "参数安全摘要",
+        JSON.stringify(summary, null, 2)
+      );
+      appendToolConfirmationField(fields, "风险", confirmation.risk);
+      appendToolConfirmationField(
+        fields,
+        "目标 / 数据去向",
+        confirmation.destination
+      );
+      appendToolConfirmationField(
+        fields,
+        "数据类别",
+        (confirmation.data_classes || []).join(", ")
+      );
+      appendToolConfirmationField(fields, "过期时间", confirmation.expires_at);
+      appendToolConfirmationField(fields, "Audit", confirmation.audit_ref);
+      appendToolConfirmationField(fields, "Trace", confirmation.trace_ref);
+      card.append(title, fields);
+
+      if ((confirmation.status || "pending") === "pending") {
+        const actions = document.createElement("div");
+        actions.className = "chat-confirmation-actions";
+        const locked = state.confirmationDecisionLocks.has(confirmation.id);
+        const once = document.createElement("button");
+        once.type = "button";
+        once.textContent = "仅本次允许";
+        once.disabled = locked;
+        once.addEventListener(
+          "click",
+          () => decideToolConfirmation(confirmation, "once")
+        );
+        const allowlist = document.createElement("button");
+        allowlist.type = "button";
+        allowlist.textContent = "加入 Allowlist";
+        allowlist.disabled = locked || confirmation.allowlist_allowed === false;
+        if (confirmation.allowlist_allowed === false) {
+          allowlist.title = confirmation.allowlist_reason
+            || "服务端 always_confirm 策略禁止加入 Allowlist";
+        }
+        allowlist.addEventListener(
+          "click",
+          () => decideToolConfirmation(confirmation, "allowlist")
+        );
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.textContent = "取消";
+        cancel.disabled = locked;
+        cancel.addEventListener(
+          "click",
+          () => decideToolConfirmation(confirmation, "cancel")
+        );
+        actions.append(once, allowlist, cancel);
+        card.appendChild(actions);
+        if (confirmation.allowlist_allowed === false) {
+          const policyReason = document.createElement("div");
+          policyReason.className = "chat-confirmation-status error";
+          policyReason.textContent = confirmation.allowlist_reason
+            || "服务端 always_confirm 策略要求每次单独确认。";
+          card.appendChild(policyReason);
+        }
+      }
+
+      const status = document.createElement("div");
+      status.className = `chat-confirmation-status${
+        ["expired", "invalidated"].includes(confirmation.status) ? " error" : ""
+      }`;
+      status.textContent = toolConfirmationStatusText(confirmation);
+      card.appendChild(status);
+      chatConfirmationCards.appendChild(card);
+    }
+
+    function renderChatConfirmations() {
+      chatConfirmationCards.replaceChildren();
+      for (const confirmation of state.chatConfirmations.values()) {
+        renderToolConfirmation(confirmation);
+      }
+      setChatPending(
+        [...state.chatConfirmations.values()].some(
+          confirmation => (confirmation.status || "pending") === "pending"
+        )
+      );
+      scheduleChatConfirmationExpiryRefresh();
+    }
+
+    function normalizeToolConfirmation(value) {
+      const confirmation = {
+        ...value,
+        id: value.id || value.confirmation_id
+      };
+      confirmation.allowlist_allowed = value.allowlist_allowed
+        ?? value.gate_reason_code !== "always_confirm";
+      confirmation.allowlist_reason = value.allowlist_reason || (
+        confirmation.allowlist_allowed
+          ? null
+          : "服务端 always_confirm 策略要求每次单独确认。"
+      );
+      confirmation.trace_ref = value.trace_ref || (
+        value.session_id && value.turn_id && value.call_id
+          ? `trace:${value.session_id}:${value.turn_id}:${value.call_id}`
+          : null
+      );
+      return confirmation;
+    }
+
+    function reconcileChatConfirmations(authoritative) {
+      state.chatConfirmations = new Map(
+        (authoritative || [])
+          .filter(item => item?.id && item.server_id !== "management")
+          .map(item => [item.id, normalizeToolConfirmation(item)])
+      );
+      renderChatConfirmations();
+    }
+
+    async function loadChatConfirmations() {
+      if (!state.sessionId) {
+        reconcileChatConfirmations([]);
+        return;
+      }
+      try {
+        const response = await fetch(
+          `${apiBase()}/v1/capabilities/confirmations/pending?session_id=${
+            encodeURIComponent(state.sessionId)
+          }`
+        );
+        if (!response.ok) throw new Error(`${response.status}`);
+        const payload = await response.json();
+        reconcileChatConfirmations(payload.confirmations);
+      } catch (error) {
+        appendError(`恢复 Tool 确认失败：${error.message}`);
+      }
+    }
+
+    async function refreshChatConfirmationAuthority(confirmation) {
+      if (!state.sessionId || !confirmation?.id) return;
+      try {
+        const response = await fetch(
+          `${apiBase()}/v1/capabilities/confirmations/${
+            encodeURIComponent(confirmation.id)
+          }?session_id=${encodeURIComponent(state.sessionId)}`
+        );
+        if (!response.ok) {
+          if (response.status === 404) state.chatConfirmations.delete(confirmation.id);
+          renderChatConfirmations();
+          return;
+        }
+        const payload = await response.json();
+        state.chatConfirmations.set(
+          confirmation.id,
+          normalizeToolConfirmation(payload.confirmation)
+        );
+        renderChatConfirmations();
+      } catch (error) {
+        appendError(`读取确认权威状态失败：${error.message}`);
+      }
+    }
+
+    function scheduleChatConfirmationExpiryRefresh() {
+      if (state.confirmationExpiryTimer) {
+        clearTimeout(state.confirmationExpiryTimer);
+        state.confirmationExpiryTimer = null;
+      }
+      const pending = [...state.chatConfirmations.values()].filter(
+        item => (item.status || "pending") === "pending"
+      );
+      if (!pending.length) return;
+      const nextExpiry = Math.min(
+        ...pending.map(item => Date.parse(item.expires_at || "")).filter(Number.isFinite)
+      );
+      if (!Number.isFinite(nextExpiry)) return;
+      state.confirmationExpiryTimer = setTimeout(async () => {
+        for (const confirmation of pending) {
+          await refreshChatConfirmationAuthority(confirmation);
+        }
+      }, Math.max(0, nextExpiry - Date.now()) + 50);
+    }
+
+    async function decideToolConfirmation(confirmation, decision) {
+      if (
+        !state.sessionId
+        || state.confirmationDecisionLocks.has(confirmation.id)
+        || (confirmation.status || "pending") !== "pending"
+      ) return;
+      state.confirmationDecisionLocks.add(confirmation.id);
+      const slot = `${confirmation.id}:${decision}`;
+      let idempotencyKey = state.confirmationIdempotencyKeys.get(slot);
+      if (!idempotencyKey) {
+        idempotencyKey = `chat-ui-${crypto.randomUUID()}`;
+        state.confirmationIdempotencyKeys.set(slot, idempotencyKey);
+      }
+      renderChatConfirmations();
+      try {
+        const response = await fetch(
+          `${apiBase()}/v1/capabilities/confirmations/${
+            encodeURIComponent(confirmation.id)
+          }/decisions`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              expected_revision: confirmation.revision,
+              decision,
+              idempotency_key: idempotencyKey,
+              session_id: state.sessionId
+            })
+          }
+        );
+        const payload = await response.json();
+        if (!response.ok) {
+          const authority = payload?.detail?.authoritative_state;
+          if (authority?.id) {
+            state.chatConfirmations.set(
+              authority.id,
+              normalizeToolConfirmation(authority)
+            );
+          } else {
+            await refreshChatConfirmationAuthority(confirmation);
+          }
+          throw new Error(
+            payload?.detail?.message || payload?.detail?.code || `${response.status}`
+          );
+        }
+        const decided = payload.confirmation || payload.state;
+        if (decided?.id) {
+          state.chatConfirmations.set(
+            decided.id,
+            normalizeToolConfirmation(decided)
+          );
+        }
+      } catch (error) {
+        appendError(`Tool 确认决定失败：${error.message}`);
+      } finally {
+        state.confirmationDecisionLocks.delete(confirmation.id);
+        renderChatConfirmations();
+      }
     }
 
     function scrollMessages() {
@@ -2010,9 +2361,14 @@
 
     function clearConversation() {
       state.sessionId = null;
+      sessionStorage.removeItem(CHAT_SESSION_STORAGE_KEY);
       state.activeAssistantBubble = null;
       state.systemBubble = null;
       state.toolStatusRows.clear();
+      state.chatConfirmations.clear();
+      state.confirmationDecisionLocks.clear();
+      state.confirmationIdempotencyKeys.clear();
+      renderChatConfirmations();
       messagesEl.replaceChildren();
       updateTokenBudget();
       setStatus("新会话");
@@ -2267,8 +2623,10 @@
         state.sessionOffset = 0;
         state.sessionsHasMore = false;
         state.sessionId = null;
+        sessionStorage.removeItem(CHAT_SESSION_STORAGE_KEY);
         state.systemBubble = null;
         state.activeAssistantBubble = null;
+        reconcileChatConfirmations([]);
         messagesEl.replaceChildren();
         updateTokenBudget();
         renderSessions();
@@ -2293,6 +2651,7 @@
         if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
         const data = await response.json();
         state.sessionId = data.session_id;
+        sessionStorage.setItem(CHAT_SESSION_STORAGE_KEY, state.sessionId);
         updateTokenBudget(
           data.session_usage,
           data.max_total_tokens,
@@ -2330,6 +2689,7 @@
           }
         }
         appendSummaryTrace(lastAssistant, data.latest_summary_trace);
+        await loadChatConfirmations();
         setStatus("已切换历史会话");
         renderSessions();
       } catch (error) {
@@ -2349,7 +2709,9 @@
         if (state.sessionId === id) {
           messagesEl.replaceChildren();
           state.sessionId = null;
+          sessionStorage.removeItem(CHAT_SESSION_STORAGE_KEY);
           state.systemBubble = null;
+          reconcileChatConfirmations([]);
           updateTokenBudget();
         }
         await loadSessions();
@@ -2618,11 +2980,64 @@
     }
 
     function applyStreamEvent(event) {
+      if (event.type === "confirmation_required") {
+        const confirmation = normalizeToolConfirmation(event);
+        if (confirmation.session_id) {
+          state.sessionId = confirmation.session_id;
+          sessionStorage.setItem(CHAT_SESSION_STORAGE_KEY, state.sessionId);
+        }
+        state.chatConfirmations.set(confirmation.id, confirmation);
+        renderChatConfirmations();
+        setStatus("Tool 等待当前会话确认");
+        return;
+      }
+      if (event.type === "confirmation_resolved") {
+        const current = state.chatConfirmations.get(event.confirmation_id) || {};
+        const confirmation = normalizeToolConfirmation({
+          ...current,
+          ...event,
+          id: event.confirmation_id
+        });
+        state.chatConfirmations.set(confirmation.id, confirmation);
+        renderChatConfirmations();
+        setStatus(
+          event.gate_revalidated
+            ? "确认已通过，Gate 已重新校验"
+            : toolConfirmationStatusText(confirmation)
+        );
+        return;
+      }
       if (event.type === "tool_started") {
+        if (event.confirmation_id) {
+          const current = state.chatConfirmations.get(event.confirmation_id);
+          if (current) {
+            state.chatConfirmations.set(event.confirmation_id, {
+              ...current,
+              audit_ref: event.audit_ref || current.audit_ref,
+              trace_ref: event.trace_ref || current.trace_ref,
+              status: "approved",
+              gate_revalidated: true
+            });
+            renderChatConfirmations();
+          }
+        }
         showToolStarted(event);
         return;
       }
       if (event.type === "tool_completed") {
+        if (event.confirmation_id) {
+          const current = state.chatConfirmations.get(event.confirmation_id);
+          if (current) {
+            state.chatConfirmations.set(event.confirmation_id, {
+              ...current,
+              audit_ref: event.audit_ref || current.audit_ref,
+              trace_ref: event.trace_ref || current.trace_ref,
+              status: event.tool_invoked ? "consumed" : "invalidated",
+              reason_code: event.error_code || event.status
+            });
+            renderChatConfirmations();
+          }
+        }
         showToolCompleted(event);
         queueEmailApproval(event);
         return;
@@ -2634,6 +3049,7 @@
       }
       if (event.type === "done") {
         state.sessionId = event.result.session_id;
+        sessionStorage.setItem(CHAT_SESSION_STORAGE_KEY, state.sessionId);
         void flushEmailApprovalQueue();
         if (
           event.result.content &&
@@ -4441,7 +4857,18 @@
       await loadProviders();
       await loadTools();
       await loadSessions();
-      applyPrimaryHashRoute();
+      const storedSession = state.sessionId;
+      if (
+        storedSession
+        && state.sessions.some(session => session.id === storedSession)
+      ) {
+        await switchSession(storedSession);
+      } else {
+        state.sessionId = null;
+        sessionStorage.removeItem(CHAT_SESSION_STORAGE_KEY);
+        reconcileChatConfirmations([]);
+      }
+      await applyPrimaryHashRoute();
     }
 
     boot();
