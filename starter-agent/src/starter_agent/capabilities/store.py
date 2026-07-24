@@ -692,7 +692,10 @@ class CapabilityStore:
                 reviewed_at = None
             elif (
                 requested_review in {"approved", "rejected"}
-                and requested_review != current.review_state
+                and (
+                    requested_review != current.review_state
+                    or current.reviewed_at is None
+                )
             ):
                 reviewed_at = datetime.now(UTC)
             else:

@@ -570,6 +570,50 @@ def test_tool_review_cas_sets_and_persists_trusted_reviewed_at(
     assert row[1] is not None
 
 
+def test_same_state_legacy_review_writes_trusted_review_time(
+    tmp_path: Path,
+) -> None:
+    store = CapabilityStore("sqlite:///:memory:", tmp_path)
+    store.create_server(_server())
+    schema = {"type": "object", "additionalProperties": False}
+    snapshot = Snapshot(
+        id="snapshot-legacy-approved",
+        server_id="playwright",
+        version=1,
+        schema_hash=HASH,
+        discovered_at=datetime.now(UTC),
+        tool_count=1,
+    )
+    legacy = Tool(
+        snapshot_id=snapshot.id,
+        server_id=snapshot.server_id,
+        upstream_name="legacy_approved",
+        model_alias="mcp__playwright__legacy_approved",
+        input_schema=schema,
+        schema_hash=canonical_json_sha256(schema),
+        review_state="approved",
+    )
+    store.create_snapshot(snapshot, tools=(legacy,))
+    store.activate_snapshot(snapshot.server_id, snapshot.id)
+    persisted = store.list_tools(snapshot.id)[0]
+    assert persisted.review_state == "approved"
+    assert persisted.reviewed_at is None
+
+    before = datetime.now(UTC)
+    reviewed = store.update_tool(
+        snapshot.id,
+        legacy.upstream_name,
+        expected_revision=0,
+        review_state="approved",
+    )
+    after = datetime.now(UTC)
+
+    assert reviewed.revision == 1
+    assert reviewed.review_state == "approved"
+    assert reviewed.reviewed_at is not None
+    assert before <= reviewed.reviewed_at <= after
+
+
 def test_store_adds_reviewed_at_column_to_legacy_mcp_tools_table(
     tmp_path: Path,
 ) -> None:

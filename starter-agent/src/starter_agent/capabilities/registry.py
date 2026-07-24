@@ -134,6 +134,31 @@ class _RegistryState:
     model_snapshot: ModelToolSnapshot
 
 
+def is_mcp_tool_callable(
+    server: Server,
+    snapshot: Snapshot | None,
+    tool: McpTool,
+    *,
+    policy_allowed: bool = True,
+) -> bool:
+    """Return whether all runtime authority records authorize an MCP tool."""
+
+    return (
+        server.enabled
+        and server.connection_state == "ready"
+        and snapshot is not None
+        and snapshot.active
+        and not snapshot.stale
+        and snapshot.server_id == server.id
+        and snapshot.id == tool.snapshot_id
+        and tool.server_id == server.id
+        and tool.enabled
+        and tool.review_state == "approved"
+        and tool.reviewed_at is not None
+        and policy_allowed
+    )
+
+
 class UnifiedToolRegistry:
     """Publish immutable, atomically replaceable views of builtin and MCP tools."""
 
@@ -196,6 +221,14 @@ class UnifiedToolRegistry:
                     tool.review_state == "approved"
                     and tool.reviewed_at is not None
                 )
+                callable_now = is_mcp_tool_callable(
+                    record.server,
+                    snapshot,
+                    tool,
+                    policy_allowed=dict(record.policy_exposure).get(
+                        tool.model_alias, True
+                    ),
+                )
                 review_conclusion = (
                     tool.review_state
                     if tool.reviewed_at is not None
@@ -218,6 +251,7 @@ class UnifiedToolRegistry:
                         "review_conclusion": review_conclusion,
                         "reviewed": reviewed,
                         "enabled": tool.enabled,
+                        "callable": callable_now,
                     }
                 )
             review_states = {item["review_state"] for item in exported_tools}
@@ -318,6 +352,9 @@ class UnifiedToolRegistry:
             for tool in server_record.tools:
                 if name not in {tool.model_alias, tool.upstream_name}:
                     continue
+                policy_allowed = dict(server_record.policy_exposure).get(
+                    tool.model_alias, True
+                )
                 return ExecutionCapability(
                     server_id=server_record.server.id,
                     canonical_name=tool.upstream_name,
@@ -331,7 +368,12 @@ class UnifiedToolRegistry:
                     input_schema=tool.input_schema,
                     metadata=tool.metadata,
                     risk_level=tool.risk_level,
-                    enabled=server_record.server.enabled and tool.enabled,
+                    enabled=is_mcp_tool_callable(
+                        server_record.server,
+                        server_record.snapshot,
+                        tool,
+                        policy_allowed=policy_allowed,
+                    ),
                     connected=server_record.server.connection_state == "ready",
                     review_state=tool.review_state,
                     browser=bool(tool.metadata.get("browser"))
@@ -425,7 +467,12 @@ class UnifiedToolRegistry:
             servers: list[_McpServerRecord] = []
             for server in current.servers:
                 tools = tuple(
-                    tool.model_copy(update={"review_state": review_state})
+                    tool.model_copy(
+                        update={
+                            "review_state": review_state,
+                            "reviewed_at": None,
+                        }
+                    )
                     if tool.model_alias == name
                     else tool
                     for tool in server.tools
@@ -529,14 +576,13 @@ class UnifiedToolRegistry:
                 definitions.append(FrozenJsonDict(record.tool.schema()))
         for server_record in servers:
             server = server_record.server
-            server_callable = server.enabled and server.connection_state == "ready"
             policy = dict(server_record.policy_exposure)
             for tool in server_record.tools:
-                callable_now = (
-                    server_callable
-                    and tool.enabled
-                    and tool.review_state == "approved"
-                    and policy.get(tool.model_alias, True)
+                callable_now = is_mcp_tool_callable(
+                    server,
+                    server_record.snapshot,
+                    tool,
+                    policy_allowed=policy.get(tool.model_alias, True),
                 )
                 summaries.append(
                     CapabilitySummary(

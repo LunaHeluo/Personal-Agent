@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -8,7 +9,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from starter_agent.agent.runtime import AgentRuntime
-from starter_agent.capabilities.models import Server, Tool, canonical_json_sha256
+from starter_agent.capabilities.models import (
+    Server,
+    Snapshot,
+    Tool,
+    canonical_json_sha256,
+)
 from starter_agent.capabilities.registry import UnifiedToolRegistry
 from starter_agent.domain.models import Message, ModelResponse, ToolCall
 from starter_agent.interfaces import api as api_module
@@ -51,6 +57,19 @@ def _mcp_tool() -> Tool:
         schema_hash=canonical_json_sha256(MCP_INPUT_SCHEMA),
         enabled=True,
         review_state="approved",
+        reviewed_at=datetime.now(UTC),
+    )
+
+
+def _snapshot() -> Snapshot:
+    return Snapshot(
+        id="browser-snapshot-1",
+        server_id="browser",
+        version=1,
+        schema_hash="b" * 64,
+        discovered_at=datetime.now(UTC),
+        active=True,
+        tool_count=1,
     )
 
 
@@ -112,7 +131,7 @@ async def test_dynamic_mcp_definition_tracks_every_state_on_real_model_requests(
     monkeypatch,
 ) -> None:
     registry = UnifiedToolRegistry(ToolRegistry([]))
-    registry.refresh_server(_server(), [_mcp_tool()])
+    registry.refresh_server(_server(), [_mcp_tool()], snapshot=_snapshot())
     events: list[str] = []
     original_model_snapshot = registry.model_snapshot
 
@@ -151,6 +170,8 @@ async def test_dynamic_mcp_definition_tracks_every_state_on_real_model_requests(
     await request()
     registry.set_tool_review(MCP_NAME, "approved")
     await request()
+    registry.refresh_server(_server(), [_mcp_tool()], snapshot=_snapshot())
+    await request()
 
     assert provider.requests[0] == [
         {
@@ -162,9 +183,9 @@ async def test_dynamic_mcp_definition_tracks_every_state_on_real_model_requests(
             },
         }
     ]
-    for request_tools in provider.requests[1:5]:
+    for request_tools in provider.requests[1:6]:
         assert request_tools == []
-    assert provider.requests[5] == provider.requests[0]
+    assert provider.requests[6] == provider.requests[0]
     assert events == [
         item
         for _ in provider.requests
@@ -175,7 +196,7 @@ async def test_dynamic_mcp_definition_tracks_every_state_on_real_model_requests(
 @pytest.mark.asyncio
 async def test_runtime_persists_the_exact_provider_tool_payload_for_each_turn() -> None:
     registry = UnifiedToolRegistry(ToolRegistry([]))
-    registry.refresh_server(_server(), [_mcp_tool()])
+    registry.refresh_server(_server(), [_mcp_tool()], snapshot=_snapshot())
     provider = _RecordingProvider([])
     runtime = AgentRuntime(
         registry,

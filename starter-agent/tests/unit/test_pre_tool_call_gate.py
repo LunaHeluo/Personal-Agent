@@ -38,7 +38,7 @@ async def _public_resolver(_host: str):
     return [ipaddress.ip_address("93.184.216.34")]
 
 
-def _store() -> CapabilityStore:
+def _store(*, trusted_review: bool = True) -> CapabilityStore:
     store = CapabilityStore("sqlite:///:memory:", project_root=__file__)
     store.create_server(
         Server(
@@ -69,10 +69,17 @@ def _store() -> CapabilityStore:
         schema_hash=SCHEMA_HASH,
         metadata={"action": "navigate", "browser": True},
         enabled=True,
-        review_state="approved",
+        review_state="unreviewed" if trusted_review else "approved",
     )
     store.create_snapshot(snapshot, tools=(tool,))
     store.activate_snapshot("playwright", snapshot.id)
+    if trusted_review:
+        store.update_tool(
+            snapshot.id,
+            tool.upstream_name,
+            expected_revision=0,
+            review_state="approved",
+        )
     store.create_policy_rule(
         PolicyRule(
             id="allow-nav",
@@ -87,6 +94,56 @@ def _store() -> CapabilityStore:
         )
     )
     return store
+
+
+async def test_legacy_approved_without_review_time_is_hidden_and_gate_denied_until_rereview() -> None:
+    gate_module = _gate_module()
+    policy_module = import_module("starter_agent.capabilities.policy")
+    store = _store(trusted_review=False)
+    snapshot = store.get_active_snapshot("playwright")
+    assert snapshot is not None
+    registry = UnifiedToolRegistry(ToolRegistry([]))
+    registry.refresh_server(
+        store.get_server("playwright"),
+        store.list_tools(snapshot.id),
+        snapshot=snapshot,
+    )
+    gate = gate_module.PreToolCallGate(
+        store,
+        registry=registry,
+        browser_policy=policy_module.BrowserScopePolicy(resolver=_public_resolver),
+    )
+
+    assert registry.model_snapshot().provider_tools() == []
+    assert registry.lightweight_catalog().as_dict()["capabilities"][0]["callable"] is False
+    assert registry.catalog_export()["mcp_servers"][0]["tools"][0]["callable"] is False
+    denied = await gate.evaluate(_request(gate_module))
+    assert (denied.outcome, denied.reason_code) == (
+        "deny",
+        "tool_review_required",
+    )
+    assert denied.permit is None
+
+    reviewed = store.update_tool(
+        snapshot.id,
+        "browser_navigate",
+        expected_revision=0,
+        review_state="approved",
+    )
+    assert reviewed.revision == 1
+    assert reviewed.reviewed_at is not None
+    registry.refresh_server(
+        store.get_server("playwright"),
+        store.list_tools(snapshot.id),
+        snapshot=snapshot,
+    )
+
+    assert len(registry.model_snapshot().provider_tools()) == 1
+    assert registry.lightweight_catalog().as_dict()["capabilities"][0]["callable"] is True
+    assert registry.catalog_export()["mcp_servers"][0]["tools"][0]["callable"] is True
+    allowed = await gate.evaluate(_request(gate_module))
+    assert allowed.outcome == "allow"
+    assert allowed.permit is not None
 
 
 def _request(gate_module, **changes):
@@ -228,6 +285,14 @@ async def test_gate_infers_sensitive_data_despite_empty_caller_labels() -> None:
     expanded = expanded.model_copy(update={"snapshot_id": new_snapshot.id})
     store.create_snapshot(new_snapshot, tools=(expanded,))
     store.activate_snapshot("playwright", new_snapshot.id)
+    pending_review = store.list_tools(new_snapshot.id)[0]
+    store.update_tool(
+        new_snapshot.id,
+        pending_review.upstream_name,
+        expected_revision=pending_review.revision,
+        enabled=True,
+        review_state="approved",
+    )
     gate = gate_module.PreToolCallGate(
         store,
         browser_policy=policy_module.BrowserScopePolicy(resolver=_public_resolver),
@@ -284,6 +349,14 @@ async def test_model_confirmation_argument_is_ignored_but_trusted_confirmation_s
     scripted = scripted.model_copy(update={"snapshot_id": refreshed.id})
     store.create_snapshot(refreshed, tools=(scripted,))
     store.activate_snapshot("playwright", refreshed.id)
+    pending_review = store.list_tools(refreshed.id)[0]
+    store.update_tool(
+        refreshed.id,
+        pending_review.upstream_name,
+        expected_revision=pending_review.revision,
+        enabled=True,
+        review_state="approved",
+    )
     gate = gate_module.PreToolCallGate(
         store,
         browser_policy=import_module("starter_agent.capabilities.policy").BrowserScopePolicy(

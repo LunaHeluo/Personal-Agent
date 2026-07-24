@@ -1,13 +1,24 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
-from starter_agent.capabilities.models import Server, Tool, canonical_json_sha256
+from starter_agent.capabilities.models import (
+    Server,
+    Snapshot,
+    Tool,
+    canonical_json_sha256,
+)
 from starter_agent.capabilities.registry import UnifiedToolRegistry
 from starter_agent.tools.registry import ToolRegistry
 
 
-def _tool(*, enabled: bool, review_state: str) -> Tool:
+def _tool(
+    *,
+    enabled: bool,
+    review_state: str,
+    reviewed_at: datetime | None = None,
+) -> Tool:
     schema = {
         "type": "object",
         "properties": {"url": {"type": "string"}},
@@ -23,6 +34,7 @@ def _tool(*, enabled: bool, review_state: str) -> Tool:
         schema_hash=canonical_json_sha256(schema),
         enabled=enabled,
         review_state=review_state,
+        reviewed_at=reviewed_at,
     )
 
 
@@ -37,11 +49,25 @@ def _server(*, enabled: bool = True, connected: bool = True) -> Server:
     )
 
 
+def _snapshot(*, stale: bool = False) -> Snapshot:
+    return Snapshot(
+        id="browser-snapshot-1",
+        server_id="browser",
+        version=1,
+        schema_hash="b" * 64,
+        discovered_at=datetime.now(UTC),
+        active=True,
+        stale=stale,
+        tool_count=1,
+    )
+
+
 def test_lightweight_catalog_never_contains_descriptions_or_schemas() -> None:
     registry = UnifiedToolRegistry(ToolRegistry(["get_current_time"]))
     registry.refresh_server(
         _server(enabled=False, connected=False),
         [_tool(enabled=False, review_state="unreviewed")],
+        snapshot=_snapshot(),
     )
 
     payload = registry.lightweight_catalog().as_dict()
@@ -65,10 +91,24 @@ def test_only_connected_enabled_and_approved_mcp_tools_are_exposed() -> None:
     registry.refresh_server(
         _server(),
         [_tool(enabled=True, review_state="unreviewed")],
+        snapshot=_snapshot(),
     )
     assert registry.model_snapshot().tools == ()
 
     registry.set_tool_review("mcp__browser__read_page", "approved")
+    assert registry.model_snapshot().tools == ()
+
+    registry.refresh_server(
+        _server(),
+        [
+            _tool(
+                enabled=True,
+                review_state="approved",
+                reviewed_at=datetime.now(UTC),
+            )
+        ],
+        snapshot=_snapshot(),
+    )
     approved_revision = registry.context_revision
     assert registry.model_snapshot().tools[0]["function"]["description"].startswith(
         "Read the complete"
@@ -92,3 +132,16 @@ def test_only_connected_enabled_and_approved_mcp_tools_are_exposed() -> None:
 
     registry.set_policy_exposure("mcp__browser__read_page", True)
     assert len(registry.model_snapshot().tools) == 1
+
+    registry.refresh_server(
+        _server(),
+        [
+            _tool(
+                enabled=True,
+                review_state="approved",
+                reviewed_at=datetime.now(UTC),
+            )
+        ],
+        snapshot=_snapshot(stale=True),
+    )
+    assert registry.model_snapshot().tools == ()

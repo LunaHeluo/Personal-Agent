@@ -38,6 +38,19 @@ def _tool(name: str, marker: int = 0) -> Tool:
         schema_hash=canonical_json_sha256(schema),
         enabled=True,
         review_state="approved",
+        reviewed_at=datetime.now(UTC),
+    )
+
+
+def _snapshot(marker: int = 0) -> Snapshot:
+    return Snapshot(
+        id=f"browser-snapshot-{marker}",
+        server_id="browser",
+        version=marker + 1,
+        schema_hash="b" * 64,
+        discovered_at=datetime.now(UTC),
+        active=True,
+        tool_count=2,
     )
 
 
@@ -69,7 +82,11 @@ def test_registry_keeps_builtin_tools_and_publishes_atomic_revisions() -> None:
         "get_current_time"
     ]
 
-    registry.refresh_server(_server(), [_tool("one"), _tool("two")])
+    registry.refresh_server(
+        _server(),
+        [_tool("one"), _tool("two")],
+        snapshot=_snapshot(),
+    )
     first = registry.model_snapshot()
     assert first.context_revision == builtin.context_revision + 1
 
@@ -77,6 +94,7 @@ def test_registry_keeps_builtin_tools_and_publishes_atomic_revisions() -> None:
         registry.refresh_server(
             _server(),
             [_tool("one", marker), _tool("two", marker)],
+            snapshot=_snapshot(marker),
         )
 
     def read_markers() -> set[int]:

@@ -20,7 +20,11 @@ from starter_agent.capabilities.models import (
     Tool,
     canonical_json_sha256,
 )
-from starter_agent.capabilities.registry import ExecutionCapability, UnifiedToolRegistry
+from starter_agent.capabilities.registry import (
+    ExecutionCapability,
+    UnifiedToolRegistry,
+    is_mcp_tool_callable,
+)
 from starter_agent.capabilities.policy import (
     BrowserScopePolicy,
     PolicyDecision,
@@ -227,7 +231,13 @@ class PreToolCallGate:
                 arguments=request.arguments,
                 role=request.role,
                 data_classes=inferred_classes,
-                reviewed=tool.review_state == "approved",
+                reviewed=(
+                    tool.review_state == "approved"
+                    and (
+                        request.server_id == "builtin"
+                        or tool.reviewed_at is not None
+                    )
+                ),
                 enabled=tool.enabled,
             ),
             rules,
@@ -422,7 +432,7 @@ class PreToolCallGate:
         if server.connection_state != "ready":
             return self._decision("deny", "server_not_connected", request)
         snapshot = self.store.get_active_snapshot(request.server_id)
-        if snapshot is None:
+        if snapshot is None or not snapshot.active:
             return self._decision("deny", "snapshot_missing", request)
         if snapshot.stale:
             return self._decision("deny", "stale_snapshot", request)
@@ -442,8 +452,12 @@ class PreToolCallGate:
             return self._decision("deny", "tool_disabled", request)
         if tool.review_state == "rejected":
             return self._decision("deny", "tool_rejected", request)
+        if tool.review_state != "approved" or tool.reviewed_at is None:
+            return self._decision("deny", "tool_review_required", request)
         if tool.schema_hash != request.schema_hash:
             return self._decision("deny", "schema_hash_mismatch", request)
+        if not is_mcp_tool_callable(server, snapshot, tool):
+            return self._decision("deny", "tool_review_required", request)
         return tool
 
     def _finalize(

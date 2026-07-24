@@ -124,10 +124,6 @@ async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(t
         enabled=True,
         connection_state="ready",
     )
-    registry.refresh_server(
-        server,
-        [browser],
-    )
     store = CapabilityStore("sqlite:///:memory:", tmp_path)
     store.create_server(server)
     store.create_snapshot(
@@ -141,7 +137,18 @@ async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(t
         ),
         tools=[browser],
     )
-    store.activate_snapshot(server.id, browser.snapshot_id)
+    active = store.activate_snapshot(server.id, browser.snapshot_id)
+    reviewed_browser = store.update_tool(
+        active.id,
+        browser.upstream_name,
+        expected_revision=0,
+        review_state="approved",
+    )
+    registry.refresh_server(
+        server,
+        [reviewed_browser],
+        snapshot=active,
+    )
     for server_id, name, schema_hash in (
         ("builtin", search.name, canonical_json_sha256(search.input_schema)),
         ("builtin", rag.name, canonical_json_sha256(rag.input_schema)),
@@ -359,6 +366,12 @@ async def test_bootstrap_application_entry_fails_closed_after_real_browser_publi
     )
     store.create_snapshot(snapshot, tools=[browser])
     active = store.activate_snapshot("playwright", snapshot.id)
+    store.update_tool(
+        active.id,
+        browser.upstream_name,
+        expected_revision=0,
+        review_state="approved",
+    )
     handle.active.snapshot_id = active.id
     manager._publish_snapshot(handle, active)
 
