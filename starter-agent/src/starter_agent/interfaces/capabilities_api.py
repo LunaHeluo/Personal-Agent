@@ -864,6 +864,14 @@ def create_capabilities_router() -> APIRouter:
         dependencies=[Depends(_mutation_exception_boundary)],
     )
 
+    @router.get("/catalog/export")
+    async def export_catalog(
+        services: CapabilityApiServices = Depends(get_capability_services),
+        actor: ManagementPrincipal = Depends(get_management_principal),
+    ) -> dict[str, object]:
+        require_role(actor, "viewer")
+        return services.registry.catalog_export()
+
     @router.get("/servers")
     async def list_servers(
         services: CapabilityApiServices = Depends(get_capability_services),

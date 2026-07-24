@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from threading import Lock
 from typing import Any, Iterable, Literal, Mapping
@@ -11,11 +12,31 @@ from starter_agent.capabilities.models import (
     canonical_json_sha256,
 )
 from starter_agent.capabilities.models import Tool as McpTool
+from starter_agent.mcp.config import contains_high_confidence_secret
 from starter_agent.tools.base import Tool as BuiltinTool
 from starter_agent.tools.registry import ToolRegistry
 
 
 CapabilityType = Literal["builtin", "mcp"]
+_CATALOG_SENSITIVE_TEXT = re.compile(
+    r"(?:"
+    r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"
+    r"|\bbearer\s+\S+"
+    r"|(?:api[_-]?key|authorization|cookie|credential|login|pass(?:word|wd)?"
+    r"|resume|secret|token)\s*[:=]\s*\S+"
+    r")",
+    flags=re.IGNORECASE,
+)
+
+
+def _catalog_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if _CATALOG_SENSITIVE_TEXT.search(value) or contains_high_confidence_secret(
+        value
+    ):
+        return "<redacted>"
+    return value
 
 
 def _thaw(value: Any) -> Any:
@@ -139,6 +160,87 @@ class UnifiedToolRegistry:
 
     def lightweight_catalog(self) -> LightweightCapabilityCatalog:
         return self._state.catalog
+
+    def catalog_export(self) -> dict[str, object]:
+        """Return an allowlisted, read-only audit view of runtime authority."""
+
+        state = self._state
+        builtins = [
+            {
+                "name": record.tool.name,
+                "server_id": "builtin",
+                "capability_type": "builtin",
+                "enabled": record.enabled and record.policy_allowed,
+                "review_state": "approved",
+                "schema_hash": canonical_json_sha256(record.tool.input_schema),
+            }
+            for record in state.builtins
+        ]
+        servers: list[dict[str, object]] = []
+        for record in state.servers:
+            snapshot = record.snapshot
+            discovered = snapshot is not None
+            tools = record.tools if discovered else ()
+            exported_tools = [
+                {
+                    "upstream_name": _catalog_text(tool.upstream_name),
+                    "model_alias": _catalog_text(tool.model_alias),
+                    "schema_hash": tool.schema_hash,
+                    "review_state": (
+                        "not_reviewed"
+                        if tool.review_state == "unreviewed"
+                        else tool.review_state
+                    ),
+                    "enabled": tool.enabled,
+                }
+                for tool in tools
+            ]
+            review_states = {item["review_state"] for item in exported_tools}
+            if not review_states:
+                review_state = "not_reviewed"
+            elif len(review_states) == 1:
+                review_state = next(iter(review_states))
+            else:
+                review_state = "mixed"
+            server = record.server
+            servers.append(
+                {
+                    "server_id": _catalog_text(server.id),
+                    "capability_type": "mcp",
+                    "enabled": server.enabled,
+                    "connection_state": server.connection_state,
+                    "health_state": server.health_state,
+                    "transport": server.transport,
+                    "runtime_name": _catalog_text(server.runtime_name),
+                    "runtime_version": _catalog_text(server.runtime_version),
+                    "discovery_state": (
+                        "discovered" if discovered else "not_discovered"
+                    ),
+                    "review_state": review_state,
+                    "snapshot_id": (
+                        None
+                        if snapshot is None
+                        else _catalog_text(snapshot.id)
+                    ),
+                    "snapshot_version": (
+                        None if snapshot is None else snapshot.version
+                    ),
+                    "discovered_at": (
+                        None
+                        if snapshot is None
+                        else snapshot.discovered_at.isoformat().replace(
+                            "+00:00", "Z"
+                        )
+                    ),
+                    "tools": exported_tools,
+                }
+            )
+        return {
+            "authority": "runtime_registry",
+            "context_revision": state.context_revision,
+            "builtins": builtins,
+            "mcp_servers": servers,
+        }
 
     def model_snapshot(self) -> ModelToolSnapshot:
         return self._state.model_snapshot
