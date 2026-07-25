@@ -61,7 +61,9 @@ class OpenAICompatibleProvider(Provider):
         tools: list[dict[str, Any]],
         on_delta: Callable[[str], Awaitable[None]] | None = None,
         tool_choice: str | None = None,
+        context_revision: int | None = None,
     ) -> ModelResponse:
+        del context_revision
         request_messages: list[dict[str, Any]] = []
         for message in messages:
             item: dict[str, Any] = {

@@ -247,6 +247,13 @@ async def _real_manager_runtime(tmp_path: Path, client: _ResultClient):
     )
     store.create_snapshot(snapshot, tools=[tool])
     active = store.activate_snapshot("jobs", snapshot.id)
+    discovered = store.list_tools(active.id)[0]
+    reviewed = store.update_tool(
+        active.id,
+        discovered.upstream_name,
+        expected_revision=discovered.revision,
+        review_state="approved",
+    )
     manager._get_handle("jobs").active.snapshot_id = active.id
     manager._publish_snapshot(manager._get_handle("jobs"), active)
     store.create_policy_rule(
@@ -255,12 +262,10 @@ async def _real_manager_runtime(tmp_path: Path, client: _ResultClient):
             server_id="jobs",
             tool_name="fetch_job",
             effect="allowlist_auto",
-            schema_hash=tool.schema_hash,
+            schema_hash=reviewed.schema_hash,
             created_by="test",
         )
     )
-    registry.set_tool_enabled("fetch_job", True)
-    registry.set_tool_review("fetch_job", "approved")
     runtime = AgentRuntime(
         registry,  # type: ignore[arg-type]
         ToolPolicy(["read", "external"]),
@@ -269,7 +274,7 @@ async def _real_manager_runtime(tmp_path: Path, client: _ResultClient):
         gate=gate,
         executor=executor,
     )
-    return manager, runtime, tool
+    return manager, runtime, reviewed
 
 
 @pytest.mark.asyncio
@@ -346,6 +351,9 @@ async def test_real_manager_runtime_path_preserves_trusted_provenance_and_artifa
         "kept_result_chars": audit.payload["kept_result_chars"],
         "kept_result_tokens": audit.payload["kept_result_tokens"],
         "context_result_tokens": audit.payload["context_result_tokens"],
+        "confirmation_id": None,
+        "tool_invoked": True,
+        "trace_ref": f"trace:{session_id}:{turn_id}:call-real",
     }
     await manager.shutdown()
 

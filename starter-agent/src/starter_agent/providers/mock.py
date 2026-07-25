@@ -19,7 +19,9 @@ class MockProvider(Provider):
         tools: list[dict[str, Any]],
         on_delta: Callable[[str], Awaitable[None]] | None = None,
         tool_choice: str | None = None,
+        context_revision: int | None = None,
     ) -> ModelResponse:
+        del context_revision
         last = messages[-1]
         if last.role == "tool":
             content = f"工具返回：{last.content}"

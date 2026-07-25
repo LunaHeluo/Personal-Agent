@@ -68,11 +68,27 @@ async def test_tool_completed_event_exposes_only_safe_result_metadata(
     completed = next(
         event for event in events if event["type"] == "tool_completed"
     )
-    assert completed["metadata"] == {
+    assert {
+        key: completed["metadata"][key]
+        for key in ("draft_id", "content_sha256", "sent")
+    } == {
         "draft_id": "email-draft:test",
         "content_sha256": "a" * 64,
         "sent": False,
     }
+    assert set(completed["metadata"]) == {
+        "draft_id",
+        "content_sha256",
+        "sent",
+        "server_id",
+        "snapshot_id",
+        "schema_hash",
+        "call_id",
+    }
+    assert completed["metadata"]["server_id"] == "builtin"
+    assert completed["metadata"]["call_id"]
+    assert completed["metadata"]["snapshot_id"].startswith("builtin-")
+    assert len(completed["metadata"]["schema_hash"]) == 64
     assert "body_text" not in completed
     assert "credential" not in completed
 

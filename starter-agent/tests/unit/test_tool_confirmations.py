@@ -25,8 +25,18 @@ def _confirmation_gate(tmp_path, *, database_url="sqlite:///:memory:"):
         snapshot = seeded.get_active_snapshot("playwright")
         assert server is not None and snapshot is not None
         store.create_server(server)
-        store.create_snapshot(snapshot.model_copy(update={"active": False}), tools=seeded.list_tools(snapshot.id))
+        store.create_snapshot(
+            snapshot.model_copy(update={"active": False}),
+            tools=seeded.list_tools(snapshot.id),
+        )
         store.activate_snapshot(server.id, snapshot.id)
+        discovered = store.list_tools(snapshot.id)[0]
+        store.update_tool(
+            snapshot.id,
+            discovered.upstream_name,
+            expected_revision=discovered.revision,
+            review_state="approved",
+        )
         for rule in seeded.list_policy_rules("playwright", "browser_navigate"):
             store.create_policy_rule(rule)
     allow = store.get_policy_rule("allow-nav")

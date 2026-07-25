@@ -71,6 +71,7 @@ def _project_skill_definitions() -> list[Path]:
             name
             for name in directories
             if name not in ignored_directories
+            and not name.startswith(".")
             and not name.startswith(".session-only-")
         ]
         if "SKILL.md" in filenames:
@@ -151,26 +152,23 @@ def test_serpapi_audit_config_and_registration_match_repository() -> None:
     assert registered.input_schema == _documented_serpapi_schema(audit)
 
 
-def test_unimplemented_dependencies_match_project_scope() -> None:
-    audit = _audit_text()
-    missing_rag_tool = "retrieve_resume_evidence"
+def test_implemented_dependencies_match_project_scope() -> None:
+    evidence_tool = "retrieve_resume_evidence"
     registry = ToolRegistry(
         [SearchJobsSerpApiTool.name],
         settings=load_settings(CONFIG_PATH),
     )
 
-    assert missing_rag_tool not in _declared_tool_names()
-    assert registry.get(missing_rag_tool) is None
-    assert f"`{missing_rag_tool}` 尚未实现" in audit
-
-    assert _project_skill_definitions() == []
+    assert evidence_tool in _declared_tool_names()
+    assert registry.get(evidence_tool) is None
+    assert _project_skill_definitions() == [
+        PROJECT_ROOT / "skills" / "job-research" / "SKILL.md"
+    ]
     assert {
         "SkillRegistry",
         "SkillParser",
         "SkillSelector",
-    }.isdisjoint(_source_class_names())
-    assert "Skill Registry 尚未实现" in audit
-    assert "没有 `SKILL.md`" in audit
+    }.issubset(_source_class_names())
 
 
 def test_serpapi_source_comparison_detects_documented_schema_drift() -> None:

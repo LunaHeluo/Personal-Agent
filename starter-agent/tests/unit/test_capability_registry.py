@@ -58,6 +58,8 @@ def test_capabilities_package_preserves_model_and_registry_exports() -> None:
     expected = {
         "AuditEvent",
         "Confirmation",
+        "ConfirmationBroker",
+        "ConfirmationService",
         "ExecutionPermit",
         "LightweightCapabilityCatalog",
         "ModelToolSnapshot",
@@ -68,6 +70,7 @@ def test_capabilities_package_preserves_model_and_registry_exports() -> None:
         "SkillRecord",
         "Snapshot",
         "Tool",
+        "TurnCoordinator",
         "UnifiedToolRegistry",
     }
     assert set(capabilities.__all__) == expected

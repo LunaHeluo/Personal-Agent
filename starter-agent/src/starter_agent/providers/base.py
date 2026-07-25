@@ -18,6 +18,7 @@ class Provider(ABC):
         tools: list[dict[str, Any]],
         on_delta: Callable[[str], Awaitable[None]] | None = None,
         tool_choice: str | None = None,
+        context_revision: int | None = None,
     ) -> ModelResponse:
         raise NotImplementedError
 

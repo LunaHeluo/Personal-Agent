@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -377,12 +378,26 @@ class AgentRuntime:
                 model_call=model_calls,
                 context_revision=context_revision,
             )
+            complete_parameters = inspect.signature(provider.complete).parameters
+            complete_kwargs = {
+                "on_delta": on_delta,
+                "tool_choice": (
+                    required_tool_name if model_calls == 1 else None
+                ),
+            }
+            if (
+                "context_revision" in complete_parameters
+                or any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in complete_parameters.values()
+                )
+            ):
+                complete_kwargs["context_revision"] = context_revision
             response = await provider.complete(
                 messages,
                 model,
                 request_tools,
-                on_delta=on_delta,
-                tool_choice=(required_tool_name if model_calls == 1 else None),
+                **complete_kwargs,
             )
             response.context_revision = context_revision
             if response.usage:
