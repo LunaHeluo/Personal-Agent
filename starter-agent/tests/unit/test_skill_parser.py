@@ -57,6 +57,38 @@ def test_parser_loads_typed_frontmatter_and_preserves_full_definition(tmp_path: 
     assert len(skill.snapshot_hash) == 64
 
 
+def test_parser_loads_project_fields_from_standard_metadata(tmp_path: Path):
+    source = """\
+---
+name: nested-skill
+description: Use when nested metadata must be loaded.
+metadata:
+  version: 2.0.0
+  source: builtin
+  enabled: true
+  dependencies:
+    tools: [search_jobs_serpapi]
+  trigger_examples: [research a public job]
+  negative_examples: [give general advice]
+  validation: [keep the source URL]
+  failure_policy: [stop when unavailable]
+---
+# Nested Skill
+"""
+    path = tmp_path / "nested-skill" / "SKILL.md"
+    path.parent.mkdir()
+    path.write_text(source, encoding="utf-8")
+
+    skill = SkillParser().parse_file(path)
+
+    assert skill.name == "nested-skill"
+    assert skill.version == "2.0.0"
+    assert skill.enabled is True
+    assert [item.key for item in skill.dependencies] == [
+        "tool:search_jobs_serpapi"
+    ]
+
+
 @pytest.mark.parametrize(
     "source",
     [

@@ -92,7 +92,7 @@ def create_application() -> ApplicationService:
         knowledge_base_id=knowledge.default_knowledge_base_id,
     )
     skills = SkillRegistry(
-        settings.project_root / "skills",
+        settings.project_root / "src/starter_agent/skills",
         store=capability_store,
         dependency_resolver=lambda dependency: (
             (

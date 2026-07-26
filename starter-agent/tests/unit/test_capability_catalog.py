@@ -264,7 +264,7 @@ def test_catalog_export_and_viewer_api_redact_sensitive_allowlisted_text(
     assert sensitive.casefold() not in response.text.casefold()
 
 
-def test_capability_catalog_documents_required_fields_without_fake_snapshot() -> None:
+def test_capability_catalog_documents_required_fields_with_real_snapshot_evidence() -> None:
     catalog = CATALOG.read_text(encoding="utf-8")
     required_fields = (
         "Source",
@@ -285,11 +285,14 @@ def test_capability_catalog_documents_required_fields_without_fake_snapshot() ->
     for field in required_fields:
         assert field in catalog
     assert "runtime_registry" in catalog
-    assert "not_discovered" in catalog
-    assert "not_reviewed" in catalog
     playwright_section = catalog.split("## Playwright MCP", 1)[1].split("\n## ", 1)[0]
-    assert not re.search(r"\b[0-9a-f]{64}\b", playwright_section)
-    assert "mcp__playwright__browser_" not in playwright_section
+    assert "observed_in_acceptance_2026-07-26" in playwright_section
+    assert "Playwright 1.62.0-alpha-1783623505000" in playwright_section
+    assert "mcp__playwright__browser_navigate" in playwright_section
+    assert "mcp__playwright__browser_snapshot" in playwright_section
+    assert len(re.findall(r"\b[0-9a-f]{64}\b", playwright_section)) >= 3
+    assert "did not grant persistent production authorization" in playwright_section
+    assert "unreviewed" in playwright_section
 
 
 def test_operations_and_acceptance_docs_define_observable_evidence() -> None:

@@ -2,41 +2,59 @@
 
 ## 审计范围与结论
 
-本审计以当前仓库代码为准，覆盖配置、应用组装、Tool 注册与执行、API、日志、前端、SerpAPI、知识库、Skill 现状和旧 JD 抓取链路。现有能力可以复用 `search_jobs_serpapi`、知识库应用服务，以及旧 JD 链路中的安全抓取和静态解析逻辑；模型可调用的 RAG Tool 与 Skill 子系统则必须新增。
+本审计以当前工作区代码为准，覆盖 `job-research` 链路、Agent Runtime、ContextBuilder、Tool Registry、MCP Client Manager、Skill Registry、Pre-Tool-Call Gate、Trace、JSONL Log、Token Usage、错误映射和前端路由。
+
+当前仓库已经具备 `search_jobs_serpapi`、`retrieve_resume_evidence`、`job-research` Skill、`JobResearchOrchestrator`、Unified Tool Registry、Playwright MCP 能力接入、Pre-Tool-Call Gate、确认卡、capability audit event、context snapshot、turn usage 与 `tool_artifacts`。这些应作为信任层第一优先复用对象。
+
+当前仍没有专用 Eval Runner、没有固定求职调研 Fixture 目录、没有 Eval Run/Case 存储、没有完整 Trust Center、没有真实模型 Smoke 独立报告；现有 Trace 也缺少独立 model_request_id 和缺少独立 policy_decision_id。以上缺口需要在 `job-research-trust` 后续任务中新增或扩展，不应臆造为已存在能力。
 
 ## 配置加载与应用生命周期
 
-- `src/starter_agent/settings.py`：`load_settings()` 先读取 `EnvironmentSettings.starter_agent_config`（环境变量名为 `STARTER_AGENT_CONFIG`），默认选择 `config/config.yaml`；相对路径按项目根目录解析，目标不存在时才尝试 `config/config.example.yaml`。文件使用 `yaml.safe_load()`，随后由 `AgentSettings.model_validate()` 校验 Provider、Runtime、Knowledge 和 Tools 等结构。
-- 同一文件中的 `AgentSettings._environment_value()` 先读进程环境变量，再逐行读取项目根目录的 `.env`。`provider_api_key()`、`serpapi_api_key()` 和邮件配置只通过环境变量名解析秘密值；SerpAPI 的 active profile 可由 `SERPAPI_ACTIVE_KEY` 覆盖。
-- `src/starter_agent/bootstrap.py`：`get_settings()`、`create_application()` 和 `create_knowledge_service()` 都使用 `@lru_cache`。`create_application()` 依次配置日志，构造 `SQLiteSessionStore`、`ProviderRegistry`、`ToolRegistry`、`ToolPolicy`、`AgentRuntime` 与 `ContextBuilder`；`create_knowledge_service()` 另行构造缓存的 `SQLiteKnowledgeStore` 和 `KnowledgeApplicationService`。
-- `src/starter_agent/interfaces/api.py`：FastAPI lifespan `_api_lifespan()` 在关闭时等待 `create_application().wait_for_background_tasks()`；启动阶段没有额外初始化动作。缓存对象的创建发生在首次调用相应 bootstrap 函数时。
+- `src/starter_agent/settings.py`：`load_settings()` 读取 `STARTER_AGENT_CONFIG` 指向的 YAML，默认使用 `config/config.yaml`；相对路径按项目根目录解析。`AgentSettings._environment_value()` 先读进程环境变量，再读取项目根目录 `.env`。Provider、SerpAPI、邮件等秘密只通过环境变量名解析。
+- `src/starter_agent/bootstrap.py`：`create_application()` 组装 `SQLiteSessionStore`、`ProviderRegistry`、旧 `ToolRegistry`、`AgentRuntime`、`ContextBuilder`、MCP/capability/skill 相关服务和日志配置。
+- `src/starter_agent/application.py`：`ApplicationService` 是聊天、知识库与 `job-research` 应用入口；它负责准备上下文、调用 Runtime、保存消息、保存 `turn_usage`、保存受限 `tool_artifacts`，并在后台执行记忆维护。
 
-## Tool 注册、Schema 暴露与执行
+## Agent Runtime、Context 与 Tool 调用链
 
-- `src/starter_agent/tools/registry.py`：`ToolRegistry` 构造全部内置候选 Tool，再按 `settings.tools.enabled` 形成 `_tools`；未知名称会抛出 `ConfigurationError`。`list()`/`get()` 提供查询，`schemas()` 对启用 Tool 调用 `Tool.schema()`。
-- `src/starter_agent/tools/base.py`：`Tool.schema()` 生成 Provider function schema，包含真实 `name`、`description` 和 `input_schema`；执行上下文 `ToolContext` 当前只有 `session_id` 与 `turn_id`。
-- `src/starter_agent/tools/policy.py`：`ToolPolicy.check()` 只比较 Tool 的 `risk_level` 与配置的 allowlist。
-- `src/starter_agent/agent/runtime.py`：每次 `Provider.complete()` 直接接收 `self.tools.schemas()`；模型返回 Tool Call 后，Runtime 按名称 `get()`、执行风险检查、用 `asyncio.wait_for()` 调用 `tool.execute()`，再将 `ToolResult` 经 `ToolResultGuard` 写回 Tool message。未知 Tool、策略拒绝、超时和未捕获异常分别映射为 `unknown_tool`、策略错误码、`tool_timeout` 和 `tool_execution_error`。
-- 当前执行路径没有通用 JSON Schema validator。具体 Tool 自行校验参数；因此 schema 中的 `additionalProperties: false` 是模型侧契约，而 `search_jobs_serpapi` 的本地 `_validate_arguments()` 当前不会主动拒绝未知键。这是后续统一执行/Gate 实施时应保留的审计边界。
+- `src/starter_agent/agent/runtime.py`：`AgentRuntime` 驱动模型循环。模型请求前会从具备 `model_snapshot()` 的 registry 读取 callable tool snapshot，把 `provider_tools()` 交给 Provider，并写入 `model.context.snapshot`、`model.requested`、`model.completed` 等 audit event。当前模型调用用 `call_id` 形如 `model-call-{N}`，尚未形成独立稳定的 `model_request_id` 字段。
+- 同一 Runtime 在模型请求 Tool 后写 `tool.requested`，调用 `PreToolCallGate`，写 `gate.evaluated`，通过确认后才写 `tool.started` 并进入 `UnifiedToolExecutor`；Tool 完成后写 `tool.completed`。Gate 决策目前主要以 audit event、confirmation、permit 和 payload 关联，尚未形成独立稳定的 `policy_decision_id` 字段。
+- `src/starter_agent/agent/context.py`：`ContextBuilder` 组装系统提示、身份、技能轻量目录、选中 Skill 完整内容、记忆和上下文摘要。外部或记忆内容被标为数据/摘要，不应作为系统指令。
+- `src/starter_agent/capabilities/registry.py`：`UnifiedToolRegistry` 维护原子快照。`lightweight_catalog()` 面向能力目录，保留 name/server/type/enabled/review/callable 等轻量字段；`model_snapshot().provider_tools()` 只包含当前 callable tools 的完整 description 与 input schema。`schemas()` 兼容旧 Runtime 接口并返回 provider tools。
+- `src/starter_agent/capabilities/gate.py`：`PreToolCallGate` 校验 tool 是否存在、是否 enabled、schema hash、JSON Schema、浏览器范围、SerpAPI payload 和策略规则；`UnifiedToolExecutor` 只接受有效 `ExecutionPermit`，并写入 `permit.consumed` 与 `tool.invoked` audit event。
+- `src/starter_agent/tools/base.py`：旧内置 Tool 仍通过 `Tool.schema()` 生成 provider function schema，包含真实 name、description 与 input schema。
+- `src/starter_agent/tools/policy.py`：旧 ToolPolicy 仍保留风险 allowlist 检查；当前统一 Gate/Executor 路径需要继续兼容旧 Tool 风险语义。
+- `src/starter_agent/mcp/manager.py`：`McpManager` 管理 MCP server 的连接、断开、启停、发现、刷新、健康检查与 tool 调用；Playwright 相关 Tool 还会经过网络范围 guard。
+- `src/starter_agent/skills/registry.py`：`SkillRegistry` 已存在，负责解析、加载、索引、启停和健康状态。当前工作区实际存在的 `job-research` Skill 定义位于 `src/starter_agent/skills/job-research/SKILL.md`（当前版本 1.1.0）。信任层后续应以 Registry 实际加载结果为准，并把 Skill 版本写入 Eval Run。
+
+## Trace、Log、Token 与存储现状
+
+- `src/starter_agent/capabilities/store.py`：`CapabilityStore` 当前持久化 MCP server、capability snapshot、MCP tools、builtin overrides、policy rules、confirmations、execution permits、skill records 和 `capability_audit_events`。`AuditEvent` 包含 `event_id`、`actor`、`action`、`target`、`decision`、`created_at` 与 `payload_json`，用于 capability trace。
+- `src/starter_agent/infrastructure/session_store.py`：`SQLiteSessionStore` 包含 `sessions`、`messages`、`turn_usage`、`context_summaries`、`token_calibration_profiles`、`tool_artifacts` 和 JD 入库确认等表。`tool_artifacts` 保存 server/call/snapshot/schema/source URL、hash、裁剪摘要和 restricted 标记；写入前会走脱敏与字段限制。
+- `src/starter_agent/observability/logging.py`：结构化 JSONL 日志在 renderer 之前执行脱敏；敏感 key 与正则覆盖 Authorization、Token、Cookie、密码、授权码、API key、邮件、正文片段和检索文本等类别。`httpx`/`httpcore` 日志被降噪到 WARNING，避免 URL query 凭据进入普通日志。
+- `src/starter_agent/interfaces/capabilities_api.py`：已有 `GET /v1/capabilities/traces`，当前只支持按 `turn_id` 过滤 audit events；已有 `GET /v1/capabilities/context-snapshots/{session_id}`，通过 `session_id`、`turn_id` 和 `revision` 查询 `model.context.snapshot`。这些可复用，但还没有 Eval Run/Case 级过滤、树状 Trace、失败簇或 Release Gate 视图。
 
 ## API 与前端现状
 
 ### 后端
 
-- `src/starter_agent/interfaces/api.py` 的 `GET /health` 只返回 `status=ok` 与应用名，不检查 Provider、Tool 或外部服务健康。
-- `GET /v1/tools` 从运行中 `ToolRegistry.list()` 返回 `name`、`description`、`risk_level`；它不返回 input schema。模型侧 schema 由 `AgentRuntime` 直接读取 Registry。
-- 聊天接口为 `POST /v1/chat` 与 `POST /v1/chat/stream`。流式接口使用 SSE，产生 `delta`、`tool_started`、`tool_completed`、`done` 或 `error` 事件；`knowledge_mode=required` 时走知识库回答分支。
-- 现有知识库接口均位于同一文件：`GET /v1/knowledge-bases`；文档的 `POST/GET /v1/knowledge-bases/{knowledge_base_id}/documents`、`GET /v1/knowledge-bases/{knowledge_base_id}/documents/{document_id}`、`GET .../chunks`、`PUT .../content`、`DELETE .../{document_id}`；以及 `POST /v1/knowledge-bases/{knowledge_base_id}/retrieve`、`POST .../answer`、`GET .../citations/{chunk_id}` 和 `GET .../ingestion-jobs/{job_id}`。
+- `src/starter_agent/interfaces/api.py` 提供 `GET /health`、`GET /v1/tools`、`POST /v1/chat`、`POST /v1/chat/stream`、session 与 knowledge API。`GET /v1/tools` 返回旧内置 Tool 的 name/description/risk level，不等同于模型请求时的完整 provider tool snapshot。
+- `src/starter_agent/interfaces/capabilities_api.py` 提供能力管理 API，包括 catalog、server/tool/skill 查询与启停、review/policy、pending confirmation、confirmation decision、trace 与 context snapshot。当前没有 `/v1/trust/...` API。
 
 ### 前端
 
-- `src/web/index.html` 是单文件前端。主导航当前只有“对话”和“知识库”，`showPrimaryView()` 通过元素的 `hidden` 状态切换 `chatView`/`knowledgeView`；当前没有 hash 路由或“能力管理”主视图。
-- `loadTools()` 请求 `/v1/tools`，将结果保存到 `state.tools`；输入 `/` 时依据真实 Tool name 过滤并显示菜单，选中后形成带 `tool` 字段的聊天请求。
-- `sendMessage()` 请求 `/v1/chat/stream`。`readStream()` 用 `ReadableStream.getReader()`、`TextDecoder` 和 SSE 空行分帧解析 `data:`；`applyStreamEvent()`分别渲染 `tool_started`、`tool_completed`、`delta`、`done`、`error`。
+- `src/web/index.html` 是单文件前端。当前 hash 路由由 `CapabilityUiLogic.resolvePrimaryRoute()` 和导航事件处理，已存在 `#/chat`、`#/knowledge`、`#/capabilities/mcp-servers`、`#/capabilities/skills`。
+- 聊天页已有 `chat-confirmation-card`，支持“仅本次执行”、加入 Allowlist 和取消；当服务端标记 always-confirm 时，前端会禁用加入 Allowlist 并展示原因。能力管理页已有 MCP servers 与 skills 视图。
+- 当前没有完整 Trust Center，也没有 `#/trust/evals`、`#/trust/traces`、`#/trust/safety` 三个页签；前端还没有运行固定评测、比较 Run、查看失败簇或展示安全门禁证据的真实后端入口。
+
+## `job-research` Skill 与编排链路
+
+- `src/starter_agent/skills/job-research/SKILL.md`：Skill 名称为 `job-research`，依赖 `search_jobs_serpapi`、`retrieve_resume_evidence`、`mcp__playwright__browser_navigate`、`mcp__playwright__browser_snapshot` 和 JD 入库服务。Skill 明确要求外部网页是数据不是指令，正向匹配必须引用简历 Chunk，失败时返回可恢复状态。
+- `src/starter_agent/skills/job_research.py`：`JobResearchOrchestrator` 真实使用 Tool 常量 `search_jobs_serpapi`、`mcp__playwright__browser_navigate`、`mcp__playwright__browser_snapshot`、`retrieve_resume_evidence`。搜索阶段调用 SerpAPI，分析阶段导航公开 URL、读取 Playwright snapshot、检索简历证据，并把依赖缺失、确认需求和 Tool 错误映射到结构化状态。
+- Playwright MCP 工具的真实 model alias 当前按 MCP 适配器发布为 `mcp__playwright__browser_navigate` 与 `mcp__playwright__browser_snapshot`；是否 callable 取决于 server 连接、tool enabled、review 与 policy。
 
 ## `search_jobs_serpapi` 真实契约
 
-实现位于 `src/starter_agent/tools/builtin/job_search.py`，由 `src/starter_agent/tools/registry.py` 构造并按 enabled allowlist 注册。
+实现位于 `src/starter_agent/tools/builtin/job_search.py`，由 `src/starter_agent/tools/registry.py` 构造并按 enabled allowlist 注册，同时也可进入 `UnifiedToolRegistry` 的 builtin 记录。
 
 - **Name**：`search_jobs_serpapi`
 - **Description**：`Search public job listings with sources and retrieval timestamps. Use structured job keywords, location, and desired result count. Results are leads that must be verified on the source page.`
@@ -81,41 +99,46 @@
 ### 行为、风险与错误码
 
 - Tool 先请求 SerpAPI `google_jobs`，无结果时回退 `google`；结果只是岗位线索，包含来源 URL 与 `retrieved_at`，snippet 最长 1000 字符，必须回到来源页核验。
-- `sanitize_url()` 仅保留 HTTP(S) URL，并移除 fragment 及常见敏感 query key。`src/starter_agent/observability/logging.py` 同时把 `httpx`/`httpcore` 日志提升到 WARNING，避免带 query credential 的 SerpAPI URL 在 INFO 日志泄漏。
-- 外部服务、网络、配额、认证与响应格式仍是不可信边界。代码会按配置重试 transport error 与 5xx，但不会把搜索摘要视为完整 JD。
+- `sanitize_url()` 仅保留 HTTP(S) URL，并移除 fragment 及常见敏感 query key。外部服务、网络、配额、认证与响应格式仍是不可信边界。
 - 真实错误码集合：`invalid_arguments`、`missing_api_key`、`search_timeout`、`search_connection_failed`、`search_transport_error`、`invalid_response`、`no_results`、`authentication_failed`、`rate_limited`、`quota_exceeded`、`service_unavailable`、`invalid_search_request`、`search_failed`。
 
 ## 知识库/RAG 现状
 
-- `src/starter_agent/interfaces/api.py` 已实现 `POST /v1/knowledge-bases/{knowledge_base_id}/retrieve`。`KnowledgeRetrieveRequest` 接收 `question`（1–10000）、`top_k`（1–50，默认 6）、`document_ids`、`document_types`、`filenames` 与 `versions`；响应为 `status`（`ok` 或 `no_evidence`）及 `matches`。
-- `src/starter_agent/knowledge/service.py` 已实现 `KnowledgeApplicationService.retrieve()`，把缓存服务的固定 `KnowledgeScope`、knowledge base、问题和上述 filters 交给 `KnowledgeRetriever`，并把 top_k 限制到最多 50。
-- 以上是应用/API 能力，不会经 `ToolRegistry` 暴露给模型。`src/starter_agent/tools/registry.py` 没有知识库 Tool，仓库中也没有对应实现：`retrieve_resume_evidence` 尚未实现。它是 job-research 所需的待新增模型 callable RAG 适配器，不得把现有 `/retrieve` API 误记为模型 Tool，也不得用文件式简历 Tool 冒充 RAG。
-
-## Skill 现状
-
-对当前项目的 `SKILL.md`、skills 目录、Python/YAML 中的 Skill Registry、parser、selector 与 trigger 机制进行扫描，未发现运行时实现。当前没有 `skills/`、没有 `SKILL.md`、没有 Skill 解析器或触发机制，且 **Skill Registry 尚未实现**。因此 `job-research` Skill 与其依赖状态、解析、选择、启停和触发都属于待新增子系统，不能作为现有能力调用。
+- `src/starter_agent/tools/builtin/knowledge.py` 已实现模型 callable RAG Tool `retrieve_resume_evidence`。输入 schema 包含必填 `query` 与可选 `top_k`，执行时从 `ToolContext` 注入 `user_id`、`project_id` 与 `knowledge_base_id`，并调用现有知识库服务检索当前作用域证据。
+- `src/starter_agent/interfaces/api.py` 仍提供应用/API 层 `POST /v1/knowledge-bases/{knowledge_base_id}/retrieve`。信任层固定 Eval 需要区分模型 Tool `retrieve_resume_evidence` 与应用 API，不得混用记录。
+- RAG 失败边界包括 knowledge scope 不存在、scope mismatch、参数非法与 `no_evidence`。后续 Safety case 需要确认没有完整简历正文进入普通日志、报告或 UI。
 
 ## 旧 JD 抓取链路：可复用与替代边界
 
-### 现有链路
+- `src/starter_agent/tools/builtin/job_description_search.py` 的 `search_job_description` 是旧静态 JD 抓取 Tool，只接受用户选择的公开 HTTP(S) URL，并输出 source/final URL、读取时间、内容 hash、结构化字段和 completeness。
+- `src/starter_agent/tools/adapters/safe_web_fetcher.py` 与 `src/starter_agent/tools/adapters/job_description_extractor.py` 提供 URL 验证、SSRF/DNS/peer 防护、redirect 逐跳验证、robots/timeout/大小/类型限制、敏感 URL 清理、内容 hash、来源追踪和静态结构化提取。
+- `job-research` 当前目标链路使用 Playwright MCP 读取动态 JD；旧静态抓取链路仍可作为安全规则和错误处理参考，不应在没有回归证据时删除。
 
-- `src/starter_agent/tools/builtin/job_description_search.py` 的 `search_job_description` 是 `read` Tool，只接受一个用户选择的公开 HTTP(S) URL，并可携带 `expected_title`、`expected_company` 和 `source_ref`。它拒绝额外字段、列表页、空/不完整静态内容与岗位不匹配，输出 source/final URL、读取时间、内容 hash、结构化字段和 completeness。
-- `src/starter_agent/tools/adapters/safe_web_fetcher.py` 的 `SafeWebFetcher` 负责安全读取：只允许 HTTP(S)，拒绝凭据、fragment、非标准端口、本地/metadata hostname、非公网或混淆 IP；DNS 后固定选定地址并校验实际 peer；每次 redirect 都重新验证。生产 client 禁用环境代理（`trust_env=False`），手动处理 redirect，并实施全程 timeout、robots、状态码、内容类型/压缩、声明长度和流式字节上限检查。公开 URL 会移除敏感 query 值，结果带 SHA-256。
-- `src/starter_agent/tools/adapters/job_description_extractor.py` 的 `JobDescriptionExtractor` 把外部内容作为惰性数据处理，支持 JobPosting JSON-LD、HTML 和纯文本；去除 script/style/nav 等噪声，提取职责、要求、加分项和福利，计算 `complete`/`partial`/`unverified`。JSON-LD 遍历还设置节点数与深度上限。
+## 求职调研信任层 Task1 缺口清单
 
-### 实施边界
-
-- 上述 URL 验证、SSRF/DNS/peer 防护、redirect 逐跳验证、robots/timeout/大小/类型限制、敏感 URL 清理、内容 hash、来源追踪和静态结构化提取均可作为新浏览器/MCP 治理与结果规范化的参考或复用逻辑。
-- `search_job_description` 依赖自建静态 HTTP 抓取，无法执行动态页面脚本、登录或绕过访问控制；它对动态或不完整页面返回失败。这正是 Playwright MCP 读取能力要覆盖的边界，但浏览器能力在真实端到端覆盖与回归验证前不能宣称替代现有 Tool。
-- 本阶段不删除、不停用 `search_job_description`、`SafeWebFetcher` 或 `JobDescriptionExtractor`。任何后续删除必须建立在新能力完整替代的证据和单独确认之上。
+| 能力 | 当前状态 | 信任层结论 |
+|---|---|---|
+| 固定 Eval Runner | 未发现专用实现 | 需要新增；不能用变化的互联网结果计算固定基线 |
+| 固定求职 Fixture | 未发现 `job-research` 专用 fixture 目录 | 需要新增脱敏搜索、JD、RAG chunk、MCP 响应、Tool error 与 injection fixture |
+| Eval Run/Case 存储 | 未发现 Suite/Case/Run/Result/Assertion/Metric/Failure Cluster/Release Gate 表 | 需要新增或迁移 |
+| Trace 关联 | 已有 capability audit event、`/v1/capabilities/traces` 和 context snapshots | 需要扩展 eval_run_id/case_id/session_id/turn_id/tool/policy/approval 关联 |
+| 模型请求 ID | 现有 `model.context.snapshot` 使用 `call_id=model-call-{N}` | 缺少独立 model_request_id |
+| Policy Decision ID | 现有 `gate.evaluated`、confirmation 和 permit 可关联 | 缺少独立 policy_decision_id |
+| Tool 启停证据 | `UnifiedToolRegistry` 已区分 lightweight catalog 与 provider tools | 需要固定回归证明关闭项只有 Name/轻量信息、无完整 Description/Input Schema、不可调用 |
+| Pre-Tool-Call Gate | 已有 Gate、confirmation、permit 与 chat confirmation card | 需要补全白名单、强制确认、取消、超时、重复点击和无真实 Tool Start 回归 |
+| 日志脱敏 | 已有写入前脱敏和受限 artifact | 需要新增假 Token 泄漏回归，证明报告、日志、UI 均不含秘密 |
+| 真实 Smoke | `tests/e2e/test_playwright_job_research.py` 覆盖公开 JD 与 Playwright MCP，但 provider 是脚本化测试替身 | 没有真实模型 Smoke；需要单独报告且不混入固定基线 |
+| Trust Center | 前端已有 chat/knowledge/capability 路由 | 没有完整 Trust Center 与 Evals/Traces/Safety 页签 |
 
 ## 实施依赖清单
 
-| 能力 | 当前状态 | Job Research 结论 |
+| 能力 | 当前状态 | Job Research / Trust 结论 |
 |---|---|---|
 | `search_jobs_serpapi` | 已注册的内置 `read` Tool | 直接复用真实 Name/Schema |
-| 知识库 `/retrieve` 与 `KnowledgeApplicationService.retrieve()` | 已实现应用/API 能力 | 复用服务层 |
-| `retrieve_resume_evidence` | 尚未实现 | 新增模型 callable RAG Tool |
-| Skill Registry 与 `job-research` Skill | 尚未实现 | 新增 Skill 子系统 |
-| `search_job_description` 安全抓取/解析 | 已实现但动态站点能力有限 | 保留并复用安全规则；替代前验证 |
-| 前端能力管理视图/路由 | 尚未实现 | 基于现有 `showPrimaryView()` 扩展时不得假设已有路由 |
+| Playwright MCP `mcp__playwright__browser_navigate` | 通过 MCP discovery/registry 发布 | 复用；是否 callable 由启停、连接、review、policy 决定 |
+| Playwright MCP `mcp__playwright__browser_snapshot` | 通过 MCP discovery/registry 发布 | 复用；需要来源、裁剪和注入回归 |
+| `retrieve_resume_evidence` | 已实现模型 callable RAG Tool | 复用；需要作用域与敏感正文脱敏回归 |
+| `job-research` Skill | 已存在 `SKILL.md` 与 registry 支持 | 复用；需要固定 Eval 覆盖编排、失败处理和安全说明 |
+| `JobResearchOrchestrator` | 已实现应用编排 | 复用；需要 Trace/Eval 关联 |
+| Capability trace/context snapshot | 已实现基础 API | 扩展 Run/Case/失败簇/门禁查询 |
+| Trust Center | 尚未实现 | 新增真实后端 API 与前端三页签 |
