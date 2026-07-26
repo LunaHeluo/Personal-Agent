@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
+import ipaddress
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import quote, unquote
 from uuid import uuid4
 
@@ -27,6 +29,7 @@ from starter_agent.domain.models import Message, ModelResponse, ToolCall
 from starter_agent.mcp.client import ClientMetadata
 from starter_agent.mcp.config import McpConfiguration, McpServerConfig
 from starter_agent.mcp.manager import McpManager
+from starter_agent.mcp.network_guard import PlaywrightNetworkGuard
 from starter_agent.mcp.tool_adapter import McpToolResultAdapter
 from starter_agent.domain.models import ToolResult
 from starter_agent.providers.base import Provider
@@ -78,6 +81,87 @@ def test_adapter_converts_real_mcp_blocks_and_binds_trace_metadata() -> None:
     assert adapted.metadata["source_url"] == "https://jobs.example/roles/42"
     assert "requested_url" not in adapted.metadata
     assert len(adapted.metadata["content_sha256"]) == 64
+
+
+def test_adapter_structures_playwright_snapshot_and_preserves_page_url() -> None:
+    result = CallToolResult(
+        content=[
+            TextContent(
+                type="text",
+                text=(
+                    "### Page\n"
+                    "- Page URL: https://jobs.example/role\n"
+                    "- Page Title: ML Engineer - Jobs - Careers at Example\n"
+                    "### Snapshot\n```yaml\n"
+                    '- heading "ML Engineer" [level=1] [ref=e1]\n'
+                    "- generic [ref=e2]: Remote, United States\n"
+                    '- heading "Responsibilities" [level=2] [ref=e3]\n'
+                    "- listitem [ref=e4]: Build models.\n"
+                    '- heading "Minimum Qualifications" [level=2] [ref=e5]\n'
+                    "- listitem [ref=e6]: Python experience.\n```"
+                ),
+            )
+        ],
+    )
+
+    adapted = McpToolResultAdapter().adapt(
+        result,
+        server_id="playwright",
+        call_id="call-snapshot",
+        snapshot_id="snapshot-7",
+        schema_hash="c" * 64,
+        tool_name="browser_snapshot",
+    )
+
+    assert adapted.data["structured_content"] == {
+        "title": "ML Engineer",
+        "company": "Example",
+        "location": "Remote, United States",
+        "responsibilities": ["Build models."],
+        "requirements": ["Python experience."],
+        "preferred_qualifications": [],
+        "raw_text": adapted.data["structured_content"]["raw_text"],
+        "completeness": "complete",
+        "extraction_method": "playwright_snapshot",
+        "page_type": "job_description",
+        "final_url": "https://jobs.example/role",
+        "source_url": "https://jobs.example/role",
+    }
+    assert adapted.metadata["final_url"] == "https://jobs.example/role"
+    assert adapted.metadata["source_url"] == "https://jobs.example/role"
+    assert len(adapted.metadata["source_content_sha256"]) == 64
+
+
+def test_adapter_structures_successful_playwright_navigation_for_skill() -> None:
+    result = CallToolResult(
+        content=[
+            TextContent(
+                type="text",
+                text=(
+                    "- Page URL: https://jobs.example/role\n"
+                    '- heading "ML Engineer" [level=1]\n'
+                    "- generic: Remote\n"
+                    '- heading "Responsibilities" [level=2]\n'
+                    "- listitem: Build Python models.\n"
+                    '- heading "Minimum Qualifications" [level=2]\n'
+                    "- listitem: Python experience."
+                ),
+            )
+        ]
+    )
+    adapted = McpToolResultAdapter().adapt(
+        result,
+        server_id="playwright",
+        call_id="navigate",
+        snapshot_id="snapshot-7",
+        schema_hash="c" * 64,
+        tool_name="browser_navigate",
+    )
+
+    assert adapted.data["structured_content"]["requirements"]
+    assert adapted.data["structured_content"]["source_url"] == (
+        "https://jobs.example/role"
+    )
 
 
 def test_adapter_preserves_mcp_error_without_exposing_upstream_secret_metadata() -> None:
@@ -181,6 +265,132 @@ class _ResultClient:
         self.session = None
 
 
+@pytest.mark.asyncio
+async def test_manager_commits_only_successful_navigation_with_final_url() -> None:
+    async def resolver(_hostname: str):
+        return [ipaddress.ip_address("93.184.216.34")]
+
+    guard = PlaywrightNetworkGuard(resolver=resolver)
+    await guard.start()
+    manager = McpManager(
+        McpConfiguration(
+            source_path=Path("mcp.json"),
+            servers={"playwright": McpServerConfig(command="npx")},
+            config_hash="f" * 64,
+        ),
+        client_factory=lambda _server_id, _config: _ResultClient(),
+        browser_network_guard=guard,
+    )
+    guard.activate_generation("playwright", "snapshot-1", 1)
+    snapshot = SimpleNamespace(
+        tool_name="mcp__playwright__browser_snapshot",
+        server_id="playwright",
+        session_id="session-a",
+        snapshot_id="snapshot-1",
+        arguments={},
+    )
+    try:
+        failed = SimpleNamespace(
+            call_id="failed",
+            tool_name="mcp__playwright__browser_navigate",
+            server_id="playwright",
+            session_id="session-a",
+            snapshot_id="snapshot-1",
+            arguments={"url": "https://jobs.example/failed"},
+        )
+        await guard(failed)
+        assert await manager._commit_browser_navigation(
+            failed,
+            CallToolResult(
+                isError=True,
+                content=[TextContent(type="text", text="failed")],
+            ),
+            1,
+        ) is False
+        with pytest.raises(RuntimeError, match="browser_network_target_required"):
+            await guard(snapshot)
+
+        succeeded = SimpleNamespace(
+            call_id="succeeded",
+            tool_name=failed.tool_name,
+            server_id=failed.server_id,
+            session_id=failed.session_id,
+            snapshot_id=failed.snapshot_id,
+            arguments={"url": "https://jobs.example/final"},
+        )
+        await guard(succeeded)
+        guard._record_connection_target("jobs.example", 443)
+        assert await manager._commit_browser_navigation(
+            succeeded,
+            CallToolResult(
+                content=[
+                    TextContent(
+                        type="text",
+                        text="- Page URL: https://jobs.example/final",
+                    )
+                ]
+            ),
+            1,
+        ) is True
+        assert (await guard(snapshot)).targets == (
+            "https://jobs.example/final",
+        )
+    finally:
+        await guard.close()
+
+
+def test_manager_accepts_only_unique_anchored_navigation_page_url() -> None:
+    assert McpManager._tool_result_final_url(
+        CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=(
+                        "### Ran Playwright code\n"
+                        "```js\nawait page.goto('https://jobs.example/final');\n```\n"
+                        "### Page\n"
+                        "- Page URL: https://jobs.example/final\n"
+                        "- Page Title: Example role"
+                    ),
+                )
+            ]
+        )
+    ) == "https://jobs.example/final"
+    assert McpManager._tool_result_final_url(
+        CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text="- Page URL: https://jobs.example/final",
+                )
+            ]
+        )
+    ) == "https://jobs.example/final"
+    assert McpManager._tool_result_final_url(
+        CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text="Job body says Page URL: https://evil.example/",
+                )
+            ]
+        )
+    ) is None
+    assert McpManager._tool_result_final_url(
+        CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=(
+                        "- Page URL: https://one.example/\n"
+                        "- Page URL: https://two.example/"
+                    ),
+                )
+            ]
+        )
+    ) is None
+
+
 class _McpProvider(Provider):
     name = "fixture"
 
@@ -275,6 +485,79 @@ async def _real_manager_runtime(tmp_path: Path, client: _ResultClient):
         executor=executor,
     )
     return manager, runtime, reviewed
+
+
+@pytest.mark.asyncio
+async def test_manager_registers_browser_invoker_only_with_explicit_network_guard(
+    tmp_path: Path,
+) -> None:
+    registry = UnifiedToolRegistry(
+        ToolRegistry([]),
+        allowed_risk_levels=["read", "external"],
+    )
+    store = CapabilityStore("sqlite:///:memory:", tmp_path)
+    gate = PreToolCallGate(store, registry=registry)
+    executor = UnifiedToolExecutor(store, gate=gate)
+
+    async def network_guard(_request):
+        return None
+
+    manager = McpManager(
+        McpConfiguration(
+            source_path=tmp_path / "mcp.json",
+            servers={
+                "playwright": McpServerConfig(
+                    command="npx",
+                    args=("@playwright/mcp@latest",),
+                )
+            },
+            config_hash="f" * 64,
+        ),
+        store=store,
+        client_factory=lambda _server_id, _config: _ResultClient(),
+        tool_executor=executor,
+        browser_network_guard=network_guard,
+    )
+    await manager.connect("playwright")
+    schema = {
+        "type": "object",
+        "properties": {"url": {"type": "string"}},
+        "required": ["url"],
+    }
+    tool = Tool(
+        snapshot_id="snapshot-browser",
+        server_id="playwright",
+        upstream_name="browser_navigate",
+        model_alias="mcp__playwright__browser_navigate",
+        input_schema=schema,
+        schema_hash=canonical_json_sha256(schema),
+        metadata={"browser": True},
+        outbound_scope=("public_url",),
+        enabled=True,
+        review_state="approved",
+    )
+    snapshot = Snapshot(
+        id=tool.snapshot_id,
+        server_id="playwright",
+        version=1,
+        schema_hash="e" * 64,
+        discovered_at=datetime.now(UTC),
+        tool_count=1,
+    )
+    store.create_snapshot(snapshot, tools=[tool])
+    active = store.activate_snapshot("playwright", snapshot.id)
+    store.update_tool(
+        active.id,
+        tool.upstream_name,
+        expected_revision=tool.revision,
+        review_state="approved",
+    )
+    manager._get_handle("playwright").active.snapshot_id = active.id
+
+    manager._publish_snapshot(manager._get_handle("playwright"), active)
+
+    assert executor.has_invoker("playwright", "browser_navigate") is True
+    await manager.shutdown()
 
 
 @pytest.mark.asyncio

@@ -46,3 +46,6 @@ starter-agent = ["hatchling>=1.27.0"]
 addopts = "-q"
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "external: tests that require live external services, network, or browser processes",
+]

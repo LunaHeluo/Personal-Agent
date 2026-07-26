@@ -129,6 +129,63 @@ async def test_connect_uses_official_stdio_session_and_runtime_metadata() -> Non
 
 
 @pytest.mark.asyncio
+async def test_windows_npx_uses_node_cli_without_cmd_argument_parsing(
+    tmp_path: Path,
+) -> None:
+    node = tmp_path / "node.exe"
+    npx = tmp_path / "npx.cmd"
+    npx_cli = tmp_path / "node_modules" / "npm" / "bin" / "npx-cli.js"
+    npx_cli.parent.mkdir(parents=True)
+    for path in (node, npx, npx_cli):
+        path.touch()
+    captured: dict[str, object] = {}
+    session = _Session(_initialize_result())
+
+    def transport_factory(parameters, stderr):
+        captured["parameters"] = parameters
+        return _Transport(stderr)
+
+    def resolver(name: str) -> str | None:
+        return {"node": str(node), "npx": str(npx)}.get(name)
+
+    secured = McpServerConfig(
+        command="npx",
+        args=("@playwright/mcp@latest",),
+    ).model_copy(
+        update={
+            "args": (
+                "@playwright/mcp@latest",
+                "--proxy-bypass",
+                "<-loopback>",
+            )
+        }
+    )
+    client = McpClient(
+        secured,
+        initialize_timeout_seconds=0.2,
+        close_timeout_seconds=0.2,
+        executable_resolver=resolver,
+        version_probe=_version_probe,
+        transport_factory=transport_factory,
+        session_factory=lambda _read, _write: _SessionContext(session),
+        platform="win32",
+    )
+
+    await client.connect()
+
+    parameters = captured["parameters"]
+    assert isinstance(parameters, StdioServerParameters)
+    assert parameters.command == str(node)
+    assert parameters.args == [
+        str(npx_cli),
+        "@playwright/mcp@latest",
+        "--proxy-bypass",
+        "<-loopback>",
+    ]
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_initialize_timeout_cleans_transport_and_redacts_stderr() -> None:
     session = _Session()
     session_context = _SessionContext(session)

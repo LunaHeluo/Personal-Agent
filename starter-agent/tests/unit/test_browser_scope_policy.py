@@ -93,6 +93,26 @@ async def test_browser_execution_guard_rechecks_redirect_and_dns_rebinding() -> 
         )
 
 
+async def test_browser_scope_control_origin_is_exact_and_opt_in() -> None:
+    policy_module = _policy_module()
+    policy = policy_module.BrowserScopePolicy(
+        resolver=_public_resolver,
+        control_origins=("http://127.0.0.1:43127",),
+    )
+
+    assert await policy.validate_url(
+        "http://127.0.0.1:43127/#/capabilities/mcp-servers"
+    )
+    for url in (
+        "http://127.0.0.1:43128/",
+        "http://localhost:43127/",
+        "http://192.168.1.10:43127/",
+        "https://127.0.0.1:43127/",
+    ):
+        with pytest.raises(policy_module.ScopeDenied, match="unsafe_url"):
+            await policy.validate_url(url)
+
+
 def test_browser_sensitive_outbound_and_serpapi_fields_are_denied() -> None:
     policy_module = _policy_module()
     browser = policy_module.BrowserScopePolicy(resolver=_public_resolver)
@@ -110,4 +130,15 @@ def test_browser_sensitive_outbound_and_serpapi_fields_are_denied() -> None:
         policy_module.validate_serpapi_payload(
             {"keywords": "AI PM", "resume": "private resume"},
             ("job_keywords", "resume"),
+        )
+
+
+def test_browser_click_accepts_only_structured_playwright_reference() -> None:
+    policy_module = _policy_module()
+    policy_module.validate_browser_payload(
+        "click", {"element": "Refresh", "ref": "e42"}
+    )
+    with pytest.raises(policy_module.ScopeDenied, match="browser_payload"):
+        policy_module.validate_browser_payload(
+            "click", {"element": "Refresh", "ref": "e42", "script": "submit()"}
         )

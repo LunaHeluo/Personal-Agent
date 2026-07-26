@@ -116,6 +116,24 @@ async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(t
         risk_level="read",
         metadata={"browser": True, "action": "navigate"},
     )
+    snapshot_schema = {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    }
+    browser_snapshot = McpTool(
+        snapshot_id="playwright-snapshot-1",
+        server_id="playwright",
+        upstream_name="browser_snapshot",
+        model_alias="mcp__playwright__browser_snapshot",
+        description="Read the active public job page",
+        input_schema=snapshot_schema,
+        schema_hash=canonical_json_sha256(snapshot_schema),
+        enabled=True,
+        review_state="approved",
+        risk_level="read",
+        metadata={"browser": True, "action": "read"},
+    )
     server = Server(
         id="playwright",
         name="playwright",
@@ -133,9 +151,9 @@ async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(t
             version=1,
             schema_hash=browser.schema_hash,
             discovered_at=datetime.now(UTC),
-            tool_count=1,
+            tool_count=2,
         ),
-        tools=[browser],
+        tools=[browser, browser_snapshot],
     )
     active = store.activate_snapshot(server.id, browser.snapshot_id)
     reviewed_browser = store.update_tool(
@@ -144,15 +162,26 @@ async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(t
         expected_revision=0,
         review_state="approved",
     )
+    reviewed_snapshot = store.update_tool(
+        active.id,
+        browser_snapshot.upstream_name,
+        expected_revision=0,
+        review_state="approved",
+    )
     registry.refresh_server(
         server,
-        [reviewed_browser],
+        [reviewed_browser, reviewed_snapshot],
         snapshot=active,
     )
     for server_id, name, schema_hash in (
         ("builtin", search.name, canonical_json_sha256(search.input_schema)),
         ("builtin", rag.name, canonical_json_sha256(rag.input_schema)),
         ("playwright", browser.upstream_name, browser.schema_hash),
+        (
+            "playwright",
+            browser_snapshot.upstream_name,
+            browser_snapshot.schema_hash,
+        ),
     ):
         store.create_policy_rule(
             PolicyRule(
@@ -196,6 +225,10 @@ async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(t
 
     async def invoke_browser(arguments, _context):
         invoked.append("browser_navigate")
+        return ToolResult(ok=True, data={"source_url": arguments["url"]})
+
+    async def invoke_snapshot(_arguments, _context):
+        invoked.append("browser_snapshot")
         return ToolResult(
             ok=True,
             data={
@@ -204,7 +237,7 @@ async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(t
                 "location": "Shanghai",
                 "responsibilities": ["Build agent systems"],
                 "requirements": ["Python", "RAG"],
-                "source_url": arguments["url"],
+                "source_url": "https://jobs.example/agent",
                 "retrieved_at": "2026-07-23T00:00:00+00:00",
             },
             metadata={"is_untrusted_external_content": True},
@@ -212,7 +245,7 @@ async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(t
 
     async def attest(request):
         return NetworkGuardAttestation(
-            targets=(request.arguments["url"],),
+            targets=(request.arguments.get("url", "https://jobs.example/agent"),),
             dns_pinned=True,
             redirects_enforced=True,
             peer_verified=True,
@@ -222,6 +255,12 @@ async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(t
         server_id="playwright",
         tool_name="browser_navigate",
         invoker=invoke_browser,
+        network_guard=attest,
+    )
+    executor.register_invoker(
+        server_id="playwright",
+        tool_name="browser_snapshot",
+        invoker=invoke_snapshot,
         network_guard=attest,
     )
     orchestrator = JobResearchOrchestrator(registry, executor)
@@ -253,11 +292,13 @@ async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(t
     assert invoked == [
         "search_jobs_serpapi",
         "browser_navigate",
+        "browser_snapshot",
         "retrieve_resume_evidence",
     ]
     assert [item.tool_name for item in (*search_result.trace, *result.trace)] == [
         "search_jobs_serpapi",
         "mcp__playwright__browser_navigate",
+        "mcp__playwright__browser_snapshot",
         "retrieve_resume_evidence",
     ]
     assert result.data["job"]["source_url"] == "https://jobs.example/agent"
@@ -270,7 +311,7 @@ async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(t
             for event in store.list_audit_events()
             if event.action == "tool.invoked" and event.decision == "allow"
         ]
-    ) == 3
+    ) == 4
 
 
 async def test_missing_dependency_fails_closed_without_tool_invocation(tmp_path):
@@ -389,6 +430,7 @@ async def test_bootstrap_application_entry_fails_closed_after_real_browser_publi
     assert result.status == "dependency_unavailable"
     assert result.missing_dependencies == (
         "mcp:mcp__playwright__browser_navigate",
+        "mcp:mcp__playwright__browser_snapshot",
     )
     assert result.trace == ()
     bootstrap.create_application.cache_clear()

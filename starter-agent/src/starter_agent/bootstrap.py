@@ -16,6 +16,7 @@ from starter_agent.knowledge.service import KnowledgeApplicationService
 from starter_agent.knowledge.store import SQLiteKnowledgeStore
 from starter_agent.mcp.config import McpConfigLoader
 from starter_agent.mcp.manager import McpManager
+from starter_agent.mcp.network_guard import PlaywrightNetworkGuard
 from starter_agent.observability.logging import configure_logging
 from starter_agent.providers.registry import ProviderRegistry
 from starter_agent.settings import AgentSettings, load_settings
@@ -150,10 +151,16 @@ def create_mcp_manager() -> McpManager:
         settings.mcp.config_path
     )
     store = CapabilityStore(settings.app.database_url, settings.project_root)
-    return McpManager(
-        configuration,
-        store=store,
-        tool_executor=create_application().runtime.executor,
-        initialize_timeout_seconds=settings.mcp.initialize_timeout_seconds,
-        shutdown_timeout_seconds=settings.mcp.shutdown_timeout_seconds,
-    )
+    browser_network_guard = PlaywrightNetworkGuard()
+    try:
+        return McpManager(
+            configuration,
+            store=store,
+            tool_executor=create_application().runtime.executor,
+            initialize_timeout_seconds=settings.mcp.initialize_timeout_seconds,
+            shutdown_timeout_seconds=settings.mcp.shutdown_timeout_seconds,
+            browser_network_guard=browser_network_guard,
+        )
+    except BaseException:
+        browser_network_guard.dispose()
+        raise

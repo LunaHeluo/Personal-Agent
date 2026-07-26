@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -18,6 +19,9 @@ from mcp.types import (
 )
 
 from starter_agent.domain.models import ToolResult
+from starter_agent.tools.adapters.job_description_extractor import (
+    JobDescriptionExtractor,
+)
 
 
 _SAFE_UPSTREAM_METADATA = frozenset(
@@ -36,6 +40,9 @@ _SENSITIVE_QUERY_NAMES = frozenset(
         "token",
     }
 )
+_PLAYWRIGHT_PAGE_URL = re.compile(
+    r"(?m)^-\s*Page URL:\s*(https?://\S+)\s*$"
+)
 
 
 class McpToolResultAdapter:
@@ -50,9 +57,45 @@ class McpToolResultAdapter:
         snapshot_id: str,
         schema_hash: str,
         requested_url: str | None = None,
+        tool_name: str | None = None,
     ) -> ToolResult:
         structured = dict(result.structuredContent or {})
         blocks = [self._content_block(block) for block in result.content]
+        snapshot_text: str | None = None
+        if (
+            tool_name in {"browser_snapshot", "browser_navigate"}
+            and not result.isError
+            and not structured
+        ):
+            snapshot_text = "\n".join(
+                block["text"]
+                for block in blocks
+                if block.get("type") == "text"
+                and isinstance(block.get("text"), str)
+            )
+            extracted = JobDescriptionExtractor().extract_playwright_snapshot(
+                snapshot_text
+            )
+            structured = {
+                "title": extracted.title,
+                "company": extracted.company,
+                "location": extracted.location,
+                "responsibilities": extracted.responsibilities,
+                "requirements": extracted.requirements,
+                "preferred_qualifications": extracted.preferred_qualifications,
+                "raw_text": extracted.raw_text,
+                "completeness": extracted.completeness,
+                "extraction_method": extracted.extraction_method,
+                "page_type": (
+                    "job_description"
+                    if extracted.completeness == "complete"
+                    else "unknown"
+                ),
+            }
+            page_url = _PLAYWRIGHT_PAGE_URL.search(snapshot_text)
+            if page_url:
+                structured["final_url"] = page_url.group(1)
+                structured["source_url"] = page_url.group(1)
         upstream = {
             key: value
             for key, value in (result.meta or {}).items()
@@ -83,6 +126,10 @@ class McpToolResultAdapter:
             and all(character in "0123456789abcdefABCDEF" for character in source_content_hash)
         ):
             metadata["source_content_sha256"] = source_content_hash.casefold()
+        elif snapshot_text is not None:
+            metadata["source_content_sha256"] = hashlib.sha256(
+                snapshot_text.encode("utf-8")
+            ).hexdigest()
         metadata["content_sha256"] = hashlib.sha256(
             json.dumps(
                 {"content": blocks, "structured_content": structured},

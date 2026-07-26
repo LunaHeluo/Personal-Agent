@@ -113,13 +113,45 @@ async def collect_capabilities(
     server_profile: TrustedServerProfile | None = None,
 ) -> CapabilityBundle:
     _require_safe_name(server_id, code="invalid_server_name")
-    tools_page = await _collect_pages(session.list_tools, "tools")
-    resources_page = await _collect_pages(session.list_resources, "resources")
-    templates_page = await _collect_pages(
-        session.list_resource_templates,
-        "resourceTemplates",
+    capability_reader = getattr(session, "get_server_capabilities", None)
+    server_capabilities = (
+        capability_reader() if callable(capability_reader) else None
     )
-    prompts_page = await _collect_pages(session.list_prompts, "prompts")
+    tools_supported = (
+        server_capabilities is None
+        or getattr(server_capabilities, "tools", None) is not None
+    )
+    resources_supported = (
+        server_capabilities is None
+        or getattr(server_capabilities, "resources", None) is not None
+    )
+    prompts_supported = (
+        server_capabilities is None
+        or getattr(server_capabilities, "prompts", None) is not None
+    )
+    tools_page = (
+        await _collect_pages(session.list_tools, "tools")
+        if tools_supported
+        else []
+    )
+    resources_page = (
+        await _collect_pages(session.list_resources, "resources")
+        if resources_supported
+        else []
+    )
+    templates_page = (
+        await _collect_pages(
+            session.list_resource_templates,
+            "resourceTemplates",
+        )
+        if resources_supported
+        else []
+    )
+    prompts_page = (
+        await _collect_pages(session.list_prompts, "prompts")
+        if prompts_supported
+        else []
+    )
     _unique_names(tools_page, code="duplicate_tool_name")
     _unique_names(
         (*resources_page, *templates_page),
@@ -153,6 +185,8 @@ async def collect_capabilities(
             trusted_metadata["server_profile"] = server_profile.name
             if server_profile.browser:
                 trusted_metadata["browser"] = True
+                if name == "browser_navigate":
+                    trusted_metadata["action"] = "navigate"
             outbound_scope = server_profile.outbound_scope
         tools.append(
             Tool(

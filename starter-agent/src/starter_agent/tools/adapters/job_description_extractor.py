@@ -21,7 +21,9 @@ class ExtractedJobDescription:
     benefits: list[str] = field(default_factory=list)
     raw_text: str = ""
     completeness: Literal["complete", "partial", "unverified"] = "unverified"
-    extraction_method: Literal["json_ld", "html", "plain_text"] = "html"
+    extraction_method: Literal[
+        "json_ld", "html", "plain_text", "playwright_snapshot"
+    ] = "html"
 
 
 class JobDescriptionExtractor:
@@ -37,6 +39,7 @@ class JobDescriptionExtractor:
         "requirements": (
             "requirements",
             "qualifications",
+            "what are we looking for",
             "任职要求",
             "职位要求",
         ),
@@ -55,6 +58,20 @@ class JobDescriptionExtractor:
     _CONTENT_BLOCK_NAMES = {"div", "section", "article", "dd", "td"}
     _MAX_JSON_LD_NODES = 10_000
     _MAX_JSON_LD_DEPTH = 64
+    _SNAPSHOT_NOISE_HEADINGS = frozenset(
+        {"privacy notice", "cookie notice", "cookie settings"}
+    )
+    _SNAPSHOT_HEADING = re.compile(
+        r'-\s+heading\s+"(?P<value>.*?)"\s+\[level=(?P<level>[1-6])\]'
+    )
+    _SNAPSHOT_VALUE = re.compile(
+        r"-\s+(?:generic|listitem|text|strong|paragraph)"
+        r"(?:\s+\[[^\]]+\])?:\s*(?P<value>.+?)\s*$"
+    )
+    _SNAPSHOT_COMPANY = re.compile(
+        r"\s+-\s+Jobs\s+-\s+Careers\s+at\s+(?P<company>.+?)\s*$",
+        re.IGNORECASE,
+    )
 
     def extract(
         self, content: str, content_type: str
@@ -67,6 +84,98 @@ class JobDescriptionExtractor:
         if structured is not None:
             return self._from_json_ld(structured)
         return self._from_html(soup)
+
+    def extract_playwright_snapshot(
+        self, snapshot: str
+    ) -> ExtractedJobDescription:
+        title = ""
+        company = ""
+        location = ""
+        page_title = ""
+        current_section: str | None = None
+        sections = self._empty_sections()
+        description_items: list[str] = []
+        visible: list[str] = []
+
+        for raw_line in snapshot.splitlines():
+            line = raw_line.strip()
+            if line.startswith("- Page Title:"):
+                page_title = line.partition(":")[2].strip()
+                match = self._SNAPSHOT_COMPANY.search(page_title)
+                if match:
+                    company = match.group("company").strip()
+                continue
+            heading = self._SNAPSHOT_HEADING.search(line)
+            if heading:
+                value = heading.group("value").strip()
+                visible.append(value)
+                if not title and self._section_name(value) is None:
+                    suffix = f" - {value}"
+                    if page_title.endswith(suffix):
+                        title = value
+                        if not company:
+                            company = page_title[: -len(suffix)].strip()
+                    elif value.casefold() not in self._SNAPSHOT_NOISE_HEADINGS:
+                        title = value
+                    if title:
+                        current_section = None
+                        continue
+                normalized = value.rstrip(":：").casefold()
+                if normalized == "minimum qualifications":
+                    current_section = "requirements"
+                elif normalized == "description":
+                    current_section = "description"
+                else:
+                    current_section = self._section_name(value)
+                continue
+            value_match = self._SNAPSHOT_VALUE.search(line)
+            if not value_match:
+                continue
+            value = self._decode_snapshot_value(
+                value_match.group("value")
+            )
+            if not value:
+                continue
+            visible.append(value)
+            if title and not location and current_section is None and "," in value:
+                location = value
+            if current_section in sections:
+                sections[current_section].append(value)
+            elif current_section == "description":
+                description_items.append(value)
+
+        cleaned = {
+            name: self._clean_items(values)
+            for name, values in sections.items()
+        }
+        if not cleaned["responsibilities"] and description_items:
+            cleaned["responsibilities"] = self._clean_items(description_items)
+        if not company and title:
+            suffix = f" - {title}"
+            if page_title.endswith(suffix):
+                company = page_title[: -len(suffix)].strip()
+        return ExtractedJobDescription(
+            title=title,
+            company=company,
+            location=location,
+            raw_text="\n".join(self._clean_items(visible)),
+            completeness=self._completeness(
+                cleaned["responsibilities"], cleaned["requirements"]
+            ),
+            extraction_method="playwright_snapshot",
+            **cleaned,
+        )
+
+    @staticmethod
+    def _decode_snapshot_value(value: str) -> str:
+        value = value.strip()
+        if value.startswith('"') and value.endswith('"'):
+            try:
+                decoded = json.loads(value)
+            except (TypeError, ValueError):
+                return value[1:-1].strip()
+            return decoded.strip() if isinstance(decoded, str) else ""
+        return value
 
     def _job_posting_json_ld(self, soup: BeautifulSoup) -> dict[str, Any] | None:
         for script in soup.find_all("script", type=re.compile("ld\\+json", re.I)):

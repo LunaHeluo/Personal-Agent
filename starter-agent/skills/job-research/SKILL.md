@@ -10,6 +10,7 @@ dependencies:
     - retrieve_resume_evidence
   mcp:
     - mcp__playwright__browser_navigate
+    - mcp__playwright__browser_snapshot
   services:
     - job_description_ingestion
 trigger_examples:
@@ -59,7 +60,8 @@ polishing, or translating text that the user already supplied.
 
 1. Use SerpAPI to search for public job leads and preserve result sources.
 2. Ask the user to select a URL; never silently choose a different job.
-3. Use Browser through the governed MCP Tool to read the selected public page.
+3. Use Browser to navigate to the selected URL, then read it with
+   `browser_snapshot`; both governed MCP calls must pass through the Gate.
 4. Validate the JD fields, completeness, final URL, and source metadata.
 5. Use RAG through `retrieve_resume_evidence` in the current scope only.
 6. Produce an analysis with JD sources and contiguous resume quotes.

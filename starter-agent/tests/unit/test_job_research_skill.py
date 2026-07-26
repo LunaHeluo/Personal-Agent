@@ -21,6 +21,7 @@ def test_job_research_definition_contains_fixed_governed_workflow():
         "tool:search_jobs_serpapi",
         "tool:retrieve_resume_evidence",
         "mcp:mcp__playwright__browser_navigate",
+        "mcp:mcp__playwright__browser_snapshot",
         "service:job_description_ingestion",
     }
     steps = [

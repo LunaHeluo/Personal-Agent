@@ -144,6 +144,76 @@ def test_extracts_and_normalizes_plain_text() -> None:
     assert result.completeness == "complete"
 
 
+def test_extracts_playwright_accessibility_snapshot() -> None:
+    snapshot = """
+    ### Page
+    - Page URL: https://jobs.example/role
+    - Page Title: ML Engineer - Jobs - Careers at Example
+    ### Snapshot
+    ```yaml
+    - heading "ML Engineer" [level=1] [ref=e1]
+    - generic [ref=e2]: Santa Clara, California, United States
+    - heading "Description" [level=2] [ref=e3]
+    - generic [ref=e4]: Build useful language systems.
+    - heading "Responsibilities" [level=2] [ref=e5]
+    - list [ref=e6]:
+      - listitem [ref=e7]: Design and evaluate models.
+      - listitem [ref=e8]: Ship reliable services.
+    - heading "Minimum Qualifications" [level=2] [ref=e9]
+    - list [ref=e10]:
+      - listitem [ref=e11]: Python engineering experience.
+      - listitem [ref=e12]: Machine learning experience.
+    - heading "Preferred Qualifications" [level=2] [ref=e13]
+    - listitem [ref=e14]: Advanced degree.
+    ```
+    """
+
+    result = JobDescriptionExtractor().extract_playwright_snapshot(snapshot)
+
+    assert result.title == "ML Engineer"
+    assert result.company == "Example"
+    assert result.location == "Santa Clara, California, United States"
+    assert result.responsibilities == [
+        "Design and evaluate models.",
+        "Ship reliable services.",
+    ]
+    assert result.requirements == [
+        "Python engineering experience.",
+        "Machine learning experience.",
+    ]
+    assert result.preferred_qualifications == ["Advanced degree."]
+    assert result.completeness == "complete"
+    assert result.extraction_method == "playwright_snapshot"
+
+
+def test_extracts_lever_playwright_snapshot_shape() -> None:
+    snapshot = """
+    ### Page
+    - Page URL: https://jobs.lever.co/example/role
+    - Page Title: Example Co - Machine Learning Engineer
+    ### Snapshot
+    ```yaml
+    - heading "Privacy Notice" [level=2] [ref=e2]
+    - heading "Machine Learning Engineer" [level=2] [ref=e11]
+    - generic [ref=e13]: Poznań, Poland
+    - generic [ref=e14]: Data /
+    - heading "Responsibilities:" [level=3] [ref=e27]
+    - listitem [ref=e31]: Build reliable models.
+    - heading "What are we looking for:" [level=3] [ref=e41]
+    - listitem [ref=e45]: Production Python experience.
+    ```
+    """
+
+    result = JobDescriptionExtractor().extract_playwright_snapshot(snapshot)
+
+    assert result.title == "Machine Learning Engineer"
+    assert result.company == "Example Co"
+    assert result.location == "Poznań, Poland"
+    assert result.responsibilities == ["Build reliable models."]
+    assert result.requirements == ["Production Python experience."]
+    assert result.completeness == "complete"
+
+
 def test_malformed_json_ld_falls_back_to_html() -> None:
     html = """
     <script type="application/ld+json">{not-json}</script>

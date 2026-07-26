@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from fnmatch import fnmatchcase
+import ipaddress
 import re
 from typing import Any, Literal, Mapping, cast
 from urllib.parse import parse_qsl, urlsplit
@@ -89,18 +90,71 @@ class ScopeDenied(RuntimeError):
 class BrowserScopePolicy:
     """Gate-time URL checks backed by SafeWebFetcher's fetch-time validator."""
 
-    def __init__(self, *, resolver: Resolver = default_resolver) -> None:
+    def __init__(
+        self,
+        *,
+        resolver: Resolver = default_resolver,
+        control_origins: tuple[str, ...] = (),
+    ) -> None:
         self._fetcher = SafeWebFetcher(
             client=cast(Any, None),
             resolver=resolver,
             respect_robots=True,
         )
+        self._control_origins = frozenset(
+            self._control_origin(origin) for origin in control_origins
+        )
 
     async def validate_url(self, url: str):
+        parsed = urlsplit(url)
+        try:
+            address = (
+                None
+                if parsed.hostname is None
+                else str(ipaddress.ip_address(parsed.hostname))
+            )
+            port = parsed.port
+        except ValueError:
+            address = None
+            port = None
+        if (
+            parsed.scheme.casefold(),
+            address,
+            port,
+        ) in self._control_origins and (
+            parsed.username is None and parsed.password is None
+        ):
+            return parsed
         try:
             return await self._fetcher.validate_public_url(url)
         except FetchFailure as exc:
             raise ScopeDenied("unsafe_url") from exc
+
+    @staticmethod
+    def _control_origin(origin: str) -> tuple[str, str, int]:
+        parsed = urlsplit(origin)
+        try:
+            address = (
+                None
+                if parsed.hostname is None
+                else ipaddress.ip_address(parsed.hostname)
+            )
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("control_origin_invalid") from exc
+        if (
+            parsed.scheme.casefold() != "http"
+            or address is None
+            or str(address) not in {"127.0.0.1", "::1"}
+            or port is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("control_origin_invalid")
+        return "http", str(address), port
 
     async def validate_redirects(self, source: str, redirects: tuple[str, ...]):
         current = await self.validate_url(source)
@@ -257,12 +311,18 @@ def validate_browser_payload(action: str, arguments: Mapping[str, Any]) -> None:
     if action in _FORBIDDEN_ACTIONS:
         raise ScopeDenied("forbidden_action")
     if action == "click":
-        allowed = {"selector", "ref", "button", "timeout"}
-        if not arguments or any(str(key).casefold() not in allowed for key in arguments):
+        allowed = {"element", "selector", "ref", "button", "timeout"}
+        if not arguments or any(
+            str(key).casefold() not in allowed for key in arguments
+        ):
             raise ScopeDenied("browser_payload")
-        if "button" in arguments and arguments["button"] not in {"left", "middle", "right"}:
+        if "button" in arguments and arguments["button"] not in {
+            "left",
+            "middle",
+            "right",
+        }:
             raise ScopeDenied("browser_payload")
-        for key in ("selector", "ref"):
+        for key in ("element", "selector", "ref"):
             value = arguments.get(key)
             if value is not None and not _safe_short_text(value, 500):
                 raise ScopeDenied("browser_payload")

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -38,6 +40,10 @@ from starter_agent.capabilities.policy import extract_url_targets
 
 
 _CommandResult = TypeVar("_CommandResult")
+_PLAYWRIGHT_PAGE_URL = re.compile(
+    r"(?:\A(?:### Page\r?\n)?|\r?\n### Page\r?\n)"
+    r"- Page URL: (?P<url>https?://[^\s]+)(?:\r?\n|\Z)"
+)
 
 
 class ManagedClient(Protocol):
@@ -65,6 +71,7 @@ class McpManagerError(RuntimeError):
 @dataclass(slots=True)
 class ClientSlot:
     client: ManagedClient
+    generation: int = 0
     snapshot_id: str | None = None
     in_flight: int = 0
     drain_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -77,6 +84,7 @@ class ClientSlot:
 class ClientLease:
     lease_id: str
     snapshot_id: str | None
+    generation: int
 
 
 @dataclass(slots=True)
@@ -113,12 +121,14 @@ class McpManager:
         initialize_timeout_seconds: float = 20,
         shutdown_timeout_seconds: float = 10,
         tool_executor: UnifiedToolExecutor | None = None,
+        browser_network_guard: Callable[[ToolCallRequest], Any] | None = None,
     ) -> None:
         self.configuration = configuration
         self.store = store
         self.initialize_timeout_seconds = initialize_timeout_seconds
         self.shutdown_timeout_seconds = shutdown_timeout_seconds
         self.tool_executor = tool_executor
+        self.browser_network_guard = browser_network_guard
         self._accepting = True
         if client_factory is None:
             client_factory = lambda _server_id, config: McpClient(
@@ -129,7 +139,19 @@ class McpManager:
         self._client_factory = client_factory
         self._handles: dict[str, ServerHandle] = {}
         self._lease_bindings: dict[str, ClientSlot] = {}
+        self._slot_generation = 0
         for server_id, config in configuration.servers.items():
+            runtime_config = config
+            secure_config = getattr(
+                browser_network_guard,
+                "secure_config",
+                None,
+            )
+            if (
+                callable(secure_config)
+                and derive_trusted_server_profile(server_id, config) is not None
+            ):
+                runtime_config = secure_config(config)
             initial = Server(
                 id=server_id,
                 name=server_id,
@@ -150,9 +172,10 @@ class McpManager:
             )
             self._handles[server_id] = ServerHandle(
                 server_id=server_id,
-                config=config,
+                config=runtime_config,
                 active=ClientSlot(
-                    client=client_factory(server_id, config),
+                    client=client_factory(server_id, runtime_config),
+                    generation=self._next_slot_generation(),
                     snapshot_id=(
                         None if active_snapshot is None else active_snapshot.id
                     ),
@@ -165,6 +188,10 @@ class McpManager:
             return self._handles[server_id]
         except KeyError as exc:
             raise McpManagerError("server_not_found") from exc
+
+    def _next_slot_generation(self) -> int:
+        self._slot_generation += 1
+        return self._slot_generation
 
     def get_status(self, server_id: str) -> Server:
         return self._get_handle(server_id).status
@@ -308,7 +335,10 @@ class McpManager:
 
             old_slot = handle.active
             candidate = self._client_factory(server_id, handle.config)
-            candidate_slot = ClientSlot(client=candidate)
+            candidate_slot = ClientSlot(
+                client=candidate,
+                generation=self._next_slot_generation(),
+            )
             self._update(
                 handle,
                 operation_state="starting_candidate",
@@ -422,6 +452,11 @@ class McpManager:
 
     async def start(self) -> dict[str, Server]:
         self._accepting = True
+        start_guard = getattr(self.browser_network_guard, "start", None)
+        if callable(start_guard):
+            started = start_guard()
+            if inspect.isawaitable(started):
+                await started
         for handle in self._handles.values():
             handle.accepting = True
         await asyncio.gather(
@@ -505,6 +540,7 @@ class McpManager:
         handle = self._get_handle(server_id)
         handle.accepting = False
         error = await self._drain_and_close(handle)
+        self._invalidate_browser_server(server_id)
         return error
 
     async def shutdown(self) -> dict[str, str]:
@@ -516,11 +552,20 @@ class McpManager:
         results = await asyncio.gather(
             *(self._drain_and_close(handle) for handle in self._handles.values())
         )
-        return {
+        errors = {
             server_id: result
             for server_id, result in zip(self._handles, results, strict=True)
             if result is not None
         }
+        close_guard = getattr(self.browser_network_guard, "close", None)
+        if callable(close_guard):
+            try:
+                closed = close_guard()
+                if inspect.isawaitable(closed):
+                    await closed
+            except BaseException:
+                errors["browser_network_guard"] = "close_failed"
+        return errors
 
     @asynccontextmanager
     async def lease(self, server_id: str):
@@ -538,7 +583,11 @@ class McpManager:
         try:
             lease_id = uuid4().hex
             self._lease_bindings[lease_id] = slot
-            yield ClientLease(lease_id=lease_id, snapshot_id=slot.snapshot_id)
+            yield ClientLease(
+                lease_id=lease_id,
+                snapshot_id=slot.snapshot_id,
+                generation=slot.generation,
+            )
         finally:
             self._lease_bindings.pop(lease_id, None)
             slot.in_flight -= 1
@@ -571,7 +620,7 @@ class McpManager:
         arguments: dict[str, Any],
         *,
         expected_snapshot_id: str,
-    ) -> tuple[Any, str]:
+    ) -> tuple[Any, str, int]:
         async with self.lease(server_id) as lease:
             if lease.snapshot_id != expected_snapshot_id:
                 raise McpManagerError("snapshot_binding_mismatch")
@@ -580,7 +629,7 @@ class McpManager:
                 lambda session: session.call_tool(tool_name, arguments),
             )
             assert lease.snapshot_id is not None
-            return result, lease.snapshot_id
+            return result, lease.snapshot_id, lease.generation
 
     def _publish_snapshot(self, handle: ServerHandle, snapshot: Snapshot) -> None:
         if self.store is None or self.tool_executor is None:
@@ -590,8 +639,21 @@ class McpManager:
         tools = self.store.list_tools(snapshot.id)
         if registry is not None:
             registry.refresh_server(handle.status, tools, snapshot=snapshot)
+        activate_generation = getattr(
+            self.browser_network_guard, "activate_generation", None
+        )
+        if callable(activate_generation):
+            activate_generation(
+                handle.server_id,
+                snapshot.id,
+                handle.active.generation,
+            )
         for tool in tools:
-            if bool(tool.metadata.get("browser")) or "public_url" in tool.outbound_scope:
+            browser = (
+                bool(tool.metadata.get("browser"))
+                or "public_url" in tool.outbound_scope
+            )
+            if browser and self.browser_network_guard is None:
                 continue
 
             async def invoke(
@@ -600,13 +662,26 @@ class McpManager:
                 *,
                 _name=tool.upstream_name,
                 _schema_hash=tool.schema_hash,
+                _tool_name=tool.upstream_name,
             ):
-                upstream, lease_snapshot_id = await self._invoke_tool_bound(
-                    handle.server_id,
-                    _name,
-                    dict(arguments),
-                    expected_snapshot_id=request.snapshot_id,
-                )
+                try:
+                    (
+                        upstream,
+                        lease_snapshot_id,
+                        lease_generation,
+                    ) = await self._invoke_tool_bound(
+                        handle.server_id,
+                        _name,
+                        dict(arguments),
+                        expected_snapshot_id=request.snapshot_id,
+                    )
+                except BaseException:
+                    self._discard_browser_navigation(request, _name)
+                    raise
+                if _name == "browser_navigate":
+                    await self._commit_browser_navigation(
+                        request, upstream, lease_generation
+                    )
                 targets = extract_url_targets(request.arguments)
                 return result_adapter.adapt(
                     upstream,
@@ -615,6 +690,7 @@ class McpManager:
                     snapshot_id=lease_snapshot_id,
                     schema_hash=_schema_hash,
                     requested_url=targets[0] if targets else None,
+                    tool_name=_tool_name,
                 )
 
             self.tool_executor.register_invoker(
@@ -622,6 +698,9 @@ class McpManager:
                 tool_name=tool.upstream_name,
                 invoker=invoke,
                 context_factory=lambda request: request,
+                network_guard=(
+                    self.browser_network_guard if browser else None
+                ),
             )
 
     async def _drain_and_close(self, handle: ServerHandle) -> str | None:
@@ -672,6 +751,98 @@ class McpManager:
                 await candidate.close()
         except BaseException:
             pass
+
+    def _invalidate_browser_server(self, server_id: str) -> None:
+        invalidate = getattr(
+            self.browser_network_guard, "invalidate_server", None
+        )
+        if callable(invalidate):
+            invalidate(server_id)
+
+    def _discard_browser_navigation(
+        self, request: Any, tool_name: str
+    ) -> None:
+        if tool_name != "browser_navigate":
+            return
+        discard = getattr(
+            self.browser_network_guard, "discard_navigation", None
+        )
+        if callable(discard):
+            discard(request)
+
+    async def _commit_browser_navigation(
+        self,
+        request: Any,
+        result: Any,
+        lease_generation: int,
+    ) -> bool:
+        if self._tool_result_is_error(result):
+            self._discard_browser_navigation(request, "browser_navigate")
+            return False
+        commit = getattr(
+            self.browser_network_guard, "commit_navigation", None
+        )
+        if not callable(commit):
+            return False
+        return bool(
+            await commit(
+                request,
+                lease_generation=lease_generation,
+                final_url=self._tool_result_final_url(result),
+            )
+        )
+
+    @staticmethod
+    def _tool_result_is_error(result: Any) -> bool:
+        if isinstance(result, dict):
+            return bool(result.get("isError", result.get("is_error", False)))
+        return bool(
+            getattr(result, "isError", getattr(result, "is_error", False))
+        )
+
+    @staticmethod
+    def _tool_result_final_url(result: Any) -> str | None:
+        containers: tuple[Any, ...]
+        if isinstance(result, dict):
+            containers = (
+                result.get("_meta"),
+                result.get("meta"),
+                result.get("structuredContent"),
+                result.get("structured_content"),
+            )
+        else:
+            containers = (
+                getattr(result, "meta", None),
+                getattr(result, "structuredContent", None),
+            )
+        trusted: set[str] = set()
+        for container in containers:
+            if isinstance(container, dict):
+                for key in ("final_url", "source_url"):
+                    value = container.get(key)
+                    if isinstance(value, str) and value.startswith(
+                        ("http://", "https://")
+                    ):
+                        trusted.add(value)
+        if trusted:
+            return next(iter(trusted)) if len(trusted) == 1 else None
+        anchored: set[str] = set()
+        marker_count = 0
+        for block in getattr(result, "content", ()) or ():
+            text = getattr(block, "text", None)
+            if not isinstance(text, str):
+                continue
+            marker_count += len(
+                re.findall(r"(?m)^- Page URL:\s*", text)
+            )
+            match = _PLAYWRIGHT_PAGE_URL.search(text)
+            if match is not None:
+                anchored.add(match.group("url"))
+        return (
+            next(iter(anchored))
+            if len(anchored) == 1 and marker_count == 1
+            else None
+        )
 
     def _record_refresh_failure(
         self,

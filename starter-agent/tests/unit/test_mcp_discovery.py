@@ -4,6 +4,7 @@ import pytest
 from mcp import types
 
 from starter_agent.mcp.discovery import DiscoveryError, collect_capabilities
+from starter_agent.mcp.config import TrustedServerProfile
 
 
 class _PagedSession:
@@ -88,6 +89,76 @@ class _PagedSession:
                 )
             ]
         )
+
+
+class _ToolsOnlySession(_PagedSession):
+    def get_server_capabilities(self):
+        return types.ServerCapabilities(tools=types.ToolsCapability())
+
+    async def list_resources(self, *, params=None):
+        raise AssertionError("resources/list was not advertised")
+
+    async def list_resource_templates(self, *, params=None):
+        raise AssertionError("resources/templates/list was not advertised")
+
+    async def list_prompts(self, *, params=None):
+        raise AssertionError("prompts/list was not advertised")
+
+
+class _PlaywrightNavigateSession(_ToolsOnlySession):
+    async def list_tools(self, *, params=None):
+        return types.ListToolsResult(
+            tools=[
+                types.Tool(
+                    name="browser_navigate",
+                    description="Navigate to a URL",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {"url": {"type": "string"}},
+                        "required": ["url"],
+                    },
+                    annotations=types.ToolAnnotations(
+                        readOnlyHint=False,
+                        destructiveHint=True,
+                    ),
+                )
+            ]
+        )
+
+
+@pytest.mark.asyncio
+async def test_discovery_does_not_call_unadvertised_capability_methods() -> None:
+    session = _ToolsOnlySession()
+
+    bundle = await collect_capabilities(
+        session,
+        server_id="playwright",
+        snapshot_id="playwright-snapshot-1",
+        version=1,
+    )
+
+    assert len(bundle.tools) == 2
+    assert bundle.resources == ()
+    assert bundle.prompts == ()
+    assert bundle.snapshot.resource_count == 0
+    assert bundle.snapshot.prompt_count == 0
+
+
+@pytest.mark.asyncio
+async def test_trusted_playwright_navigation_has_explicit_navigation_action() -> None:
+    bundle = await collect_capabilities(
+        _PlaywrightNavigateSession(),
+        server_id="playwright",
+        snapshot_id="playwright-snapshot-1",
+        version=1,
+        server_profile=TrustedServerProfile(
+            name="playwright",
+            browser=True,
+            outbound_scope=("public_url",),
+        ),
+    )
+
+    assert bundle.tools[0].metadata["action"] == "navigate"
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,7 @@ class JobResearchOrchestrator:
 
     search_tool_name = "search_jobs_serpapi"
     browser_tool_name = "mcp__playwright__browser_navigate"
+    browser_snapshot_tool_name = "mcp__playwright__browser_snapshot"
     evidence_tool_name = "retrieve_resume_evidence"
 
     def __init__(
@@ -84,6 +85,7 @@ class JobResearchOrchestrator:
         missing = self._missing(
             (
                 ("mcp", self.browser_tool_name),
+                ("mcp", self.browser_snapshot_tool_name),
                 ("tool", self.evidence_tool_name),
             )
         )
@@ -101,28 +103,34 @@ class JobResearchOrchestrator:
                 trace=(browser_trace,),
                 data={"browser": browser_result.model_dump(mode="json")},
             )
-        job = self._job_payload(browser_result.data)
+        snapshot_result, snapshot_trace = await self._call(
+            self.browser_snapshot_tool_name,
+            {},
+            context,
+        )
+        if not snapshot_result.ok:
+            return SkillRunResult(
+                status="browser_failed",
+                error_code=snapshot_result.error_code or "browser_failed",
+                trace=(browser_trace, snapshot_trace),
+                data={"browser": snapshot_result.model_dump(mode="json")},
+            )
+        job = self._job_payload(snapshot_result.data)
         reasons = self._validate_job(job, selected_url)
         if reasons:
             return SkillRunResult(
                 status="incomplete_job_description",
                 error_code="incomplete_job_description",
-                trace=(browser_trace,),
+                trace=(browser_trace, snapshot_trace),
                 data={"job": job, "validation_errors": list(reasons)},
             )
-        evidence_query = " ".join(
-            [
-                query,
-                *job["requirements"],
-                *job["responsibilities"],
-            ]
-        )[:10_000]
+        evidence_query = query.strip()[:10_000]
         evidence_result, evidence_trace = await self._call(
             self.evidence_tool_name,
             {"query": evidence_query, "top_k": top_k},
             context,
         )
-        trace = (browser_trace, evidence_trace)
+        trace = (browser_trace, snapshot_trace, evidence_trace)
         if not evidence_result.ok:
             return SkillRunResult(
                 status="resume_evidence_unavailable",

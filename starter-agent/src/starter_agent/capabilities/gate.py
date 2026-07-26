@@ -47,6 +47,22 @@ from starter_agent.tools.adapters.safe_web_fetcher import sanitize_public_url
 from starter_agent.tools.base import ToolContext
 
 
+def _is_targetless_browser_read(
+    request: "ToolCallRequest", action: str
+) -> bool:
+    snapshot = (
+        action == "read"
+        and not request.arguments
+        and request.tool_name.casefold().endswith("browser_snapshot")
+    )
+    bounded_click = (
+        action == "click"
+        and bool(request.arguments)
+        and request.tool_name.casefold().endswith("browser_click")
+    )
+    return snapshot or bounded_click
+
+
 class ToolCallRequest(CapabilityModel):
     principal: str = Field(default="local-user", min_length=1, max_length=200)
     caller: str = Field(min_length=1, max_length=200)
@@ -191,15 +207,25 @@ class PreToolCallGate:
                 )
                 validate_browser_payload(action, request.arguments)
                 urls = extract_url_targets(request.arguments)
-                targets = await self.browser_policy.validate_all(urls)
-                for raw_url in urls:
-                    reject_sensitive_url_query(raw_url)
-                target = targets[0]
+                targetless_read = _is_targetless_browser_read(
+                    request, action
+                )
+                if not urls and targetless_read:
+                    targets = ()
+                    target = None
+                else:
+                    targets = await self.browser_policy.validate_all(urls)
+                    for raw_url in urls:
+                        reject_sensitive_url_query(raw_url)
+                    target = targets[0]
             except ScopeDenied as exc:
                 return self._decision("deny", exc.code, request)
-            scheme = target.scheme
-            domain = target.hostname
-            destination = target.hostname
+            if target is not None:
+                scheme = target.scheme
+                domain = target.hostname
+                destination = target.hostname
+            else:
+                destination = "active_browser_page"
         elif request.server_id.casefold() == "serpapi" or request.tool_name == (
             "search_jobs_serpapi"
         ):
@@ -618,17 +644,38 @@ class UnifiedToolExecutor:
         )
         if capability is not None and capability.browser:
             targets = extract_url_targets(request.arguments)
-            await self.gate.browser_policy.validate_all(targets)
+            action = classify_tool(
+                capability.metadata, capability.risk_level
+            )
+            targetless_read = _is_targetless_browser_read(request, action)
+            if targets:
+                await self.gate.browser_policy.validate_all(targets)
+            elif not targetless_read:
+                raise ToolExecutionDenied("network_guard_required")
             if registration.network_guard is None:
                 raise ToolExecutionDenied("network_guard_required")
             attestation = registration.network_guard(request)
             if inspect.isawaitable(attestation):
                 attestation = await attestation
-            if not isinstance(attestation, NetworkGuardAttestation) or (
-                attestation.targets != targets
-                or not attestation.dns_pinned
-                or not attestation.redirects_enforced
-                or not attestation.peer_verified
+            attested_targets = (
+                ()
+                if not isinstance(attestation, NetworkGuardAttestation)
+                else attestation.targets
+            )
+            expected_targets = (
+                bool(attested_targets)
+                if targetless_read
+                else attested_targets == targets
+            )
+            expected_peer = bool(attested_targets) and all(
+                urlsplit(target).scheme.casefold() == "https"
+                for target in attested_targets
+            )
+            if not isinstance(attestation, NetworkGuardAttestation) or not (
+                expected_targets
+                and attestation.dns_pinned
+                and attestation.redirects_enforced
+                and attestation.peer_verified == expected_peer
             ):
                 raise ToolExecutionDenied("network_guard_attestation_invalid")
         expected = {

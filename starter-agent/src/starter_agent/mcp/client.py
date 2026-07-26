@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import shutil
+import sys
 import threading
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
@@ -217,6 +218,7 @@ class McpClient:
         version_probe: Callable[[str], Awaitable[str]] = _probe_version,
         transport_factory: AsyncContextManagerFactory = stdio_client,
         session_factory: AsyncContextManagerFactory = ClientSession,
+        platform: str = sys.platform,
     ) -> None:
         self.config = config
         self.initialize_timeout_seconds = initialize_timeout_seconds
@@ -225,6 +227,7 @@ class McpClient:
         self._version_probe = version_probe
         self._transport_factory = transport_factory
         self._session_factory = session_factory
+        self._platform = platform
         self._stderr_max_chars = stderr_max_chars
         self._stderr: SafeStderrTail | None = None
         self._session: Any | None = None
@@ -361,9 +364,27 @@ class McpClient:
                             for name in self.config.env
                             if name in os.environ
                         }
+                        command = self.config.command
+                        arguments = list(self.config.args)
+                        if (
+                            self._platform == "win32"
+                            and command.casefold() == "npx"
+                            and Path(npx).suffix.casefold() in {".cmd", ".bat"}
+                        ):
+                            npx_cli = (
+                                Path(npx).parent
+                                / "node_modules"
+                                / "npm"
+                                / "bin"
+                                / "npx-cli.js"
+                            )
+                            if not npx_cli.is_file():
+                                raise McpClientError("npx_cli_not_found")
+                            command = node
+                            arguments.insert(0, str(npx_cli))
                         parameters = StdioServerParameters(
-                            command=self.config.command,
-                            args=list(self.config.args),
+                            command=command,
+                            args=arguments,
                             cwd=self.config.cwd,
                             env=environment if self.config.env else None,
                         )
