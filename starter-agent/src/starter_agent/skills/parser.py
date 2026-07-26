@@ -86,29 +86,38 @@ class SkillParser:
         if not isinstance(metadata, dict):
             raise SkillParseError("skill_frontmatter_invalid")
         try:
-            dependencies = self._dependencies(metadata.get("dependencies"))
+            project_metadata = metadata.get("metadata", {})
+            if not isinstance(project_metadata, dict):
+                raise SkillParseError("skill_metadata_invalid")
+
+            def project_field(name: str, default: Any = None) -> Any:
+                return metadata.get(name, project_metadata.get(name, default))
+
+            dependencies = self._dependencies(
+                project_field("dependencies")
+            )
             return SkillDefinition(
                 name=metadata["name"],
                 description=metadata["description"],
-                version=metadata["version"],
-                source=metadata["source"],
+                version=project_field("version"),
+                source=project_field("source"),
                 source_path=source_path,
-                enabled=metadata.get("enabled", False),
+                enabled=project_field("enabled", False),
                 dependencies=dependencies,
                 trigger_examples=self._strings(
-                    metadata.get("trigger_examples"),
+                    project_field("trigger_examples"),
                     "trigger_examples",
                 ),
                 negative_examples=self._strings(
-                    metadata.get("negative_examples"),
+                    project_field("negative_examples"),
                     "negative_examples",
                 ),
                 validation=self._strings(
-                    metadata.get("validation"),
+                    project_field("validation"),
                     "validation",
                 ),
                 failure_policy=self._strings(
-                    metadata.get("failure_policy"),
+                    project_field("failure_policy"),
                     "failure_policy",
                 ),
                 definition=raw,

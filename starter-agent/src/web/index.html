@@ -81,27 +81,53 @@
     .knowledge-view {
       min-width: 0;
       height: 100%;
-      overflow: auto;
+      overflow: hidden;
       padding: 24px;
     }
 
     .knowledge-layout {
       display: grid;
-      grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+      grid-template-columns: minmax(300px, 0.82fr) minmax(0, 1.18fr);
       gap: 18px;
-      max-width: 1180px;
+      height: clamp(480px, calc(100vh - 170px), 820px);
+      max-width: 1320px;
       margin: 0 auto;
+      align-items: stretch;
     }
 
     .knowledge-card {
+      min-width: 0;
+      min-height: 0;
       padding: 18px;
       border: 1px solid var(--line);
       border-radius: 12px;
       background: var(--panel);
     }
 
+    .knowledge-upload-card {
+      overflow: auto;
+    }
+
+    .knowledge-library-panel {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      overflow: hidden;
+    }
+
     .knowledge-card h1,
     .knowledge-card h2 { margin-top: 0; }
+
+    .knowledge-library-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .knowledge-library-header h2 {
+      margin-bottom: 0;
+    }
 
     .knowledge-form {
       display: grid;
@@ -110,18 +136,171 @@
 
     .knowledge-warning { color: var(--warn); }
     .knowledge-status { min-height: 24px; color: var(--muted); }
-    .knowledge-document {
-      padding: 12px 0;
+    .knowledge-browser {
+      display: grid;
+      grid-template-columns: minmax(300px, 0.82fr) minmax(0, 1.18fr);
+      gap: 14px;
+      min-height: 0;
+      height: 100%;
+    }
+    .knowledge-document-pane,
+    .knowledge-chunk-pane {
+      min-width: 0;
+      min-height: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--bg);
+    }
+    .knowledge-document-pane {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .knowledge-document-toolbar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
       border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .knowledge-select-all {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .knowledge-delete-selected {
+      color: var(--warn);
+      border-color: #e6aaa5;
+      background: #fff7f6;
+    }
+    .knowledge-delete-selected:hover:not(:disabled) {
+      background: #feeceb;
+    }
+    #knowledgeDocumentList,
+    .knowledge-chunk-pane {
+      height: 100%;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+    }
+    #knowledgeDocumentList {
+      flex: 1 1 auto;
+      min-height: 0;
+      padding: 8px 10px;
+      scrollbar-width: auto;
+      scrollbar-color: #73817b #e8ece9;
+    }
+    #knowledgeDocumentList::-webkit-scrollbar,
+    .knowledge-chunk-pane::-webkit-scrollbar {
+      width: 11px;
+    }
+    #knowledgeDocumentList::-webkit-scrollbar-track,
+    .knowledge-chunk-pane::-webkit-scrollbar-track {
+      background: #e8ece9;
+    }
+    #knowledgeDocumentList::-webkit-scrollbar-thumb,
+    .knowledge-chunk-pane::-webkit-scrollbar-thumb {
+      border-radius: 999px;
+      border: 2px solid #e8ece9;
+      background: #73817b;
+    }
+    .knowledge-chunk-pane {
+      padding: 14px;
+      scrollbar-width: auto;
+      scrollbar-color: #73817b #e8ece9;
+    }
+    .knowledge-chunk-pane h3 {
+      position: sticky;
+      top: -14px;
+      z-index: 1;
+      margin: -14px -14px 12px;
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      overflow-wrap: anywhere;
+    }
+    .knowledge-document {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px;
+      margin-bottom: 8px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow-wrap: anywhere;
+    }
+    .knowledge-document.is-selected {
+      background: var(--soft);
+      border-color: #9ccfca;
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+    .knowledge-document input[type="checkbox"] {
+      margin-top: 3px;
+    }
+    .knowledge-document-body {
+      min-width: 0;
+    }
+    .knowledge-document-title {
+      display: block;
+      font-size: 15px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
     }
     .knowledge-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-    .knowledge-meta { color: var(--muted); font-size: 13px; }
+    .knowledge-actions button {
+      min-height: 32px;
+      padding: 5px 9px;
+      font-size: 13px;
+    }
+    .knowledge-meta { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .knowledge-chunk-empty {
+      display: grid;
+      min-height: 180px;
+      place-items: center;
+      padding: 20px;
+      color: var(--muted);
+      text-align: center;
+    }
     .knowledge-chunk {
       white-space: pre-wrap;
       padding: 10px;
       margin: 8px 0;
       border-radius: 8px;
       background: var(--soft);
+    }
+
+    @media (max-width: 1100px) {
+      .knowledge-layout {
+        grid-template-columns: 1fr;
+        height: auto;
+        min-height: 0;
+      }
+
+      .knowledge-view {
+        overflow: auto;
+      }
+    }
+
+    @media (max-width: 700px) {
+      .knowledge-view {
+        padding: 12px;
+      }
+
+      .knowledge-browser {
+        grid-template-columns: 1fr;
+        height: auto;
+      }
+
+      .knowledge-document-pane,
+      .knowledge-chunk-pane {
+        height: min(46vh, 440px);
+      }
     }
 
     .capability-view {
@@ -1251,7 +1430,10 @@
           </div>
           <div class="field">
             <label for="chatKnowledgeMode">知识库问答</label>
-            <input id="chatKnowledgeMode" type="checkbox">
+            <select id="chatKnowledgeMode">
+              <option value="auto" selected>自动</option>
+              <option value="off">关闭</option>
+            </select>
           </div>
         </div>
       </header>
@@ -1276,7 +1458,7 @@
 
     <section id="knowledgeView" class="knowledge-view" hidden>
       <div class="knowledge-layout">
-        <section class="knowledge-card">
+        <section class="knowledge-card knowledge-upload-card">
           <h1>个人知识库</h1>
           <p class="knowledge-warning">不要上传身份证、未授权公司资料、API Key、邮箱密码或授权码。</p>
           <form id="knowledgeUploadForm" class="knowledge-form">
@@ -1301,11 +1483,27 @@
           </form>
           <div id="knowledgeStatus" class="knowledge-status" aria-live="polite">尚未加载知识库</div>
         </section>
-        <section class="knowledge-card">
-          <h2>文档</h2>
-          <div id="knowledgeDocumentList"></div>
-          <h2>Chunk 预览</h2>
-          <div id="knowledgeChunkPreview"></div>
+        <section class="knowledge-card knowledge-library-panel">
+          <header class="knowledge-library-header">
+            <h2>文档</h2>
+            <span id="knowledgeDocumentCount" class="knowledge-meta"></span>
+          </header>
+          <div class="knowledge-browser">
+            <section class="knowledge-document-pane" aria-label="知识库文档">
+              <div class="knowledge-document-toolbar">
+                <label class="knowledge-select-all">
+                  <input id="knowledgeSelectAllDocuments" type="checkbox">
+                  全选
+                </label>
+                <button id="knowledgeDeleteSelectedButton" class="knowledge-delete-selected" type="button" disabled>删除选中</button>
+              </div>
+              <div id="knowledgeDocumentList"></div>
+            </section>
+            <section class="knowledge-chunk-pane" aria-labelledby="knowledgeChunkTitle">
+              <h3 id="knowledgeChunkTitle">Chunk 预览</h3>
+              <div id="knowledgeChunkPreview" class="knowledge-chunk-empty">选择文档查看 Chunk</div>
+            </section>
+          </div>
         </section>
       </div>
     </section>
@@ -1638,9 +1836,16 @@
     const knowledgeAuthorized = document.querySelector("#knowledgeAuthorized");
     const knowledgeUploadButton = document.querySelector("#knowledgeUploadButton");
     const knowledgeStatus = document.querySelector("#knowledgeStatus");
+    const knowledgeDocumentCount = document.querySelector("#knowledgeDocumentCount");
+    const knowledgeSelectAllDocuments = document.querySelector("#knowledgeSelectAllDocuments");
+    const knowledgeDeleteSelectedButton = document.querySelector("#knowledgeDeleteSelectedButton");
     const knowledgeDocumentList = document.querySelector("#knowledgeDocumentList");
     const knowledgeChunkPreview = document.querySelector("#knowledgeChunkPreview");
+    const knowledgeChunkTitle = document.querySelector("#knowledgeChunkTitle");
     let activeKnowledgeBaseId = null;
+    let knowledgeDocuments = [];
+    let selectedKnowledgeDocumentId = null;
+    let selectedKnowledgeDocumentIds = new Set();
 
     function apiBase() {
       return apiBaseInput.value.replace(/\/+$/, "");
@@ -2384,7 +2589,7 @@
       if (providerSelect.value) payload.provider = providerSelect.value;
       if (modelSelect.value) payload.model = modelSelect.value;
       payload.tool_governance_enabled = state.toolGovernanceEnabled;
-      if (chatKnowledgeMode.checked && activeKnowledgeBaseId) {
+      if (chatKnowledgeMode.value === "auto" && activeKnowledgeBaseId) {
         payload.knowledge_mode = "required";
         payload.knowledge_base_id = activeKnowledgeBaseId;
         delete payload.tool;
@@ -4658,8 +4863,20 @@
         const response = await fetch(`${apiBase()}/v1/knowledge-bases/${activeKnowledgeBaseId}/documents`);
         if (!response.ok) throw new Error(await knowledgeError(response, "文档列表加载失败"));
         const payload = await response.json();
-        renderKnowledgeDocuments(payload.documents);
-        setKnowledgeStatus(`已加载 ${payload.documents.length} 份文档`);
+        knowledgeDocuments = payload.documents;
+        const existingDocumentIds = new Set(knowledgeDocuments.map(item => item.id));
+        selectedKnowledgeDocumentIds = new Set(
+          [...selectedKnowledgeDocumentIds].filter(id => existingDocumentIds.has(id))
+        );
+        if (
+          selectedKnowledgeDocumentId
+          && !knowledgeDocuments.some(item => item.id === selectedKnowledgeDocumentId)
+        ) {
+          selectedKnowledgeDocumentId = null;
+          resetKnowledgeChunkPreview();
+        }
+        renderKnowledgeDocuments(knowledgeDocuments);
+        setKnowledgeStatus(`已加载 ${knowledgeDocuments.length} 份文档`);
       } catch (error) {
         setKnowledgeStatus(error.message || "知识库加载失败", true);
       }
@@ -4667,16 +4884,30 @@
 
     function renderKnowledgeDocuments(documents) {
       knowledgeDocumentList.replaceChildren();
+      knowledgeDocumentCount.textContent = documents.length
+        ? `${documents.length} 份文档`
+        : "";
       if (!documents.length) {
         const empty = document.createElement("p");
         empty.textContent = "暂无文档";
         knowledgeDocumentList.appendChild(empty);
+        updateKnowledgeBulkActions();
         return;
       }
       for (const item of documents) {
         const row = document.createElement("article");
         row.className = "knowledge-document";
+        row.classList.toggle("is-selected", item.id === selectedKnowledgeDocumentId);
+        row.setAttribute("aria-current", item.id === selectedKnowledgeDocumentId ? "true" : "false");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = selectedKnowledgeDocumentIds.has(item.id);
+        checkbox.setAttribute("aria-label", `选择 ${item.filename}`);
+        checkbox.addEventListener("change", () => toggleKnowledgeDocumentSelection(item.id, checkbox.checked));
+        const body = document.createElement("div");
+        body.className = "knowledge-document-body";
         const title = document.createElement("strong");
+        title.className = "knowledge-document-title";
         title.textContent = item.filename;
         const meta = document.createElement("div");
         meta.className = "knowledge-meta";
@@ -4696,31 +4927,81 @@
         remove.textContent = "删除";
         remove.addEventListener("click", () => deleteKnowledgeDocument(item));
         actions.append(preview, update, remove);
-        row.append(title, meta, actions);
+        body.append(title, meta, actions);
+        row.append(checkbox, body);
         knowledgeDocumentList.appendChild(row);
       }
+      updateKnowledgeBulkActions();
+    }
+
+    function updateKnowledgeBulkActions() {
+      const total = knowledgeDocuments.length;
+      const selectedCount = selectedKnowledgeDocumentIds.size;
+      knowledgeDeleteSelectedButton.disabled = selectedKnowledgeDocumentIds.size === 0;
+      knowledgeDeleteSelectedButton.textContent = selectedCount
+        ? `删除选中 (${selectedCount})`
+        : "删除选中";
+      knowledgeSelectAllDocuments.disabled = total === 0;
+      knowledgeSelectAllDocuments.checked = total > 0 && selectedCount === total;
+      knowledgeSelectAllDocuments.indeterminate = selectedCount > 0 && selectedCount < total;
+    }
+
+    function toggleKnowledgeDocumentSelection(documentId, selected) {
+      if (selected) selectedKnowledgeDocumentIds.add(documentId);
+      else selectedKnowledgeDocumentIds.delete(documentId);
+      updateKnowledgeBulkActions();
+    }
+
+    function resetKnowledgeChunkPreview(message = "选择文档查看 Chunk") {
+      knowledgeChunkTitle.textContent = "Chunk 预览";
+      knowledgeChunkPreview.replaceChildren();
+      knowledgeChunkPreview.className = "knowledge-chunk-empty";
+      knowledgeChunkPreview.textContent = message;
+    }
+
+    function showKnowledgeChunkMessage(item, message, isError = false) {
+      knowledgeChunkTitle.textContent = `${item.filename} · Chunk`;
+      knowledgeChunkPreview.replaceChildren();
+      knowledgeChunkPreview.className = "knowledge-chunk-empty";
+      knowledgeChunkPreview.textContent = message;
+      if (isError) knowledgeChunkPreview.style.color = "var(--warn)";
+      else knowledgeChunkPreview.style.removeProperty("color");
     }
 
     async function loadKnowledgeChunks(item) {
-      knowledgeChunkPreview.replaceChildren();
+      selectedKnowledgeDocumentId = item.id;
+      renderKnowledgeDocuments(knowledgeDocuments);
+      showKnowledgeChunkMessage(item, "正在加载 Chunk...");
       setKnowledgeStatus(`正在加载 ${item.filename} 的 Chunk...`);
-      const response = await fetch(`${apiBase()}/v1/knowledge-bases/${activeKnowledgeBaseId}/documents/${item.id}/chunks`);
-      if (!response.ok) {
-        setKnowledgeStatus(await knowledgeError(response, "Chunk 预览失败"), true);
-        return;
+      try {
+        const response = await fetch(`${apiBase()}/v1/knowledge-bases/${activeKnowledgeBaseId}/documents/${item.id}/chunks`);
+        if (!response.ok) {
+          throw new Error(await knowledgeError(response, "Chunk 预览失败"));
+        }
+        const payload = await response.json();
+        knowledgeChunkPreview.replaceChildren();
+        knowledgeChunkPreview.className = "";
+        knowledgeChunkPreview.style.removeProperty("color");
+        if (!payload.chunks.length) {
+          showKnowledgeChunkMessage(item, "该文档暂无 Chunk");
+        } else {
+          for (const chunk of payload.chunks) {
+            const block = document.createElement("section");
+            block.className = "knowledge-chunk";
+            const meta = document.createElement("strong");
+            meta.textContent = `${chunk.id} · ${(chunk.section_path || []).join(" / ")} · L${chunk.start_line}-L${chunk.end_line}`;
+            const text = document.createElement("div");
+            text.textContent = chunk.preview;
+            block.append(meta, text);
+            knowledgeChunkPreview.appendChild(block);
+          }
+        }
+        setKnowledgeStatus(`已显示 ${payload.chunks.length} 个 Chunk`);
+      } catch (error) {
+        const message = error.message || "Chunk 预览失败";
+        showKnowledgeChunkMessage(item, message, true);
+        setKnowledgeStatus(message, true);
       }
-      const payload = await response.json();
-      for (const chunk of payload.chunks) {
-        const block = document.createElement("section");
-        block.className = "knowledge-chunk";
-        const meta = document.createElement("strong");
-        meta.textContent = `${chunk.id} · ${(chunk.section_path || []).join(" / ")} · L${chunk.start_line}-L${chunk.end_line}`;
-        const text = document.createElement("div");
-        text.textContent = chunk.preview;
-        block.append(meta, text);
-        knowledgeChunkPreview.appendChild(block);
-      }
-      setKnowledgeStatus(`已显示 ${payload.chunks.length} 个 Chunk`);
     }
 
     async function submitKnowledgeFile(file, item = null) {
@@ -4761,18 +5042,55 @@
       picker.click();
     }
 
-    async function deleteKnowledgeDocument(item) {
-      if (!window.confirm(`确认删除“${item.filename}”版本 ${item.version}？删除后旧内容不可检索。`)) return;
+    async function deleteKnowledgeDocumentRequest(item) {
       const response = await fetch(
         `${apiBase()}/v1/knowledge-bases/${activeKnowledgeBaseId}/documents/${item.id}`,
         { method: "DELETE" }
       );
       if (!response.ok) {
-        setKnowledgeStatus(await knowledgeError(response, "删除失败"), true);
+        throw new Error(await knowledgeError(response, "删除失败"));
+      }
+      if (selectedKnowledgeDocumentId === item.id) {
+        selectedKnowledgeDocumentId = null;
+        resetKnowledgeChunkPreview();
+      }
+      selectedKnowledgeDocumentIds.delete(item.id);
+    }
+
+    async function deleteKnowledgeDocument(item) {
+      if (!window.confirm(`确认删除“${item.filename}”版本 ${item.version}？删除后旧内容不可检索。`)) return;
+      try {
+        await deleteKnowledgeDocumentRequest(item);
+      } catch (error) {
+        setKnowledgeStatus(error.message || "删除失败", true);
         return;
       }
-      knowledgeChunkPreview.replaceChildren();
       await loadKnowledgeBase();
+    }
+
+    async function deleteSelectedKnowledgeDocuments() {
+      const selectedItems = knowledgeDocuments.filter(
+        item => selectedKnowledgeDocumentIds.has(item.id)
+      );
+      if (!selectedItems.length) return;
+      if (!window.confirm(`确认删除选中的 ${selectedItems.length} 份文档？删除后旧内容不可检索。`)) return;
+      knowledgeDeleteSelectedButton.disabled = true;
+      setKnowledgeStatus(`正在删除 ${selectedItems.length} 份文档...`);
+      const failures = [];
+      for (const item of selectedItems) {
+        try {
+          await deleteKnowledgeDocumentRequest(item);
+        } catch (error) {
+          failures.push(`${item.filename}: ${error.message || "删除失败"}`);
+        }
+      }
+      selectedKnowledgeDocumentIds.clear();
+      await loadKnowledgeBase();
+      if (failures.length) {
+        setKnowledgeStatus(`有 ${failures.length} 份文档删除失败：${failures.join("；")}`, true);
+      } else {
+        setKnowledgeStatus(`已删除 ${selectedItems.length} 份文档`);
+      }
     }
 
     knowledgeUploadForm.addEventListener("submit", async (event) => {
@@ -4790,6 +5108,15 @@
         knowledgeUploadButton.disabled = false;
       }
     });
+    knowledgeSelectAllDocuments.addEventListener("change", () => {
+      if (knowledgeSelectAllDocuments.checked) {
+        selectedKnowledgeDocumentIds = new Set(knowledgeDocuments.map(item => item.id));
+      } else {
+        selectedKnowledgeDocumentIds.clear();
+      }
+      renderKnowledgeDocuments(knowledgeDocuments);
+    });
+    knowledgeDeleteSelectedButton.addEventListener("click", deleteSelectedKnowledgeDocuments);
     chatNavButton.addEventListener(
       "click",
       () => navigatePrimaryHash("#/chat")
@@ -4840,12 +5167,12 @@
       selected?.focus();
     });
     chatKnowledgeMode.addEventListener("change", async () => {
-      if (chatKnowledgeMode.checked && !activeKnowledgeBaseId) {
+      if (chatKnowledgeMode.value === "auto" && !activeKnowledgeBaseId) {
         await loadKnowledgeBase();
       }
       setStatus(
-        chatKnowledgeMode.checked
-          ? "知识库问答已开启；回答将严格依据已入库资料"
+        chatKnowledgeMode.value === "auto"
+          ? "知识库问答为自动；有可用知识库时回答将严格依据已入库资料"
           : "知识库问答已关闭"
       );
     });
@@ -4868,6 +5195,7 @@
         sessionStorage.removeItem(CHAT_SESSION_STORAGE_KEY);
         reconcileChatConfirmations([]);
       }
+      if (chatKnowledgeMode.value === "auto") await loadKnowledgeBase();
       await applyPrimaryHashRoute();
     }
 
