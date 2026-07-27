@@ -65,10 +65,18 @@
 
     .primary-nav {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 8px;
       padding: 10px 12px;
       border-bottom: 1px solid var(--line);
+    }
+
+    .primary-nav button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      white-space: nowrap;
+      padding: 0 8px;
     }
 
     .primary-nav button[aria-current="page"] {
@@ -1322,27 +1330,56 @@
 
     .chat-confirmation-cards {
       display: grid;
-      gap: 10px;
+      gap: 8px;
       padding: 0 20px 12px;
+      max-width: 100%;
+      min-width: 0;
     }
 
     .chat-confirmation-card {
-      padding: 14px;
+      justify-self: start;
+      width: min(720px, calc(100% - 40px));
+      padding: 10px 12px;
       border: 1px solid #d8b45b;
       border-radius: 12px;
       background: #fffaf0;
+      max-height: min(34vh, 280px);
+      max-width: 100%;
+      min-width: 0;
+      overflow: auto;
       overflow-wrap: anywhere;
     }
 
     .chat-confirmation-card h3 {
-      margin: 0 0 10px;
+      margin: 0 0 8px;
+      font-size: 15px;
+    }
+
+    .chat-confirmation-summary {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 8px;
+      min-width: 0;
+    }
+
+    .chat-confirmation-pill {
+      border: 1px solid rgba(216, 180, 91, 0.55);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+      padding: 2px 8px;
     }
 
     .chat-confirmation-fields {
       display: grid;
-      grid-template-columns: minmax(130px, max-content) minmax(0, 1fr);
-      gap: 6px 12px;
+      grid-template-columns: minmax(84px, 120px) minmax(0, 1fr);
+      gap: 4px 8px;
       margin: 0;
+      min-width: 0;
+      font-size: 13px;
     }
 
     .chat-confirmation-fields dt {
@@ -1352,24 +1389,42 @@
 
     .chat-confirmation-fields dd {
       margin: 0;
+      min-width: 0;
       white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
 
     .chat-confirmation-actions {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
-      margin-top: 12px;
+      margin-top: 10px;
     }
 
     .chat-confirmation-status {
-      margin-top: 10px;
+      margin-top: 8px;
       color: var(--muted);
       white-space: pre-wrap;
+      font-size: 13px;
     }
 
     .chat-confirmation-status.error {
       color: var(--warn);
+    }
+
+    .chat-confirmation-details {
+      margin-top: 8px;
+    }
+
+    .chat-confirmation-details summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .chat-confirmation-details dl {
+      margin-top: 8px;
     }
   </style>
 </head>
@@ -1393,6 +1448,7 @@
         <button id="chatNavButton" type="button" aria-current="page">对话</button>
         <button id="knowledgeNavButton" type="button">知识库</button>
         <button id="capabilitiesNavButton" type="button">能力管理</button>
+        <button id="trustNavButton" type="button">信任中心</button>
       </nav>
       <div class="sidebar-clear-row">
         <button id="clearAllSessionsButton" class="clear-all-sessions" type="button">
@@ -1565,6 +1621,101 @@
         </div>
       </div>
     </section>
+
+    <section id="trustView" class="capability-view" hidden>
+      <div class="capability-shell">
+        <header class="capability-header">
+          <div>
+            <h1>Trust Center</h1>
+            <div id="trustStatus" class="capability-refresh-time" aria-live="polite">
+              连接真实后端后显示评测、Trace 与 Safety 状态
+            </div>
+          </div>
+          <div class="capability-toolbar">
+            <button id="trustRefreshButton" type="button">刷新当前页</button>
+          </div>
+        </header>
+        <nav class="capability-tabs" role="tablist" aria-label="Trust Center">
+          <button
+            id="trustEvalsTab"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="trustEvalsPanel"
+          >Evals</button>
+          <button
+            id="trustTracesTab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="trustTracesPanel"
+          >Traces</button>
+          <button
+            id="trustSafetyTab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="trustSafetyPanel"
+          >Safety</button>
+        </nav>
+        <div id="trustError" class="capability-error" role="alert" aria-live="assertive" hidden></div>
+
+        <section id="trustEvalsPanel" class="capability-panel" aria-labelledby="trustEvalsTab">
+          <div class="capability-section-title">
+            <h2>固定 Fixture Eval</h2>
+            <button id="trustStartRunButton" type="button">运行固定评测</button>
+          </div>
+          <div class="capability-grid">
+            <label>Suite
+              <select id="trustSuiteSelect"></select>
+            </label>
+            <label>基线 Run
+              <select id="trustCompareBaseRun"></select>
+            </label>
+            <label>对比 Run
+              <select id="trustCompareCandidateRun"></select>
+            </label>
+          </div>
+          <div id="trustEvalRuns" class="capability-list" aria-label="Eval Runs"></div>
+          <div id="trustEvalCases" class="capability-panel" aria-label="Eval Cases"></div>
+          <div id="trustFailureClusters" class="capability-panel" aria-label="失败簇"></div>
+        </section>
+
+        <section id="trustTracesPanel" class="capability-panel" aria-labelledby="trustTracesTab" hidden>
+          <div class="capability-section-title">
+            <h2>Trace 链路</h2>
+            <button id="trustTraceSearchButton" type="button">筛选</button>
+          </div>
+          <div class="capability-grid">
+            <label>Run
+              <input id="trustTraceRunFilter" placeholder="eval_run_id">
+            </label>
+            <label>Case
+              <input id="trustTraceCaseFilter" placeholder="case_id">
+            </label>
+            <label>Session
+              <input id="trustTraceSessionFilter" placeholder="session_id">
+            </label>
+            <label>Turn
+              <input id="trustTraceTurnFilter" placeholder="turn_id">
+            </label>
+            <label>Tool
+              <input id="trustTraceToolFilter" placeholder="tool_call_id">
+            </label>
+          </div>
+          <div id="trustTraceEvents" class="capability-list" aria-label="Trace Events"></div>
+        </section>
+
+        <section id="trustSafetyPanel" class="capability-panel" aria-labelledby="trustSafetyTab" hidden>
+          <div class="capability-section-title">
+            <h2>Safety Gate</h2>
+            <span id="trustSafetyGate" class="capability-pill">未知</span>
+          </div>
+          <div id="trustSafetyPolicy" class="capability-panel"></div>
+          <div id="trustSafetyEvidence" class="capability-list" aria-label="Safety Evidence"></div>
+        </section>
+      </div>
+    </section>
   </main>
 
   <div id="settingsOverlay" class="settings-overlay" hidden>
@@ -1642,6 +1793,9 @@
         if (hash === "#/knowledge") return "knowledge";
         if (hash === "#/capabilities/mcp-servers") return "mcp-servers";
         if (hash === "#/capabilities/skills") return "skills";
+        if (hash === "#/trust/evals") return "trust-evals";
+        if (hash === "#/trust/traces") return "trust-traces";
+        if (hash === "#/trust/safety") return "trust-safety";
         return "chat";
       },
 
@@ -1787,6 +1941,23 @@
       lastRefreshAt: null
     };
 
+    const trustState = {
+      route: "evals",
+      suites: [],
+      cases: [],
+      runs: [],
+      selectedRunId: null,
+      caseResults: [],
+      metrics: [],
+      failureClusters: [],
+      traces: [],
+      safety: null,
+      loading: false,
+      error: null,
+      requestEpoch: 0,
+      requestController: new AbortController()
+    };
+
     const apiBaseInput = document.querySelector("#apiBase");
     const providerSelect = document.querySelector("#providerSelect");
     const modelSelect = document.querySelector("#modelSelect");
@@ -1819,9 +1990,11 @@
     const chatView = document.querySelector("#chatView");
     const knowledgeView = document.querySelector("#knowledgeView");
     const capabilitiesView = document.querySelector("#capabilitiesView");
+    const trustView = document.querySelector("#trustView");
     const chatNavButton = document.querySelector("#chatNavButton");
     const knowledgeNavButton = document.querySelector("#knowledgeNavButton");
     const capabilitiesNavButton = document.querySelector("#capabilitiesNavButton");
+    const trustNavButton = document.querySelector("#trustNavButton");
     const capabilityServersTab = document.querySelector("#capabilityServersTab");
     const capabilitySkillsTab = document.querySelector("#capabilitySkillsTab");
     const capabilityRefreshButton = document.querySelector("#capabilityRefreshButton");
@@ -1830,6 +2003,32 @@
     const capabilityConfirmation = document.querySelector("#capabilityConfirmation");
     const capabilityList = document.querySelector("#capabilityList");
     const capabilityDetail = document.querySelector("#capabilityDetail");
+    const trustStatus = document.querySelector("#trustStatus");
+    const trustRefreshButton = document.querySelector("#trustRefreshButton");
+    const trustError = document.querySelector("#trustError");
+    const trustEvalsTab = document.querySelector("#trustEvalsTab");
+    const trustTracesTab = document.querySelector("#trustTracesTab");
+    const trustSafetyTab = document.querySelector("#trustSafetyTab");
+    const trustEvalsPanel = document.querySelector("#trustEvalsPanel");
+    const trustTracesPanel = document.querySelector("#trustTracesPanel");
+    const trustSafetyPanel = document.querySelector("#trustSafetyPanel");
+    const trustStartRunButton = document.querySelector("#trustStartRunButton");
+    const trustSuiteSelect = document.querySelector("#trustSuiteSelect");
+    const trustCompareBaseRun = document.querySelector("#trustCompareBaseRun");
+    const trustCompareCandidateRun = document.querySelector("#trustCompareCandidateRun");
+    const trustEvalRuns = document.querySelector("#trustEvalRuns");
+    const trustEvalCases = document.querySelector("#trustEvalCases");
+    const trustFailureClusters = document.querySelector("#trustFailureClusters");
+    const trustTraceSearchButton = document.querySelector("#trustTraceSearchButton");
+    const trustTraceRunFilter = document.querySelector("#trustTraceRunFilter");
+    const trustTraceCaseFilter = document.querySelector("#trustTraceCaseFilter");
+    const trustTraceSessionFilter = document.querySelector("#trustTraceSessionFilter");
+    const trustTraceTurnFilter = document.querySelector("#trustTraceTurnFilter");
+    const trustTraceToolFilter = document.querySelector("#trustTraceToolFilter");
+    const trustTraceEvents = document.querySelector("#trustTraceEvents");
+    const trustSafetyGate = document.querySelector("#trustSafetyGate");
+    const trustSafetyPolicy = document.querySelector("#trustSafetyPolicy");
+    const trustSafetyEvidence = document.querySelector("#trustSafetyEvidence");
     const knowledgeUploadForm = document.querySelector("#knowledgeUploadForm");
     const knowledgeFile = document.querySelector("#knowledgeFile");
     const knowledgeDocumentType = document.querySelector("#knowledgeDocumentType");
@@ -2158,6 +2357,31 @@
       return `${status}${reason ? ` · ${reason}` : ""}`;
     }
 
+    function isTerminalToolConfirmation(confirmation) {
+      return ["consumed", "cancelled", "expired", "invalidated"].includes(
+        confirmation?.status || ""
+      );
+    }
+
+    function removeChatConfirmation(id) {
+      if (!id) return;
+      state.chatConfirmations.delete(id);
+      state.confirmationDecisionLocks.delete(id);
+      for (const key of [...state.confirmationIdempotencyKeys.keys()]) {
+        if (String(key).startsWith(`${id}:`)) {
+          state.confirmationIdempotencyKeys.delete(key);
+        }
+      }
+    }
+
+    function pruneTerminalChatConfirmations() {
+      for (const [id, confirmation] of state.chatConfirmations.entries()) {
+        if (isTerminalToolConfirmation(confirmation)) {
+          removeChatConfirmation(id);
+        }
+      }
+    }
+
     function renderToolConfirmation(confirmation) {
       const card = document.createElement("section");
       card.className = "chat-confirmation-card";
@@ -2165,32 +2389,50 @@
       card.dataset.status = confirmation.status || "pending";
 
       const title = document.createElement("h3");
-      title.textContent = "Tool 调用确认";
+      title.textContent = "需要确认 Tool 调用";
+
+      const summaryRow = document.createElement("div");
+      summaryRow.className = "chat-confirmation-summary";
+      const toolName = document.createElement("strong");
+      toolName.textContent = confirmation.tool_name || "未知 Tool";
+      const riskPill = document.createElement("span");
+      riskPill.className = "chat-confirmation-pill";
+      riskPill.textContent = confirmation.risk || "unknown";
+      summaryRow.append(toolName, riskPill);
+
       const fields = document.createElement("dl");
       fields.className = "chat-confirmation-fields";
       const summary = confirmation.arguments_summary || {};
       appendToolConfirmationField(fields, "Server", confirmation.server_id);
       appendToolConfirmationField(fields, "Tool", confirmation.tool_name);
-      appendToolConfirmationField(
-        fields,
-        "参数安全摘要",
-        JSON.stringify(summary, null, 2)
-      );
       appendToolConfirmationField(fields, "风险", confirmation.risk);
       appendToolConfirmationField(
         fields,
         "目标 / 数据去向",
         confirmation.destination
       );
+
+      const details = document.createElement("details");
+      details.className = "chat-confirmation-details";
+      const detailsSummary = document.createElement("summary");
+      detailsSummary.textContent = "查看技术详情";
+      const detailFields = document.createElement("dl");
+      detailFields.className = "chat-confirmation-fields";
       appendToolConfirmationField(
-        fields,
+        detailFields,
+        "参数安全摘要",
+        JSON.stringify(summary, null, 2)
+      );
+      appendToolConfirmationField(
+        detailFields,
         "数据类别",
         (confirmation.data_classes || []).join(", ")
       );
-      appendToolConfirmationField(fields, "过期时间", confirmation.expires_at);
-      appendToolConfirmationField(fields, "Audit", confirmation.audit_ref);
-      appendToolConfirmationField(fields, "Trace", confirmation.trace_ref);
-      card.append(title, fields);
+      appendToolConfirmationField(detailFields, "过期时间", confirmation.expires_at);
+      appendToolConfirmationField(detailFields, "Audit", confirmation.audit_ref);
+      appendToolConfirmationField(detailFields, "Trace", confirmation.trace_ref);
+      details.append(detailsSummary, detailFields);
+      card.append(title, summaryRow, fields, details);
 
       if ((confirmation.status || "pending") === "pending") {
         const actions = document.createElement("div");
@@ -2245,6 +2487,7 @@
     }
 
     function renderChatConfirmations() {
+      pruneTerminalChatConfirmations();
       chatConfirmationCards.replaceChildren();
       for (const confirmation of state.chatConfirmations.values()) {
         renderToolConfirmation(confirmation);
@@ -2278,11 +2521,18 @@
     }
 
     function reconcileChatConfirmations(authoritative) {
-      state.chatConfirmations = new Map(
-        (authoritative || [])
-          .filter(item => item?.id && item.server_id !== "management")
-          .map(item => [item.id, normalizeToolConfirmation(item)])
-      );
+      const confirmations = [];
+      for (const item of authoritative || []) {
+        const normalized = normalizeToolConfirmation(item || {});
+        if (
+          normalized.id
+          && normalized.server_id !== "management"
+          && !isTerminalToolConfirmation(normalized)
+        ) {
+          confirmations.push([normalized.id, normalized]);
+        }
+      }
+      state.chatConfirmations = new Map(confirmations);
       renderChatConfirmations();
     }
 
@@ -2319,10 +2569,12 @@
           return;
         }
         const payload = await response.json();
-        state.chatConfirmations.set(
-          confirmation.id,
-          normalizeToolConfirmation(payload.confirmation)
-        );
+        const normalized = normalizeToolConfirmation(payload.confirmation || {});
+        if (isTerminalToolConfirmation(normalized)) {
+          removeChatConfirmation(normalized.id);
+        } else {
+          state.chatConfirmations.set(normalized.id, normalized);
+        }
         renderChatConfirmations();
       } catch (error) {
         appendError(`读取确认权威状态失败：${error.message}`);
@@ -2396,10 +2648,15 @@
         }
         const decided = payload.confirmation || payload.state;
         if (decided?.id) {
-          state.chatConfirmations.set(
-            decided.id,
-            normalizeToolConfirmation(decided)
-          );
+          const normalized = normalizeToolConfirmation(decided);
+          if (
+            isTerminalToolConfirmation(normalized)
+            || normalized.status === "approved"
+          ) {
+            removeChatConfirmation(decided.id);
+          } else {
+            state.chatConfirmations.set(decided.id, normalized);
+          }
         }
       } catch (error) {
         appendError(`Tool 确认决定失败：${error.message}`);
@@ -3198,17 +3455,22 @@
       }
       if (event.type === "confirmation_resolved") {
         const current = state.chatConfirmations.get(event.confirmation_id) || {};
-        const confirmation = normalizeToolConfirmation({
+        const resolved = normalizeToolConfirmation({
           ...current,
           ...event,
           id: event.confirmation_id
         });
-        state.chatConfirmations.set(confirmation.id, confirmation);
+        if (isTerminalToolConfirmation(resolved)) {
+          state.chatConfirmations.delete(resolved.id);
+          removeChatConfirmation(resolved.id);
+        } else {
+          state.chatConfirmations.set(resolved.id, resolved);
+        }
         renderChatConfirmations();
         setStatus(
           event.gate_revalidated
             ? "确认已通过，Gate 已重新校验"
-            : toolConfirmationStatusText(confirmation)
+            : toolConfirmationStatusText(resolved)
         );
         return;
       }
@@ -3242,6 +3504,8 @@
             });
             renderChatConfirmations();
           }
+          removeChatConfirmation(event.confirmation_id);
+          renderChatConfirmations();
         }
         showToolCompleted(event);
         queueEmailApproval(event);
@@ -3513,6 +3777,402 @@
         },
         body: JSON.stringify({ expected_revision: revision, ...extra })
       });
+    }
+
+    async function trustRequest(path, options = {}) {
+      const response = await fetch(`${apiBase()}${path}`, options);
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch (_error) {
+        payload = null;
+      }
+      if (!response.ok) {
+        const detail = payload?.detail;
+        const message = detail?.message || payload?.message ||
+          `Trust Center 请求失败（HTTP ${response.status}）`;
+        const error = new Error(message);
+        error.code = detail?.code || `http_${response.status}`;
+        throw error;
+      }
+      return payload || {};
+    }
+
+    function advanceTrustRequestEpoch() {
+      trustState.requestEpoch += 1;
+      trustState.requestController.abort();
+      trustState.requestController = new AbortController();
+    }
+
+    function captureTrustRequest() {
+      return {
+        epoch: trustState.requestEpoch,
+        route: trustState.route,
+        apiBase: apiBase()
+      };
+    }
+
+    function isTrustRequestCurrent(token) {
+      return token.epoch === trustState.requestEpoch
+        && token.route === trustState.route
+        && token.apiBase === apiBase();
+    }
+
+    function setTrustStatus(message, isError = false) {
+      trustStatus.textContent = message;
+      trustStatus.style.color = isError ? "var(--warn)" : "var(--muted)";
+    }
+
+    function renderTrustError(error) {
+      trustError.textContent = error?.message || "Trust Center 请求失败";
+      trustError.hidden = false;
+      setTrustStatus(trustError.textContent, true);
+    }
+
+    function clearTrustError() {
+      trustError.textContent = "";
+      trustError.hidden = true;
+    }
+
+    function trustField(label, value) {
+      const row = capabilityElement("div", "capability-meta-row");
+      row.append(
+        capabilityElement("strong", "", label),
+        capabilityElement("span", "", value === null || value === undefined || value === "" ? "—" : value)
+      );
+      return row;
+    }
+
+    function renderTrustEmpty(target, message) {
+      target.replaceChildren(capabilityElement("div", "capability-empty", message));
+    }
+
+    function renderTrustOptions(select, values, placeholder) {
+      select.replaceChildren();
+      const empty = capabilityElement("option", "", placeholder);
+      empty.value = "";
+      select.appendChild(empty);
+      for (const value of values) {
+        const option = capabilityElement("option", "", value.label);
+        option.value = value.id;
+        select.appendChild(option);
+      }
+    }
+
+    function updateTrustTabs() {
+      const route = trustState.route;
+      trustEvalsTab.setAttribute("aria-selected", route === "evals" ? "true" : "false");
+      trustTracesTab.setAttribute("aria-selected", route === "traces" ? "true" : "false");
+      trustSafetyTab.setAttribute("aria-selected", route === "safety" ? "true" : "false");
+      trustEvalsPanel.hidden = route !== "evals";
+      trustTracesPanel.hidden = route !== "traces";
+      trustSafetyPanel.hidden = route !== "safety";
+    }
+
+    function setTrustRoute(route) {
+      const paths = {
+        evals: "#/trust/evals",
+        traces: "#/trust/traces",
+        safety: "#/trust/safety"
+      };
+      navigatePrimaryHash(paths[route] || "#/trust/evals");
+    }
+
+    function renderTrustEvalRuns() {
+      trustEvalRuns.replaceChildren();
+      if (!trustState.runs.length) {
+        renderTrustEmpty(trustEvalRuns, "暂无 Eval Run。运行固定评测会先创建真实后端 Run。");
+        return;
+      }
+      for (const run of trustState.runs) {
+        const card = capabilityElement("article", "capability-card");
+        const title = capabilityElement("h3", "", `${run.id} · ${run.status}`);
+        const actions = capabilityElement("div", "capability-actions");
+        actions.append(
+          capabilityButton("查看证据", () => {
+            trustState.selectedRunId = run.id;
+            void loadTrustRunEvidence(run.id);
+          }),
+          capabilityElement("button", "", "取消运行（待后端支持）")
+        );
+        actions.lastChild.type = "button";
+        actions.lastChild.disabled = true;
+        card.append(
+          title,
+          trustField("类型", run.run_type),
+          trustField("Suite", run.suite_id),
+          trustField("代码版本", run.code_version),
+          trustField("Policy", run.policy_version),
+          trustField("开始时间", run.started_at),
+          actions
+        );
+        trustEvalRuns.appendChild(card);
+      }
+    }
+
+    function renderTrustEvalCases() {
+      trustEvalCases.replaceChildren();
+      if (trustState.metrics.length) {
+        const metricTitle = capabilityElement("h3", "", "指标");
+        trustEvalCases.appendChild(metricTitle);
+        for (const metric of trustState.metrics) {
+          trustEvalCases.appendChild(
+            trustField(metric.name, metric.value ?? metric.missing_reason)
+          );
+        }
+      }
+      if (trustState.caseResults.length) {
+        trustEvalCases.appendChild(capabilityElement("h3", "", "Case Results"));
+        for (const result of trustState.caseResults) {
+          trustEvalCases.appendChild(
+            trustField(result.case_id, `${result.status} · ${result.error_code || "no_error"}`)
+          );
+        }
+      }
+      if (!trustState.metrics.length && !trustState.caseResults.length) {
+        renderTrustEmpty(trustEvalCases, "选择 Run 后显示 Case、Assertion、Metric 与 Gate 证据。");
+      }
+    }
+
+    function renderTrustFailureClusters(gate = null) {
+      trustFailureClusters.replaceChildren();
+      if (gate) {
+        trustFailureClusters.append(
+          capabilityElement("h3", "", "Release Gate"),
+          trustField("状态", gate.status),
+          trustField("安全阻塞", gate.safety_blocking ? "是" : "否"),
+          trustField("阻塞原因", (gate.blocking_reasons || []).join("；"))
+        );
+      }
+      if (!trustState.failureClusters.length) {
+        trustFailureClusters.appendChild(
+          capabilityElement("div", "capability-empty", "暂无失败簇。")
+        );
+        return;
+      }
+      for (const cluster of trustState.failureClusters) {
+        const card = capabilityElement("article", "capability-card");
+        card.append(
+          capabilityElement("h3", "", cluster.id),
+          trustField("Root Cause", cluster.root_cause),
+          trustField("严重级别", cluster.severity),
+          trustField("案例", (cluster.case_ids || []).join(", "))
+        );
+        trustFailureClusters.appendChild(card);
+      }
+    }
+
+    function renderTrustEvals() {
+      renderTrustOptions(
+        trustSuiteSelect,
+        trustState.suites.map(suite => ({ id: suite.id, label: `${suite.id} · ${suite.version}` })),
+        "选择 Suite"
+      );
+      renderTrustOptions(
+        trustCompareBaseRun,
+        trustState.runs.map(run => ({ id: run.id, label: `${run.id} · ${run.status}` })),
+        "基线 Run"
+      );
+      renderTrustOptions(
+        trustCompareCandidateRun,
+        trustState.runs.map(run => ({ id: run.id, label: `${run.id} · ${run.status}` })),
+        "对比 Run"
+      );
+      renderTrustEvalRuns();
+      renderTrustEvalCases();
+      renderTrustFailureClusters();
+      if (trustState.suites.length || trustState.runs.length || trustState.cases.length) {
+        setTrustStatus(
+          `Suites ${trustState.suites.length} · Runs ${trustState.runs.length} · Cases ${trustState.cases.length}`
+        );
+      } else {
+        setTrustStatus("真实后端暂无 Trust Eval 数据");
+      }
+    }
+
+    async function loadTrustRunEvidence(runId) {
+      clearTrustError();
+      setTrustStatus(`正在加载 ${runId} 的报告证据...`);
+      try {
+        const [caseResults, metrics, clusters, gateResult] = await Promise.allSettled([
+          trustRequest(`/v1/trust/runs/${encodeURIComponent(runId)}/case-results`),
+          trustRequest(`/v1/trust/runs/${encodeURIComponent(runId)}/metrics`),
+          trustRequest(`/v1/trust/runs/${encodeURIComponent(runId)}/failure-clusters`),
+          trustRequest(`/v1/trust/runs/${encodeURIComponent(runId)}/gate`)
+        ]);
+        trustState.caseResults = caseResults.status === "fulfilled"
+          ? caseResults.value.case_results || []
+          : [];
+        trustState.metrics = metrics.status === "fulfilled"
+          ? metrics.value.metrics || []
+          : [];
+        trustState.failureClusters = clusters.status === "fulfilled"
+          ? clusters.value.failure_clusters || []
+          : [];
+        const gate = gateResult.status === "fulfilled" ? gateResult.value.gate : null;
+        renderTrustEvalCases();
+        renderTrustFailureClusters(gate);
+        setTrustStatus(`已加载 ${runId} 的证据；Gate 缺失会按后端原样显示为空。`);
+      } catch (error) {
+        renderTrustError(error);
+      }
+    }
+
+    async function loadTrustEvals() {
+      clearTrustError();
+      const request = captureTrustRequest();
+      setTrustStatus("正在加载固定评测状态...");
+      renderCapabilitySkeleton(trustEvalRuns);
+      try {
+        const [suites, cases, runs] = await Promise.all([
+          trustRequest("/v1/trust/suites", { signal: trustState.requestController.signal }),
+          trustRequest("/v1/trust/cases", { signal: trustState.requestController.signal }),
+          trustRequest("/v1/trust/runs?run_type=fixture", { signal: trustState.requestController.signal })
+        ]);
+        if (!isTrustRequestCurrent(request)) return;
+        trustState.suites = suites.suites || [];
+        trustState.cases = cases.cases || [];
+        trustState.runs = runs.runs || [];
+        renderTrustEvals();
+      } catch (error) {
+        if (error.name !== "AbortError" && isTrustRequestCurrent(request)) renderTrustError(error);
+      }
+    }
+
+    async function startTrustEvalRun() {
+      const suiteId = trustSuiteSelect.value || trustState.suites[0]?.id;
+      if (!suiteId) {
+        renderTrustError(new Error("没有可运行的 Suite；请先通过后端写入 Eval Suite。"));
+        return;
+      }
+      trustStartRunButton.disabled = true;
+      clearTrustError();
+      setTrustStatus("正在创建真实后端 Eval Run...");
+      const runId = `ui-fixture-${Date.now()}`;
+      try {
+        await trustRequest("/v1/trust/runs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            id: runId,
+            suite_id: suiteId,
+            run_type: "fixture",
+            code_version: "ui-requested",
+            code_dirty: true,
+            prompt_version: "ui-requested",
+            skill_version: "ui-requested",
+            tool_schema_version: "ui-requested",
+            policy_version: "ui-requested",
+            fixture_manifest_hash: null
+          })
+        });
+        await loadTrustEvals();
+        trustState.selectedRunId = runId;
+        setTrustStatus(`已创建 Run ${runId}；执行进度以真实后端状态为准。`);
+      } catch (error) {
+        renderTrustError(error);
+      } finally {
+        trustStartRunButton.disabled = false;
+      }
+    }
+
+    function renderTrustTraces() {
+      trustTraceEvents.replaceChildren();
+      if (!trustState.traces.length) {
+        renderTrustEmpty(trustTraceEvents, "暂无 Trace；可按 Run / Case / Session / Turn / Tool 过滤。");
+        return;
+      }
+      for (const event of trustState.traces) {
+        const card = capabilityElement("article", "capability-card");
+        card.append(
+          capabilityElement("h3", "", `${event.event_type} · ${event.id}`),
+          trustField("Run / Case", `${event.eval_run_id || "—"} / ${event.case_id || "—"}`),
+          trustField("Session / Turn", `${event.session_id || "—"} / ${event.turn_id || "—"}`),
+          trustField("Model / Tool", `${event.model_request_id || "—"} / ${event.tool_call_id || "—"}`),
+          trustField("Policy / Approval", `${event.policy_decision_id || "—"} / ${event.approval_id || "—"}`),
+          trustField("状态", event.status),
+          trustField("摘要", event.summary)
+        );
+        trustTraceEvents.appendChild(card);
+      }
+      setTrustStatus(`已加载 ${trustState.traces.length} 条 Trace 事件`);
+    }
+
+    async function loadTrustTraces() {
+      clearTrustError();
+      const params = new URLSearchParams();
+      const filters = [
+        ["eval_run_id", trustTraceRunFilter.value],
+        ["case_id", trustTraceCaseFilter.value],
+        ["session_id", trustTraceSessionFilter.value],
+        ["turn_id", trustTraceTurnFilter.value],
+        ["tool_call_id", trustTraceToolFilter.value]
+      ];
+      for (const [key, value] of filters) {
+        if (value.trim()) params.set(key, value.trim());
+      }
+      const suffix = params.toString() ? `?${params.toString()}` : "";
+      setTrustStatus("正在加载 Trace...");
+      renderCapabilitySkeleton(trustTraceEvents);
+      try {
+        const payload = await trustRequest(`/v1/trust/traces${suffix}`);
+        trustState.traces = payload.traces || [];
+        renderTrustTraces();
+      } catch (error) {
+        renderTrustError(error);
+      }
+    }
+
+    function renderTrustSafety() {
+      trustSafetyPolicy.replaceChildren();
+      trustSafetyEvidence.replaceChildren();
+      const safety = trustState.safety || {};
+      trustSafetyGate.textContent = safety.gate_status || "unknown";
+      trustSafetyPolicy.append(
+        trustField("策略版本", safety.policy_version),
+        trustField("Gate 状态", safety.gate_status),
+        trustField("BLOCKED 原因", (safety.blocking_reasons || []).join("；"))
+      );
+      const evidence = safety.evidence || [];
+      if (!evidence.length) {
+        renderTrustEmpty(trustSafetyEvidence, "暂无 Safety Gate 阻塞证据。unknown 不是 PASS。");
+        return;
+      }
+      for (const item of evidence) {
+        const card = capabilityElement("article", "capability-card");
+        card.append(
+          capabilityElement("h3", "", item.run_id || item.id || "Gate Evidence"),
+          trustField("状态", item.status),
+          trustField("安全阻塞", item.safety_blocking ? "是" : "否"),
+          trustField("阻塞原因", (item.blocking_reasons || []).join("；"))
+        );
+        trustSafetyEvidence.appendChild(card);
+      }
+      setTrustStatus(`Safety Gate: ${safety.gate_status || "unknown"}`);
+    }
+
+    async function loadTrustSafety() {
+      clearTrustError();
+      setTrustStatus("正在加载 Safety 状态...");
+      renderCapabilitySkeleton(trustSafetyEvidence);
+      try {
+        const payload = await trustRequest("/v1/trust/safety");
+        trustState.safety = payload;
+        renderTrustSafety();
+      } catch (error) {
+        renderTrustError(error);
+      }
+    }
+
+    async function refreshTrustRoute() {
+      updateTrustTabs();
+      if (trustState.route === "traces") {
+        await loadTrustTraces();
+      } else if (trustState.route === "safety") {
+        await loadTrustSafety();
+      } else {
+        await loadTrustEvals();
+      }
     }
 
     function capabilityServerActionPath(serverId, action) {
@@ -4806,6 +5466,7 @@
         const routeChanged = capabilityState.route !== route
           || capabilitiesView.hidden;
         if (routeChanged) advanceCapabilityRequestEpoch();
+        if (!trustView.hidden) advanceTrustRequestEpoch();
         capabilityState.route = route;
         updateCapabilityTabs();
         showPrimaryView("capabilities");
@@ -4813,7 +5474,18 @@
         await loadCapabilityConfirmations();
         return;
       }
+      if (route === "trust-evals" || route === "trust-traces" || route === "trust-safety") {
+        const trustRoute = route.replace("trust-", "");
+        const routeChanged = trustState.route !== trustRoute || trustView.hidden;
+        if (routeChanged) advanceTrustRequestEpoch();
+        if (!capabilitiesView.hidden) advanceCapabilityRequestEpoch();
+        trustState.route = trustRoute;
+        showPrimaryView("trust");
+        await refreshTrustRoute();
+        return;
+      }
       if (!capabilitiesView.hidden) advanceCapabilityRequestEpoch();
+      if (!trustView.hidden) advanceTrustRequestEpoch();
       if (route === "knowledge") {
         showPrimaryView("knowledge");
       } else {
@@ -4830,18 +5502,21 @@
     function showPrimaryView(view) {
       const knowledge = view === "knowledge";
       const capabilities = view === "capabilities";
-      chatView.hidden = knowledge || capabilities;
+      const trust = view === "trust";
+      chatView.hidden = knowledge || capabilities || trust;
       knowledgeView.hidden = !knowledge;
       capabilitiesView.hidden = !capabilities;
+      trustView.hidden = !trust;
       chatNavButton.setAttribute(
         "aria-current",
-        !knowledge && !capabilities ? "page" : "false"
+        !knowledge && !capabilities && !trust ? "page" : "false"
       );
       knowledgeNavButton.setAttribute("aria-current", knowledge ? "page" : "false");
       capabilitiesNavButton.setAttribute(
         "aria-current",
         capabilities ? "page" : "false"
       );
+      trustNavButton.setAttribute("aria-current", trust ? "page" : "false");
       if (knowledge) loadKnowledgeBase();
     }
 
@@ -5129,6 +5804,10 @@
       "click",
       () => setCapabilityRoute(capabilityState.route)
     );
+    trustNavButton.addEventListener(
+      "click",
+      () => setTrustRoute(trustState.route)
+    );
     capabilityServersTab.addEventListener(
       "click",
       () => setCapabilityRoute("mcp-servers")
@@ -5138,6 +5817,18 @@
       () => setCapabilityRoute("skills")
     );
     capabilityRefreshButton.addEventListener("click", refreshCapabilityRoute);
+    trustEvalsTab.addEventListener("click", () => setTrustRoute("evals"));
+    trustTracesTab.addEventListener("click", () => setTrustRoute("traces"));
+    trustSafetyTab.addEventListener("click", () => setTrustRoute("safety"));
+    trustRefreshButton.addEventListener("click", refreshTrustRoute);
+    trustStartRunButton.addEventListener("click", startTrustEvalRun);
+    trustTraceSearchButton.addEventListener("click", loadTrustTraces);
+    trustCompareBaseRun.addEventListener("change", () => {
+      if (trustCompareBaseRun.value) void loadTrustRunEvidence(trustCompareBaseRun.value);
+    });
+    trustCompareCandidateRun.addEventListener("change", () => {
+      if (trustCompareCandidateRun.value) void loadTrustRunEvidence(trustCompareCandidateRun.value);
+    });
     for (const tab of [capabilityServersTab, capabilitySkillsTab]) {
       tab.addEventListener("keydown", (event) => {
         if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
@@ -5145,6 +5836,18 @@
         const next = tab === capabilityServersTab
           ? capabilitySkillsTab
           : capabilityServersTab;
+        next.focus();
+        next.click();
+      });
+    }
+    for (const tab of [trustEvalsTab, trustTracesTab, trustSafetyTab]) {
+      tab.addEventListener("keydown", (event) => {
+        if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+        event.preventDefault();
+        const tabs = [trustEvalsTab, trustTracesTab, trustSafetyTab];
+        const current = tabs.indexOf(tab);
+        const delta = event.key === "ArrowRight" ? 1 : -1;
+        const next = tabs[(current + delta + tabs.length) % tabs.length];
         next.focus();
         next.click();
       });
