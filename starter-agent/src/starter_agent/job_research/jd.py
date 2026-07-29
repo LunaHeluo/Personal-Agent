@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
+from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID
@@ -60,6 +61,9 @@ class NormalizedJobDescription(BaseModel):
     location: str = ""
     responsibilities: tuple[str, ...] = ()
     requirements: tuple[str, ...] = ()
+    retrieved_at: datetime | None = None
+    status: str = ""
+    closing_date: date | None = None
     source_url: str = ""
     source_content_sha256: str = ""
     artifact_content_sha256: str = ""
@@ -83,6 +87,9 @@ class NormalizedJobDescription(BaseModel):
             f"# {self.title}\n\n"
             f"- Company: {self.company}\n"
             f"- Location: {self.location}\n"
+            f"- Retrieved At: {self.retrieved_at.isoformat() if self.retrieved_at else ''}\n"
+            f"- Status: {self.status}\n"
+            f"- Closing Date: {self.closing_date.isoformat() if self.closing_date else ''}\n"
             f"- Source URL: {self.source_url}\n"
             f"- Source content SHA-256: {self.source_content_sha256}\n"
             f"- Artifact content SHA-256: {self.artifact_content_sha256}\n\n"
@@ -112,6 +119,9 @@ class JobDescriptionNormalizer:
         location = _text(payload.get("location"))
         responsibilities = _items(payload.get("responsibilities"))
         requirements = _items(payload.get("requirements"))
+        retrieved_at = _optional_datetime(payload.get("retrieved_at"))
+        status = _text(payload.get("status")).casefold()
+        closing_date = _optional_date(payload.get("closing_date"))
         source_url = _canonical_http_url(_text(artifact.get("final_url")))
         source_content_sha256 = _valid_sha256(
             artifact.get("source_content_sha256")
@@ -178,6 +188,9 @@ class JobDescriptionNormalizer:
             location=location,
             responsibilities=responsibilities,
             requirements=requirements,
+            retrieved_at=retrieved_at,
+            status=status,
+            closing_date=closing_date,
             is_complete=not reasons,
             completeness_reasons=tuple(dict.fromkeys(reasons)),
             field_source_refs=refs,
@@ -484,6 +497,27 @@ def _artifact_payload(value: object) -> Mapping[str, Any]:
 
 def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def _optional_datetime(value: object) -> datetime | None:
+    text = _text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _optional_date(value: object) -> date | None:
+    text = _text(value)
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 def _items(value: object) -> tuple[str, ...]:

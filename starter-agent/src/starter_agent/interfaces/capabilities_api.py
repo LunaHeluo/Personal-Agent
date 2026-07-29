@@ -823,7 +823,7 @@ async def _execute_management(
                 authoritative_state={"revision": current},
             )
         payload = dict(summary.get("payload") or {})
-        rule = PolicyRule.model_validate(payload)
+        rule = PolicyRule.model_validate(payload.get("rule", payload))
         assert services.store is not None
         services.store.create_policy_rule(rule)
         snapshot = services.registry.notify_policy_changed()
@@ -1331,11 +1331,14 @@ def create_capabilities_router() -> APIRouter:
                 actor,
                 operation="policy.create",
                 target=tool_name,
-                expected_revision=expected,
+                expected_revision=_registry_revision(services),
                 diff={"policy": [None, _dump(rule)]},
                 risk="automatic_execution_scope_expansion",
                 impact=[f"tool:{tool_name}", *[f"domain:{d}" for d in rule.domains]],
-                payload=rule.model_dump(mode="json"),
+                payload={
+                    "rule": rule.model_dump(mode="json"),
+                    "tool_revision": expected,
+                },
             )
             return _confirmation_result(confirmation)
         if services.store is None:
@@ -1769,6 +1772,17 @@ def create_capabilities_router() -> APIRouter:
                         raise _http_error(
                             409, "revision_conflict", "Registry changed before approval.",
                             authoritative_state={"revision": latest_revision},
+                        )
+                    payload = dict(summary.get("payload") or {})
+                    latest_tool = _tool(services, target)
+                    if latest_tool["revision"] != int(
+                        payload.get("tool_revision", -1)
+                    ):
+                        raise _http_error(
+                            409,
+                            "revision_conflict",
+                            "Tool changed before policy approval.",
+                            authoritative_state=latest_tool,
                         )
                 elif operation == "skill.reload":
                     latest = services.skill_registry.snapshot()

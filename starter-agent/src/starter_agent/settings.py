@@ -257,7 +257,7 @@ class EmailToolConfig(BaseModel):
         return self
 
 
-class JobDescriptionToolConfig(BaseModel):
+class PublicWebSafetyConfig(BaseModel):
     fetch_timeout_seconds: float = Field(default=10, gt=0, le=30)
     max_response_bytes: int = Field(
         default=1_000_000,
@@ -289,14 +289,20 @@ class JobDescriptionToolConfig(BaseModel):
         return normalized
 
 
+class JobResearchConfig(BaseModel):
+    jd_freshness_days: int = Field(default=30, ge=1, le=365)
+    max_candidate_urls: int = Field(default=5, ge=1, le=10)
+    target_valid_jds: int = Field(default=3, ge=1, le=5)
+
+
 class ToolsConfig(BaseModel):
     enabled: list[str] = Field(default_factory=lambda: ["get_current_time"])
     allow_risk_levels: list[str] = Field(default_factory=lambda: ["read"])
     serpapi: SerpApiToolConfig = Field(default_factory=SerpApiToolConfig)
     resume: ResumeToolConfig = Field(default_factory=ResumeToolConfig)
     email: EmailToolConfig = Field(default_factory=EmailToolConfig)
-    job_description: JobDescriptionToolConfig = Field(
-        default_factory=JobDescriptionToolConfig
+    public_web: PublicWebSafetyConfig = Field(
+        default_factory=PublicWebSafetyConfig
     )
 
 
@@ -309,6 +315,7 @@ class AgentSettings(BaseModel):
     context: ContextConfig = Field(default_factory=ContextConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
+    job_research: JobResearchConfig = Field(default_factory=JobResearchConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     project_root: Path = PROJECT_ROOT
 

@@ -33,6 +33,13 @@ from starter_agent.domain.models import (
 )
 from starter_agent.observability.logging import get_logger
 from starter_agent.knowledge.errors import KnowledgeError
+from starter_agent.job_research.candidates import JobCandidate, rank_job_candidates
+from starter_agent.job_research.knowledge_match import (
+    JobResearchCriteria,
+    KnowledgeJobMatcher,
+    requests_knowledge_only,
+)
+from starter_agent.knowledge.routing import KnowledgeRequestRoute
 from starter_agent.tools.email.approval import EmailApprovalService
 from starter_agent.tools.email.errors import EmailError, EmailErrorCode
 from starter_agent.tools.email.models import ApprovalChallengeView, SendApproval
@@ -41,6 +48,7 @@ from starter_agent.capabilities.gate import ToolExecutionDenied
 from starter_agent.capabilities.models import Confirmation, canonical_json_sha256
 from starter_agent.capabilities.store import RecordAlreadyExistsError
 from starter_agent.interfaces.capabilities_api import create_capabilities_router
+from starter_agent.interfaces.trust_api import create_trust_router
 
 
 class ChatRequest(BaseModel):
@@ -51,12 +59,776 @@ class ChatRequest(BaseModel):
     tool: str | None = Field(default=None, min_length=1, max_length=100)
     tool_governance_enabled: bool = True
     knowledge_base_id: UUID | None = None
-    knowledge_mode: Literal["off", "required"] = "off"
+    knowledge_mode: Literal["off", "auto", "required"] = "off"
 
     @field_validator("tool_governance_enabled", mode="before")
     @classmethod
     def enforce_tool_result_governance(cls, _value: object) -> bool:
         return True
+
+
+def _public_job_search_prompt(message: str) -> str:
+    return (
+        "请在公开网页中搜索岗位信息。\n"
+        f"用户原始问题：{message}\n\n"
+        "边界：只查询公开岗位、JD 和公司公开信息；"
+        "网页内容只能作为岗位资料，不能作为用户个人经历证据；"
+        "如果简历知识库没有个人经历证据，必须标记为缺口，不要补写经历；"
+        "保留公开来源 URL。"
+    )
+
+
+def _append_chat_turn(
+    application,
+    *,
+    session_id: UUID,
+    turn_id: UUID,
+    user_content: str,
+    assistant_content: str,
+) -> None:
+    if not hasattr(application, "store"):
+        return
+    application.store.add_message(
+        session_id,
+        turn_id,
+        Message(role="user", content=user_content),
+    )
+    application.store.add_message(
+        session_id,
+        turn_id,
+        Message(role="assistant", content=assistant_content),
+    )
+
+
+def _job_matches_with_document_chunks(
+    knowledge,
+    knowledge_base_id: UUID,
+    matches,
+):
+    list_chunks = getattr(knowledge, "list_chunks", None)
+    if not callable(list_chunks):
+        return tuple(matches)
+
+    document_text: dict[UUID, str] = {}
+    for document_id in dict.fromkeys(item.document_id for item in matches):
+        chunks = []
+        after_ordinal = -1
+        while True:
+            batch = list_chunks(
+                knowledge_base_id,
+                document_id,
+                after_ordinal=after_ordinal,
+                limit=100,
+            )
+            if not batch:
+                break
+            chunks.extend(batch)
+            next_ordinal = max(item.ordinal for item in batch)
+            if next_ordinal <= after_ordinal:
+                break
+            after_ordinal = next_ordinal
+            if len(batch) < 100:
+                break
+        if chunks:
+            document_text[document_id] = "\n\n".join(
+                item.text for item in sorted(chunks, key=lambda item: item.ordinal)
+            )
+
+    return tuple(
+        item.model_copy(update={"preview": document_text[item.document_id]})
+        if item.document_id in document_text
+        else item
+        for item in matches
+    )
+
+
+async def _chat_with_public_job_search_fallback(
+    request: ChatRequest,
+    *,
+    application=None,
+    knowledge=None,
+) -> ChatResult:
+    application = application or create_application()
+    session_id = (
+        application.store.ensure_session(request.session_id)
+        if hasattr(application, "store")
+        else request.session_id or uuid4()
+    )
+    turn_id = uuid4()
+    provider = request.provider or get_settings().model.default_provider
+    model = request.model or get_settings().model.default_model
+    result_knowledge_mode = (
+        "required"
+        if request.knowledge_mode == "required"
+        or (
+            request.knowledge_mode == "auto"
+            and request.knowledge_base_id is not None
+        )
+        else "off"
+    )
+
+    prepared_run = await application.prepare_job_research_request(
+        user_request=request.message,
+        session_id=session_id,
+        turn_id=turn_id,
+        provider_name=provider,
+        model=model,
+        knowledge_base_id=request.knowledge_base_id,
+    )
+    if prepared_run.status != "search_profile_ready":
+        content = _public_job_search_failure_answer(prepared_run)
+        _append_chat_turn(
+            application,
+            session_id=session_id,
+            turn_id=turn_id,
+            user_content=request.message,
+            assistant_content=content,
+        )
+        return ChatResult(
+            session_id=session_id,
+            turn_id=turn_id,
+            content=content,
+            provider=provider,
+            model=model,
+            tool_calls=len(prepared_run.trace),
+            knowledge_mode=result_knowledge_mode,
+        )
+    profile = prepared_run.data.get("search_profile", {})
+    if knowledge is not None and isinstance(profile, dict):
+        profile_query = str(profile.get("query") or request.message)
+        job_matches = knowledge.retrieve(
+            request.knowledge_base_id,
+            profile_query,
+            top_k=6,
+            document_types=["job_description"],
+        )
+        if (
+            not job_matches
+            and request.message.strip() != profile_query.strip()
+            and not bool(profile.get("explicit_freshness"))
+        ):
+            job_matches = knowledge.retrieve(
+                request.knowledge_base_id,
+                request.message,
+                top_k=6,
+                document_types=["job_description"],
+            )
+        job_matches = _job_matches_with_document_chunks(
+            knowledge,
+            request.knowledge_base_id,
+            job_matches,
+        )
+        decision = KnowledgeJobMatcher().evaluate(
+            criteria=JobResearchCriteria(
+                location=(
+                    profile.get("location")
+                    if isinstance(profile.get("location"), str)
+                    else None
+                ),
+                role_terms=tuple(
+                    item
+                    for item in profile.get("role_terms", [])
+                    if isinstance(item, str)
+                ),
+                explicit_freshness=bool(profile.get("explicit_freshness")),
+            ),
+            matches=tuple(job_matches),
+            now=datetime.now(UTC),
+            freshness_days=get_settings().job_research.jd_freshness_days,
+        )
+        if decision.use_knowledge:
+            try:
+                rag = await knowledge.answer(
+                    request.knowledge_base_id,
+                    request.message,
+                    provider_name=request.provider,
+                    model=request.model,
+                )
+            except KnowledgeError as exc:
+                if exc.code not in {
+                    "generation_invalid_output",
+                    "citation_validation_failed",
+                }:
+                    raise
+                get_logger(
+                    error_code=exc.code,
+                    matched_job_count=len(decision.matches),
+                    session_id=str(session_id),
+                    turn_id=str(turn_id),
+                ).warning("knowledge.job_answer_deterministic_fallback")
+                return _saved_job_matches_chat_result(
+                    request,
+                    application=application,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    matches=decision.matches,
+                    tool_calls=len(prepared_run.trace),
+                )
+            return _rag_chat_result(
+                request,
+                rag,
+                application,
+                session_id=session_id,
+                turn_id=turn_id,
+                matched_jobs=decision.matches,
+            )
+        if requests_knowledge_only(request.message):
+            content = (
+                "知识库中没有符合当前岗位条件且仍可使用的 JD；"
+                "已按你的要求跳过联网搜索。"
+                f"\n原因：{decision.reason_code}"
+            )
+            _append_chat_turn(
+                application,
+                session_id=session_id,
+                turn_id=turn_id,
+                user_content=request.message,
+                assistant_content=content,
+            )
+            return ChatResult(
+                session_id=session_id,
+                turn_id=turn_id,
+                content=content,
+                provider=provider,
+                model=model,
+                tool_calls=len(prepared_run.trace),
+                knowledge_mode=result_knowledge_mode,
+                refusal_reason=decision.reason_code,
+            )
+
+    if requests_knowledge_only(request.message):
+        content = "未选择可用的知识库，已按你的要求跳过联网搜索。\n原因：missing_jd"
+        _append_chat_turn(
+            application,
+            session_id=session_id,
+            turn_id=turn_id,
+            user_content=request.message,
+            assistant_content=content,
+        )
+        return ChatResult(
+            session_id=session_id,
+            turn_id=turn_id,
+            content=content,
+            provider=provider,
+            model=model,
+            tool_calls=len(prepared_run.trace),
+            knowledge_mode=result_knowledge_mode,
+            refusal_reason="missing_jd",
+        )
+
+    search_run = await application.search_prepared_job_research(
+        prepared=prepared_run,
+        session_id=session_id,
+        turn_id=turn_id,
+        limit=get_settings().job_research.max_candidate_urls,
+        knowledge_base_id=request.knowledge_base_id,
+    )
+    tool_calls = len(search_run.trace)
+    if search_run.status != "waiting_for_url_selection":
+        content = _public_job_search_failure_answer(search_run)
+        _append_chat_turn(
+            application,
+            session_id=session_id,
+            turn_id=turn_id,
+            user_content=request.message,
+            assistant_content=content,
+        )
+        return ChatResult(
+            session_id=session_id,
+            turn_id=turn_id,
+            content=content,
+            provider=provider,
+            model=model,
+            tool_calls=tool_calls,
+            knowledge_mode=result_knowledge_mode,
+        )
+    search_result = ToolResult(
+        ok=True,
+        data={"results": search_run.data.get("results", [])},
+        display="岗位搜索完成。",
+    )
+    jd_result: ToolResult | None = None
+    candidates = _public_job_candidates(search_result)
+    if candidates:
+        analysis_run = await application.analyze_job_research_candidates(
+            query=request.message,
+            candidates=candidates,
+            session_id=session_id,
+            turn_id=turn_id,
+            target_count=get_settings().job_research.target_valid_jds,
+            knowledge_base_id=request.knowledge_base_id,
+            resume_evidence=search_run.data.get("resume_evidence", []),
+        )
+        tool_calls += len(analysis_run.trace)
+        verified_jobs = analysis_run.data.get("jobs", [])
+        partial_jobs = analysis_run.data.get("partial_jobs", [])
+        job_results = analysis_run.data.get("job_results", [])
+        analyses_by_url = {
+            item["job"].get("source_url"): item.get("analysis", [])
+            for item in job_results
+            if isinstance(item, dict)
+            and isinstance(item.get("job"), dict)
+            and isinstance(item["job"].get("source_url"), str)
+        }
+        jobs = [
+            {
+                "ok": True,
+                **job,
+                "analysis": analyses_by_url.get(job.get("source_url"), []),
+            }
+            for job in verified_jobs
+            if isinstance(job, dict)
+        ]
+        attempts = analysis_run.data.get("candidate_attempts", [])
+        success_count = len(jobs)
+        partial_count = len(partial_jobs)
+        dependency_unavailable = analysis_run.status == "dependency_unavailable"
+        if dependency_unavailable:
+            missing = ", ".join(analysis_run.missing_dependencies)
+            display = "Playwright MCP 当前不可用，尚未发起任何 JD 页面读取。"
+            if missing:
+                display += f" 缺失能力：{missing}"
+        else:
+            display = (
+                f"通过 Playwright MCP 读取了 {success_count}/{len(candidates)} 个公开 JD。"
+            )
+        jd_result = ToolResult(
+            ok=(success_count + partial_count) > 0,
+            data={
+                "jobs": jobs,
+                "partial_jobs": [
+                    item for item in partial_jobs if isinstance(item, dict)
+                ],
+                "candidate_attempts": attempts,
+                "requested_urls": [item.url for item in candidates],
+                "success_count": success_count,
+                "failure_count": sum(
+                    1
+                    for item in attempts
+                    if isinstance(item, dict) and item.get("status") not in {
+                        "succeeded", "fallback_succeeded", "partial_verified"
+                    }
+                ),
+            },
+            display=display,
+            error_code=(
+                None
+                if (success_count + partial_count) > 0
+                else analysis_run.error_code or "job_description_unverified"
+            ),
+        )
+
+    content = _public_job_search_answer(
+        search_result=search_result,
+        jd_result=jd_result,
+    )
+    _append_chat_turn(
+        application,
+        session_id=session_id,
+        turn_id=turn_id,
+        user_content=request.message,
+        assistant_content=content,
+    )
+    return ChatResult(
+        session_id=session_id,
+        turn_id=turn_id,
+        content=content,
+        provider=provider,
+        model=model,
+        tool_calls=tool_calls,
+        knowledge_mode=result_knowledge_mode,
+    )
+
+
+async def _classify_chat_request(request: ChatRequest, application):
+    if (
+        request.knowledge_mode == "required"
+        and request.knowledge_base_id is None
+    ):
+        raise KnowledgeError("knowledge_base_not_found")
+    return await application.route_knowledge_request(
+        content=request.message,
+        provider_name=request.provider,
+        model=request.model,
+    )
+
+
+async def _dispatch_classified_chat(
+    request: ChatRequest,
+    *,
+    application,
+    route,
+) -> ChatResult:
+    if route.route is KnowledgeRequestRoute.CONVERSATION:
+        return await application.chat(
+            content=request.message,
+            session_id=request.session_id,
+            provider_name=request.provider,
+            model=request.model,
+            allow_tools=False,
+        )
+
+    if route.route is KnowledgeRequestRoute.JOB_RESEARCH:
+        knowledge = (
+            create_knowledge_service()
+            if request.knowledge_base_id is not None
+            and request.knowledge_mode != "off"
+            else None
+        )
+        return await _chat_with_public_job_search_fallback(
+            request,
+            application=application,
+            knowledge=knowledge,
+        )
+
+    use_knowledge = request.knowledge_mode == "required" or (
+        request.knowledge_mode == "auto"
+        and request.knowledge_base_id is not None
+    )
+    if use_knowledge:
+        knowledge = create_knowledge_service()
+        rag = await knowledge.answer(
+            request.knowledge_base_id,
+            request.message,
+            provider_name=request.provider,
+            model=request.model,
+        )
+        return _rag_chat_result(request, rag, application)
+
+    return await application.chat(
+        content=request.message,
+        session_id=request.session_id,
+        provider_name=request.provider,
+        model=request.model,
+        required_tool_name=request.tool,
+        tool_governance_enabled=request.tool_governance_enabled,
+    )
+
+
+def _saved_job_matches_chat_result(
+    request: ChatRequest,
+    *,
+    application,
+    session_id: UUID,
+    turn_id: UUID,
+    matches,
+    tool_calls: int,
+) -> ChatResult:
+    lines = [
+        f"知识库中找到 {len(matches)} 个符合条件且仍可使用的 JD。",
+        "以下内容直接来自已保存的 JD 证据，未补写岗位信息：",
+    ]
+    citations: list[dict[str, object]] = []
+    for index, match in enumerate(matches, start=1):
+        preview = match.preview.strip()
+        title = next(
+            (line.strip().lstrip("# ") for line in preview.splitlines() if line.strip()),
+            match.filename,
+        )
+        excerpt = preview[:2400]
+        if len(preview) > len(excerpt):
+            excerpt += "\n[JD 内容已截断，可在知识库中查看完整文档]"
+        lines.append(
+            f"\n{index}. {title}\n{excerpt}\n来源：{match.source_ref}"
+        )
+        quote = preview[:240] or title
+        citations.append(
+            {
+                "citation_id": f"saved-job-{index}",
+                "document_id": str(match.document_id),
+                "filename": match.filename,
+                "document_version": match.version,
+                "chunk_id": str(match.chunk_id),
+                "page": match.page,
+                "section": (
+                    " / ".join(match.section_path)
+                    if match.section_path
+                    else None
+                ),
+                "start_line": match.start_line,
+                "end_line": match.end_line,
+                "quote": quote,
+            }
+        )
+    content = "\n".join(lines)
+    _append_chat_turn(
+        application,
+        session_id=session_id,
+        turn_id=turn_id,
+        user_content=request.message,
+        assistant_content=content,
+    )
+    return ChatResult(
+        session_id=session_id,
+        turn_id=turn_id,
+        content=content,
+        provider=request.provider or get_settings().model.default_provider,
+        model=request.model or get_settings().model.default_model,
+        tool_calls=tool_calls,
+        knowledge_mode="required",
+        citations=citations,
+    )
+
+
+def _rag_chat_result(
+    request: ChatRequest,
+    rag,
+    application,
+    *,
+    session_id: UUID | None = None,
+    turn_id: UUID | None = None,
+    matched_jobs=(),
+) -> ChatResult:
+    session_id = session_id or (
+        application.store.ensure_session(request.session_id)
+        if hasattr(application, "store")
+        else request.session_id or uuid4()
+    )
+    turn_id = turn_id or uuid4()
+    content = rag.answer
+    if matched_jobs:
+        matched_lines = [
+            f"知识库中匹配到 {len(matched_jobs)} 个符合条件且仍可使用的 JD："
+        ]
+        for index, match in enumerate(matched_jobs, start=1):
+            preview = match.preview.strip()
+            title = next(
+                (
+                    line.strip().lstrip("# ")
+                    for line in preview.splitlines()
+                    if line.strip()
+                ),
+                match.filename,
+            )
+            matched_lines.append(
+                f"{index}. {title}\n   来源：{match.source_ref}"
+            )
+        content = "\n".join([*matched_lines, "", rag.answer])
+    if hasattr(application, "store"):
+        application.store.add_message(
+            session_id,
+            turn_id,
+            Message(role="user", content=request.message),
+        )
+        application.store.add_message(
+            session_id,
+            turn_id,
+            Message(
+                role="assistant",
+                content=content,
+                metadata={
+                    "knowledge_mode": "required",
+                    "citations": [
+                        item.model_dump(mode="json")
+                        for item in rag.citations
+                    ],
+                },
+            ),
+        )
+    return ChatResult(
+        session_id=session_id,
+        turn_id=turn_id,
+        content=content,
+        provider=request.provider or get_settings().model.default_provider,
+        model=request.model or get_settings().model.default_model,
+        knowledge_mode="required",
+        claims=[item.model_dump(mode="json") for item in rag.claims],
+        citations=[item.model_dump(mode="json") for item in rag.citations],
+        refusal_reason=rag.refusal_reason,
+    )
+
+
+def _public_job_search_failure_answer(search_run) -> str:
+    if search_run.status == "search_profile_required":
+        if search_run.error_code in {
+            "invalid_json",
+            "schema_validation_failed",
+        }:
+            return (
+                "模型未能生成符合结构的岗位搜索条件，自动重试后仍未通过校验。"
+                "这不代表简历缺失；可以重试，或补充目标岗位方向后继续。"
+                f"\n错误码：{search_run.error_code}"
+            )
+        return (
+            "当前简历证据不足以生成安全的公开岗位搜索条件。"
+            "请补充目标岗位方向或技术关键词后重试。"
+            f"\n错误码：{search_run.error_code or 'search_profile_required'}"
+        )
+    search = search_run.data.get("search") if isinstance(search_run.data, dict) else None
+    if isinstance(search, dict) and isinstance(search.get("display"), str):
+        display = search["display"]
+    else:
+        display = "公开岗位搜索失败，请稍后重试或调整搜索条件。"
+    return f"{display}\n错误码：{search_run.error_code or 'search_failed'}"
+
+
+def _public_job_urls(result: ToolResult) -> list[str]:
+    if not result.ok or not isinstance(result.data, dict):
+        return []
+    rows = result.data.get("results")
+    if not isinstance(rows, list):
+        return []
+    urls: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        url = row.get("url")
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            urls.append(url)
+        if len(urls) >= 3:
+            break
+    return urls
+
+
+def _public_job_candidates(result: ToolResult) -> tuple[JobCandidate, ...]:
+    if not result.ok or not isinstance(result.data, dict):
+        return ()
+    rows = result.data.get("results")
+    if not isinstance(rows, list):
+        return ()
+    normalized = []
+    for position, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        normalized.append(
+            {
+                **row,
+                "url_kind": row.get("url_kind") or "organic",
+                "provider_position": row.get("provider_position", position),
+            }
+        )
+    return rank_job_candidates(
+        normalized,
+        limit=get_settings().job_research.max_candidate_urls,
+    )
+
+
+def _public_job_search_answer(
+    *,
+    search_result: ToolResult,
+    jd_result: ToolResult | None,
+) -> str:
+    lines = ["已查询公开岗位。"]
+    if not search_result.ok:
+        lines.append(search_result.display or "岗位搜索失败。")
+        if search_result.error_code:
+            lines.append(f"错误码：{search_result.error_code}")
+        return "\n".join(lines)
+
+    rows = []
+    if isinstance(search_result.data, dict):
+        raw_rows = search_result.data.get("results")
+        if isinstance(raw_rows, list):
+            rows = [row for row in raw_rows if isinstance(row, dict)]
+    if rows:
+        lines.append("搜索结果：")
+        for index, row in enumerate(rows[:3], start=1):
+            title = row.get("title") or row.get("job_title") or "未命名岗位"
+            company = row.get("company") or row.get("company_name") or "未知公司"
+            url = row.get("url") or row.get("source_url") or "无 URL"
+            lines.append(f"{index}. {title} · {company} · {url}")
+
+    if jd_result is None:
+        lines.append("搜索结果中没有可自动读取的公开 JD URL。")
+        return "\n".join(lines)
+    if not jd_result.ok:
+        data = jd_result.data if isinstance(jd_result.data, dict) else {}
+        partial_jobs = data.get("partial_jobs")
+        if isinstance(partial_jobs, list) and partial_jobs:
+            lines.append(
+                "\u4ec5\u8bfb\u53d6\u5230\u90e8\u5206\u9a8c\u8bc1\u7684\u5c97\u4f4d\u9875\u9762\uff0c"
+                "\u4e0d\u4f5c\u4e3a\u5b8c\u6574 JD \u63a8\u8350\uff1a"
+            )
+            for index, job in enumerate(partial_jobs[:3], start=1):
+                if not isinstance(job, dict):
+                    continue
+                title = job.get("title") or "Unverified job"
+                company = job.get("company") or "\u5f85\u786e\u8ba4"
+                location = job.get("location") or "\u5f85\u786e\u8ba4"
+                source_url = job.get("source_url") or ""
+                reasons = job.get("validation_reason_codes")
+                reason_text = (
+                    ", ".join(str(item) for item in reasons)
+                    if isinstance(reasons, list)
+                    else "incomplete_job_description"
+                )
+                lines.append(f"{index}. {title} \u00b7 {company} \u00b7 {location}")
+                lines.append(f"   \u5f85\u786e\u8ba4\uff1a{reason_text}")
+                lines.append(f"   \u6765\u6e90\uff1a{source_url}")
+        lines.append(jd_result.display or "自动读取 JD 失败。")
+        if jd_result.error_code:
+            lines.append(f"JD 错误码：{jd_result.error_code}")
+        return "\n".join(lines)
+
+    lines.append("已自动读取公开 JD 预览：")
+    data = jd_result.data
+    jobs = data.get("jobs") if isinstance(data, dict) else None
+    if isinstance(jobs, list):
+        for index, job in enumerate(jobs[:3], start=1):
+            if not isinstance(job, dict):
+                continue
+            title = job.get("title") or job.get("job_title") or "未命名 JD"
+            company = job.get("company") or "未知公司"
+            location = job.get("location") or "未知地点"
+            source_url = job.get("source_url") or job.get("final_url") or ""
+            lines.append(f"{index}. {title} · {company} · {location}")
+            responsibilities = job.get("responsibilities")
+            if isinstance(responsibilities, list) and responsibilities:
+                lines.append(
+                    "   岗位职责："
+                    + "；".join(str(item) for item in responsibilities[:3])
+                )
+            requirements = job.get("requirements")
+            if isinstance(requirements, list) and requirements:
+                lines.append(
+                    "   岗位要求："
+                    + "；".join(str(item) for item in requirements[:5])
+                )
+            analysis = job.get("analysis")
+            if isinstance(analysis, list) and analysis:
+                matched = sum(
+                    1
+                    for item in analysis
+                    if isinstance(item, dict) and item.get("status") == "matched"
+                )
+                gaps = sum(
+                    1
+                    for item in analysis
+                    if isinstance(item, dict) and item.get("status") == "gap"
+                )
+                lines.append(f"   简历匹配：{matched} 项；证据缺口：{gaps} 项")
+            lines.append(f"   来源：{source_url}")
+    else:
+        lines.append(jd_result.display or "JD 已读取。")
+    lines.append("请选择一个岗位后，我再继续做最终匹配分析或确认入库。")
+    partial_jobs = data.get("partial_jobs") if isinstance(data, dict) else None
+    if isinstance(partial_jobs, list) and partial_jobs:
+        lines.append(f"部分岗位证据（{len(partial_jobs)} 个，非完整 JD）：")
+        for job in partial_jobs[:3]:
+            if isinstance(job, dict):
+                lines.append(
+                    f"- {job.get('title') or '未命名岗位'} · "
+                    f"{job.get('retrieval_method') or 'search_snippet'} · "
+                    f"{job.get('source_url') or ''}"
+                )
+    attempts = data.get("candidate_attempts") if isinstance(data, dict) else None
+    failed = [
+        item for item in attempts or []
+        if isinstance(item, dict)
+        and item.get("status") not in {
+            "succeeded", "fallback_succeeded", "partial_verified"
+        }
+    ]
+    if failed:
+        lines.append(f"抓取失败链接（{len(failed)} 个）：")
+        for item in failed:
+            code = (
+                item.get("final_error_code")
+                or item.get("error_code")
+                or "mcp_unknown_error"
+            )
+            lines.append(f"- {item.get('source_url') or ''} · {code}")
+    return "\n".join(lines)
 
 
 class ProviderInfo(BaseModel):
@@ -284,11 +1056,28 @@ async def _api_lifespan(_api: FastAPI):
     manager = None
     try:
         manager = create_mcp_manager()
-        await manager.start()
-        registry = create_application().runtime.tools
+        statuses = await manager.start()
+        for server_id, status in statuses.items():
+            if not status.enabled or status.connection_state != "ready":
+                continue
+            try:
+                await manager.discover(server_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                get_logger(
+                    error_type=type(error).__name__,
+                    server_id=server_id,
+                ).error("mcp.discovery_failed")
+        application = create_application()
+        registry = application.runtime.tools
         refresh = getattr(registry, "refresh_from_manager", None)
         if callable(refresh):
             refresh(manager)
+        skill_registry = getattr(application.context, "skill_registry", None)
+        reload_skills = getattr(skill_registry, "reload", None)
+        if callable(reload_skills):
+            reload_skills()
     except asyncio.CancelledError:
         raise
     except Exception as error:
@@ -322,11 +1111,23 @@ def create_api() -> FastAPI:
         allow_headers=["Content-Type", "If-Match", "Idempotency-Key", "Authorization"],
     )
     api.include_router(create_capabilities_router())
+    api.include_router(create_trust_router())
     active_chat_tasks: set[asyncio.Task] = set()
 
     @api.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok", "name": get_settings().app.name}
+    async def health() -> dict[str, object]:
+        application = create_application()
+        active_revision = application.runtime_revision
+        desired_revision = active_revision
+        return {
+            "status": "ok",
+            "name": get_settings().app.name,
+            "runtime_revision": active_revision.id,
+            "desired_runtime_revision": desired_revision.id,
+            "restart_required": active_revision.requires_restart(
+                desired_revision
+            ),
+        }
 
     @api.get("/v1/providers", response_model=ProvidersResponse)
     async def providers() -> ProvidersResponse:
@@ -861,66 +1662,12 @@ def create_api() -> FastAPI:
     @api.post("/v1/chat", response_model=ChatResult)
     async def chat(request: ChatRequest) -> ChatResult:
         try:
-            if request.knowledge_mode == "required":
-                if request.knowledge_base_id is None:
-                    raise KnowledgeError("knowledge_base_not_found")
-                rag = await create_knowledge_service().answer(
-                    request.knowledge_base_id,
-                    request.message,
-                    provider_name=request.provider,
-                    model=request.model,
-                )
-                application = create_application()
-                session_id = (
-                    application.store.ensure_session(request.session_id)
-                    if hasattr(application, "store")
-                    else request.session_id or uuid4()
-                )
-                turn_id = uuid4()
-                if hasattr(application, "store"):
-                    application.store.add_message(
-                        session_id,
-                        turn_id,
-                        Message(role="user", content=request.message),
-                    )
-                    application.store.add_message(
-                        session_id,
-                        turn_id,
-                        Message(
-                            role="assistant",
-                            content=rag.answer,
-                            metadata={
-                                "knowledge_mode": "required",
-                                "citations": [
-                                    item.model_dump(mode="json")
-                                    for item in rag.citations
-                                ],
-                            },
-                        ),
-                    )
-                return ChatResult(
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    content=rag.answer,
-                    provider=request.provider
-                    or get_settings().model.default_provider,
-                    model=request.model or get_settings().model.default_model,
-                    knowledge_mode="required",
-                    claims=[
-                        item.model_dump(mode="json") for item in rag.claims
-                    ],
-                    citations=[
-                        item.model_dump(mode="json") for item in rag.citations
-                    ],
-                    refusal_reason=rag.refusal_reason,
-                )
-            return await create_application().chat(
-                content=request.message,
-                session_id=request.session_id,
-                provider_name=request.provider,
-                model=request.model,
-                required_tool_name=request.tool,
-                tool_governance_enabled=request.tool_governance_enabled,
+            application = create_application()
+            route = await _classify_chat_request(request, application)
+            return await _dispatch_classified_chat(
+                request,
+                application=application,
+                route=route,
             )
         except KnowledgeError as exc:
             raise _knowledge_http_error(exc) from exc
@@ -932,10 +1679,33 @@ def create_api() -> FastAPI:
 
     @api.post("/v1/chat/stream")
     async def chat_stream(request: ChatRequest) -> StreamingResponse:
-        if request.knowledge_mode == "required":
+        try:
+            application = create_application()
+            route = await _classify_chat_request(request, application)
+        except KnowledgeError as exc:
+            raise _knowledge_http_error(exc) from exc
+        except AgentError as exc:
+            raise HTTPException(
+                status_code=exc.http_status,
+                detail=exc.to_public_dict(),
+            ) from exc
+
+        use_buffered_route = (
+            route.route is not KnowledgeRequestRoute.KNOWLEDGE_QUERY
+            or request.knowledge_mode == "required"
+            or (
+                request.knowledge_mode == "auto"
+                and request.knowledge_base_id is not None
+            )
+        )
+        if use_buffered_route:
             async def knowledge_events():
                 try:
-                    result = await chat(request)
+                    result = await _dispatch_classified_chat(
+                        request,
+                        application=application,
+                        route=route,
+                    )
                     yield (
                         "data: "
                         + json.dumps(
@@ -967,6 +1737,27 @@ def create_api() -> FastAPI:
                         )
                         + "\n\n"
                     )
+                except KnowledgeError as exc:
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "error",
+                                "error": _knowledge_http_error(exc).detail,
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+                except AgentError as exc:
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {"type": "error", "error": exc.to_public_dict()},
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
             return StreamingResponse(
                 knowledge_events(), media_type="text/event-stream"
             )
@@ -982,7 +1773,7 @@ def create_api() -> FastAPI:
 
             async def run_chat() -> None:
                 try:
-                    result = await create_application().chat(
+                    result = await application.chat(
                         content=request.message,
                         session_id=request.session_id,
                         provider_name=request.provider,

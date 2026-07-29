@@ -11,14 +11,22 @@ from rich.table import Table
 from starter_agent.bootstrap import create_application, get_settings
 from starter_agent.domain.errors import AgentError
 from starter_agent.providers.registry import ProviderRegistry
+from starter_agent.trust.baseline import run_job_research_fixture_baseline
+from starter_agent.trust.smoke import (
+    DEFAULT_PUBLIC_JD_URL,
+    run_job_research_real_smoke,
+)
+from starter_agent.trust.store import TrustStore
 from starter_agent.tools.registry import ToolRegistry
 
 
 app = typer.Typer(help="Starter Agent CLI", no_args_is_help=True)
 model_app = typer.Typer(help="Inspect and test model providers.")
 tools_app = typer.Typer(help="Inspect tools.")
+trust_app = typer.Typer(help="Run Trust Center evals and reports.")
 app.add_typer(model_app, name="model")
 app.add_typer(tools_app, name="tools")
+app.add_typer(trust_app, name="trust")
 console = Console()
 
 
@@ -146,6 +154,73 @@ def tools_list() -> None:
     console.print(table)
 
 
+@trust_app.command("fixture-baseline")
+def trust_fixture_baseline(
+    run_id: str = typer.Option(..., "--run-id", help="Stable eval run id."),
+    project_root: Path | None = typer.Option(None, "--project-root"),
+    database_url: str | None = typer.Option(None, "--database-url"),
+    report_dir: Path | None = typer.Option(None, "--report-dir"),
+    known_failure_case_id: str | None = typer.Option(
+        None,
+        "--known-failure-case-id",
+        help="Optional deterministic hard-gate failure used for regression drills.",
+    ),
+) -> None:
+    """Run fixed job-research fixtures; never performs live web/model calls."""
+
+    settings = get_settings()
+    root = (project_root or settings.project_root).resolve()
+    store = TrustStore(database_url or settings.app.database_url, root)
+    report = run_job_research_fixture_baseline(
+        store=store,
+        project_root=root,
+        run_id=run_id,
+        report_dir=report_dir or (root / "reports" / "trust"),
+        known_failure_case_id=known_failure_case_id,
+    )
+    console.print(
+        "[green]Trust fixture baseline recorded[/green] "
+        f"run={report['run_id']} gate={report['gate']['status']} "
+        f"cases={report['case_count']} report={report['report_path']}"
+    )
+
+
+@trust_app.command("real-smoke")
+def trust_real_smoke(
+    run_id: str = typer.Option(..., "--run-id", help="Stable smoke run id."),
+    source_url: str = typer.Option(DEFAULT_PUBLIC_JD_URL, "--source-url"),
+    provider: str | None = typer.Option(None, "--provider", "-p"),
+    model: str | None = typer.Option(None, "--model", "-m"),
+    project_root: Path | None = typer.Option(None, "--project-root"),
+    database_url: str | None = typer.Option(None, "--database-url"),
+    report_dir: Path | None = typer.Option(None, "--report-dir"),
+) -> None:
+    """Run live model + Playwright MCP smoke; never mixes into fixture baseline."""
+
+    settings = get_settings()
+    root = (project_root or settings.project_root).resolve()
+    store = TrustStore(database_url or settings.app.database_url, root)
+
+    async def run() -> None:
+        report = await run_job_research_real_smoke(
+            settings=settings,
+            trust_store=store,
+            project_root=root,
+            run_id=run_id,
+            report_dir=report_dir or (root / "reports" / "trust"),
+            source_url=source_url,
+            provider_name=provider,
+            model_name=model,
+        )
+        console.print(
+            "[green]Trust real smoke recorded[/green] "
+            f"run={report['run_id']} status={report['status']} "
+            f"source={report['source_url']} report={report['report_path']}"
+        )
+
+    asyncio.run(run())
+
+
 @app.command()
 def serve(
     host: str = typer.Option("127.0.0.1"),
@@ -161,4 +236,3 @@ def serve(
         port=port,
         reload=reload,
     )
-

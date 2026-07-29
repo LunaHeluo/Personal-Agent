@@ -63,6 +63,16 @@ def _is_targetless_browser_read(
     return snapshot or bounded_click
 
 
+def _jsonschema_instance(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _jsonschema_instance(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_jsonschema_instance(item) for item in value]
+    if isinstance(value, list):
+        return [_jsonschema_instance(item) for item in value]
+    return value
+
+
 class ToolCallRequest(CapabilityModel):
     principal: str = Field(default="local-user", min_length=1, max_length=200)
     caller: str = Field(min_length=1, max_length=200)
@@ -175,7 +185,7 @@ class PreToolCallGate:
         tool = denial
         try:
             schema = json.loads(json.dumps(tool.input_schema))
-            validate(instance=dict(request.arguments), schema=schema)
+            validate(instance=_jsonschema_instance(request.arguments), schema=schema)
         except (ValidationError, SchemaError):
             return self._decision("deny", "invalid_arguments", request)
 

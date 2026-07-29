@@ -335,7 +335,7 @@ async def discover_and_activate(
         reserved_model_names=reserved_model_names,
         server_profile=server_profile,
     )
-    return store.activate_snapshot(server_id, snapshot.id)
+    return store.activate_refreshed_snapshot(server_id, snapshot.id)
 
 
 async def discover_candidate(

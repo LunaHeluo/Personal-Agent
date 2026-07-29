@@ -157,6 +157,7 @@ class RetrievalMatch(BaseModel):
     matched_terms: list[str] = Field(default_factory=list)
     rank: int
     mapping_version: str = "builtin-v1"
+    created_at: datetime | None = None
 
 
 class Evidence(BaseModel):

@@ -1,4 +1,7 @@
 from functools import lru_cache
+import hashlib
+import json
+import os
 
 from starter_agent.agent.context import ContextBuilder
 from starter_agent.agent.runtime import AgentRuntime
@@ -19,13 +22,17 @@ from starter_agent.mcp.manager import McpManager
 from starter_agent.mcp.network_guard import PlaywrightNetworkGuard
 from starter_agent.observability.logging import configure_logging
 from starter_agent.providers.registry import ProviderRegistry
+from starter_agent.runtime_revision import RuntimeRevision
 from starter_agent.settings import AgentSettings, load_settings
 from starter_agent.skills.registry import SkillRegistry
 from starter_agent.skills.job_research import JobResearchOrchestrator
+from starter_agent.job_research.fallback import JobPageFallback
 from starter_agent.skills.selector import SkillSelector
 from starter_agent.tools.builtin.knowledge import RetrieveResumeEvidenceTool
 from starter_agent.tools.policy import ToolPolicy
 from starter_agent.tools.registry import ToolRegistry
+from starter_agent.tools.adapters.job_description_extractor import JobDescriptionExtractor
+from starter_agent.tools.adapters.safe_web_fetcher import SafeWebFetcher
 
 
 @lru_cache
@@ -111,6 +118,32 @@ def create_application() -> ApplicationService:
         ),
     )
     skills.reload()
+    prompt_path = settings.project_root / "config/prompts/system.md"
+    runtime_revision = RuntimeRevision.build(
+        code_version=os.environ.get(
+            "STARTER_AGENT_CODE_VERSION",
+            "workspace",
+        ),
+        skill_revision=skills.snapshot().revision,
+        tool_revision=f"context-{tools.context_revision}",
+        prompt_hash=hashlib.sha256(prompt_path.read_bytes()).hexdigest(),
+        config_hash=hashlib.sha256(
+            json.dumps(
+                {
+                    "default_provider": settings.model.default_provider,
+                    "default_model": settings.model.default_model,
+                    "enabled_tools": sorted(settings.tools.enabled),
+                    "allowed_risk_levels": sorted(
+                        settings.tools.allow_risk_levels
+                    ),
+                    "mcp_config_path": str(settings.mcp.config_path),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+    )
+    runtime.runtime_revision = runtime_revision
     context = ContextBuilder(
         settings.resolve_path(settings.app.identity_path),
         settings.project_root / "config/prompts/system.md",
@@ -124,6 +157,7 @@ def create_application() -> ApplicationService:
         runtime=runtime,
         context=context,
     )
+    application.runtime_revision = runtime_revision
     application.configure_job_description_ingestion(knowledge)
     application.configure_job_research(
         JobResearchOrchestrator(
@@ -131,6 +165,10 @@ def create_application() -> ApplicationService:
             executor,
             ingestion_available=lambda: (
                 application.job_description_ingestion is not None
+            ),
+            page_fallback=JobPageFallback(
+                SafeWebFetcher.from_config(settings.tools.public_web),
+                JobDescriptionExtractor(),
             ),
         )
     )

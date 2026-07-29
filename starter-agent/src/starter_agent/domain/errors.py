@@ -168,6 +168,12 @@ class ToolNotAvailableError(ToolPolicyError):
     default_suggestion = "请从页面显示的工具列表中重新选择"
 
 
+class ToolsDisabledForTurnError(ToolPolicyError):
+    code = "tools_disabled_for_turn"
+    default_message = "当前对话轮次不允许调用工具"
+    default_suggestion = "请直接回答，或在需要外部能力时发起新的明确请求"
+
+
 class RequiredToolNotCalledError(ToolPolicyError):
     code = "required_tool_not_called"
     default_message = "当前模型未能按要求调用指定工具"

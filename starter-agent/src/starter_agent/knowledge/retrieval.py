@@ -243,6 +243,7 @@ class KnowledgeRetriever:
             matched_terms=matched_terms,
             rank=0,
             mapping_version=query.mapping_version,
+            created_at=chunk.created_at,
         )
 
     @staticmethod

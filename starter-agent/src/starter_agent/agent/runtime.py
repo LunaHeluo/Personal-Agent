@@ -14,6 +14,7 @@ from starter_agent.domain.errors import (
     RuntimeBudgetExceeded,
     RuntimeContinuationRequired,
     ToolNotAvailableError,
+    ToolsDisabledForTurnError,
     ToolPolicyError,
 )
 from starter_agent.domain.models import Message, ModelResponse
@@ -26,6 +27,7 @@ from starter_agent.agent.tool_result_guard import (
 )
 from starter_agent.observability.logging import get_logger
 from starter_agent.providers.base import Provider
+from starter_agent.runtime_revision import RuntimeRevision
 from starter_agent.settings import ContextConfig, RuntimeConfig
 from starter_agent.tools.base import ToolContext
 from starter_agent.tools.policy import ToolPolicy
@@ -87,6 +89,7 @@ class AgentRuntime:
         turn_coordinator: TurnCoordinator | None = None,
         knowledge_scope=None,
         knowledge_base_id: UUID | None = None,
+        runtime_revision: RuntimeRevision | None = None,
     ):
         self.tools = tools
         self.policy = policy
@@ -114,10 +117,10 @@ class AgentRuntime:
         )
         self.knowledge_scope = knowledge_scope
         self.knowledge_base_id = knowledge_base_id
+        self.runtime_revision = runtime_revision
         safe_auto_tools = {
             "get_current_time",
             "search_jobs_serpapi",
-            "search_job_description",
             "retrieve_resume_evidence",
         }
         for builtin in _builtin_tools(tools):
@@ -314,6 +317,7 @@ class AgentRuntime:
         on_tool_event: Callable[[dict], Awaitable[None]] | None = None,
         on_tool_artifact: Callable[[dict], Awaitable[None]] | None = None,
         tool_governance_enabled: bool = True,
+        allow_tools: bool = True,
     ) -> tuple[ModelResponse, list[Message], int]:
         # Retain the compatibility parameter while making governance mandatory.
         tool_governance_enabled = True
@@ -326,6 +330,8 @@ class AgentRuntime:
         provider_usages: list[dict] = []
         context_revision = 0
         logger = get_logger(session_id=str(session_id), turn_id=str(turn_id))
+        if required_tool_name and not allow_tools:
+            raise ToolsDisabledForTurnError()
         if required_tool_name:
             required_tool = self.tools.get(required_tool_name)
             if required_tool is None:
@@ -337,7 +343,12 @@ class AgentRuntime:
                 raise RuntimeBudgetExceeded("Maximum run time exceeded")
             model_calls += 1
             snapshot_reader = getattr(self.tools, "model_snapshot", None)
-            if callable(snapshot_reader):
+            if not allow_tools:
+                request_tools = []
+                context_revision = (
+                    getattr(self.tools, "context_revision", 0) or 0
+                )
+            elif callable(snapshot_reader):
                 snapshot = snapshot_reader()
                 request_tools = snapshot.provider_tools()
                 context_revision = snapshot.context_revision
@@ -369,6 +380,11 @@ class AgentRuntime:
                     "context_revision": context_revision,
                     "provider_tools_hash": canonical_json_sha256(request_tools),
                     "callable_tools": callable_tools,
+                    **(
+                        {"runtime_revision": self.runtime_revision.id}
+                        if self.runtime_revision is not None
+                        else {}
+                    ),
                 },
             )
             logger.info(
@@ -409,6 +425,8 @@ class AgentRuntime:
                 tool_call_count=len(response.tool_calls),
                 usage=response.usage,
             )
+            if not allow_tools and response.tool_calls:
+                raise ToolsDisabledForTurnError()
             if required_tool_name and model_calls == 1:
                 if not any(
                     call.name == required_tool_name for call in response.tool_calls

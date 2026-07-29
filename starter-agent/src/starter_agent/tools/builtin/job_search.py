@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -10,7 +11,11 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import httpx
 
 from starter_agent.domain.models import ToolResult
+from starter_agent.job_research.candidates import rank_job_candidates
 from starter_agent.tools.base import Tool, ToolContext
+from starter_agent.tools.adapters.serpapi_location import (
+    SerpApiLocationResolver,
+)
 
 
 KeyResolver = Callable[[], tuple[str, str | None, str | None]]
@@ -21,6 +26,9 @@ SENSITIVE_QUERY_KEYS = {
     "token",
     "access_token",
 }
+DETAIL_DISCOVERY_TERMS = (
+    '"responsibilities" "requirements" current opening apply'
+)
 
 
 class SerpApiRequestError(Exception):
@@ -33,6 +41,7 @@ class SerpApiRequestError(Exception):
 def sanitize_url(value: str) -> str:
     if not value:
         return ""
+    value = value.replace("\\u003d", "=").replace("\\u0026", "&")
     split = urlsplit(value)
     if split.scheme not in {"http", "https"}:
         return ""
@@ -87,12 +96,14 @@ class SearchJobsSerpApiTool(Tool):
         timeout: float = 15,
         max_retries: int = 1,
         retry_backoff_seconds: float = 0.5,
+        location_resolver: Any | None = None,
     ) -> None:
         self.key_resolver = key_resolver or self._fallback_key_resolver
         self.client = client
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_backoff_seconds = retry_backoff_seconds
+        self.location_resolver = location_resolver or SerpApiLocationResolver()
 
     @staticmethod
     def _fallback_key_resolver() -> tuple[str, str | None, str]:
@@ -120,27 +131,53 @@ class SearchJobsSerpApiTool(Tool):
                 metadata=safe_metadata,
             )
 
+        requested_location = location
+        location_resolution_status = "not_requested"
+        if location:
+            resolution = await self.location_resolver.resolve(location)
+            location_resolution_status = resolution.status
+            if resolution.canonical_name:
+                location = resolution.canonical_name
+            else:
+                query = " ".join((query, requested_location))
+                location = ""
+
         try:
             if self.client is not None:
-                return await self._search(
+                result = await self._search_with_location_fallback(
                     self.client,
                     query,
                     location,
+                    requested_location,
                     limit,
                     profile,
                     api_key,
                     api_key_env,
                 )
-            async with httpx.AsyncClient() as client:
-                return await self._search(
-                    client,
-                    query,
-                    location,
-                    limit,
-                    profile,
-                    api_key,
-                    api_key_env,
-                )
+            else:
+                async with httpx.AsyncClient() as client:
+                    result = await self._search_with_location_fallback(
+                        client,
+                        query,
+                        location,
+                        requested_location,
+                        limit,
+                        profile,
+                        api_key,
+                        api_key_env,
+                    )
+            metadata = {
+                **result.metadata,
+                "location_resolution_status": location_resolution_status,
+            }
+            data = result.data
+            if isinstance(data, dict):
+                data = {
+                    **data,
+                    "location": requested_location,
+                    "resolved_location": location or None,
+                }
+            return result.model_copy(update={"data": data, "metadata": metadata})
         except SerpApiRequestError as exc:
             metadata = {
                 **safe_metadata,
@@ -176,7 +213,11 @@ class SearchJobsSerpApiTool(Tool):
                 metadata=metadata,
             )
         except httpx.HTTPStatusError as exc:
-            return self._http_error(exc.response.status_code, safe_metadata)
+            return self._http_error(
+                exc.response.status_code,
+                safe_metadata,
+                response=exc.response,
+            )
         except (ValueError, TypeError):
             return ToolResult(
                 ok=False,
@@ -213,11 +254,16 @@ class SearchJobsSerpApiTool(Tool):
         if provider_error and not jobs_no_results:
             return provider_error
         results = [] if jobs_no_results else self._parse_google_jobs(jobs, retrieved_at)
+        ranked = rank_job_candidates(results, limit=limit)
         search_engine = "google_jobs"
 
-        if not results:
+        if not ranked:
+            # Generic intent terms favor current detail/apply pages without
+            # binding discovery to a city, employer, board, or ATS domain.
             fallback_query = " ".join(
-                part for part in (query, location, "jobs") if part
+                part
+                for part in (query, location, DETAIL_DISCOVERY_TERMS)
+                if part
             )
             generic = await self._request(
                 client, "google", fallback_query, location, api_key
@@ -231,14 +277,49 @@ class SearchJobsSerpApiTool(Tool):
                 if google_no_results
                 else self._parse_google(generic, retrieved_at)
             )
+            ranked = rank_job_candidates(results, limit=limit)
             search_engine = "google"
+        elif len(ranked) < limit:
+            discovery_query = " ".join(
+                part
+                for part in (query, location, DETAIL_DISCOVERY_TERMS)
+                if part
+            )
+            generic = await self._request(
+                client,
+                "google",
+                discovery_query,
+                location,
+                api_key,
+            )
+            generic_error = self._payload_error(
+                generic,
+                profile,
+                api_key_env,
+            )
+            google_no_results = self._is_no_results_error(generic)
+            if generic_error is None or google_no_results:
+                organic = (
+                    []
+                    if google_no_results
+                    else self._parse_google(generic, retrieved_at)
+                )
+                ranked = rank_job_candidates(
+                    [
+                        *(item.model_dump() for item in ranked),
+                        *organic,
+                    ],
+                    limit=limit,
+                )
+                if organic:
+                    search_engine = "google_jobs+google"
 
         safe_metadata = {
             "api_key_profile": profile,
             "api_key_env": api_key_env,
             "retrieved_at": retrieved_at,
         }
-        results = results[:limit]
+        results = [item.model_dump() for item in ranked]
         if not results:
             return ToolResult(
                 ok=False,
@@ -262,6 +343,56 @@ class SearchJobsSerpApiTool(Tool):
                 "请打开来源确认岗位是否仍有效"
             ),
             metadata={**safe_metadata, "result_count": len(results)},
+        )
+
+    async def _search_with_location_fallback(
+        self,
+        client: Any,
+        query: str,
+        location: str,
+        requested_location: str,
+        limit: int,
+        profile: str,
+        api_key: str,
+        api_key_env: str,
+    ) -> ToolResult:
+        try:
+            return await self._search(
+                client,
+                query,
+                location,
+                limit,
+                profile,
+                api_key,
+                api_key_env,
+            )
+        except httpx.HTTPStatusError as exc:
+            code, _summary = self._safe_provider_error(exc.response)
+            if (
+                exc.response.status_code != 400
+                or not location
+                or code != "unsupported_location"
+            ):
+                raise
+        fallback_query = " ".join(
+            part for part in (query, requested_location) if part
+        )
+        result = await self._search(
+            client,
+            fallback_query,
+            "",
+            limit,
+            profile,
+            api_key,
+            api_key_env,
+        )
+        return result.model_copy(
+            update={
+                "metadata": {
+                    **result.metadata,
+                    "location_fallback_used": True,
+                }
+            }
         )
 
     async def _request(
@@ -387,7 +518,12 @@ class SearchJobsSerpApiTool(Tool):
         return "hasn't returned any results" in error or "no results" in error
 
     @staticmethod
-    def _http_error(status: int, metadata: dict[str, Any]) -> ToolResult:
+    def _http_error(
+        status: int,
+        metadata: dict[str, Any],
+        *,
+        response: httpx.Response | None = None,
+    ) -> ToolResult:
         if status in {401, 403}:
             return ToolResult(
                 ok=False,
@@ -412,11 +548,19 @@ class SearchJobsSerpApiTool(Tool):
                 metadata={**metadata, "failure_type": f"http_{status}"},
             )
         if status == 400:
+            provider_error_code, provider_error_summary = (
+                SearchJobsSerpApiTool._safe_provider_error(response)
+            )
             return ToolResult(
                 ok=False,
                 display="SerpAPI 无法处理当前搜索参数，请调整关键词或地点",
                 error_code="invalid_search_request",
-                metadata={**metadata, "failure_type": "http_400"},
+                metadata={
+                    **metadata,
+                    "failure_type": "http_400",
+                    "provider_error_code": provider_error_code,
+                    "provider_error_summary": provider_error_summary,
+                },
             )
         return ToolResult(
             ok=False,
@@ -427,6 +571,34 @@ class SearchJobsSerpApiTool(Tool):
         )
 
     @staticmethod
+    def _safe_provider_error(
+        response: httpx.Response | None,
+    ) -> tuple[str, str]:
+        summary = "SerpAPI rejected the search request"
+        if response is not None:
+            try:
+                payload = response.json()
+            except (ValueError, TypeError):
+                payload = None
+            if isinstance(payload, dict) and isinstance(payload.get("error"), str):
+                candidate = " ".join(payload["error"].split())[:200]
+                candidate = re.sub(
+                    r"(?i)(api[_ -]?key|token|authorization|cookie|password)"
+                    r"\s*[:=]\s*\S+",
+                    r"\1=[REDACTED]",
+                    candidate,
+                )
+                if candidate:
+                    summary = candidate
+        lowered = summary.casefold()
+        code = (
+            "unsupported_location"
+            if "unsupported" in lowered and "location" in lowered
+            else "invalid_request"
+        )
+        return code, summary
+
+    @staticmethod
     def _parse_google_jobs(
         payload: dict[str, Any], retrieved_at: str
     ) -> list[dict[str, Any]]:
@@ -434,26 +606,38 @@ class SearchJobsSerpApiTool(Tool):
         jobs = payload.get("jobs_results", [])
         if not isinstance(jobs, list):
             return results
-        for item in jobs:
+        for position, item in enumerate(jobs):
             if not isinstance(item, dict) or not item.get("title"):
                 continue
-            url = str(item.get("share_link") or "")
             apply_options = item.get("apply_options")
-            if not url and isinstance(apply_options, list) and apply_options:
-                first = apply_options[0]
-                if isinstance(first, dict):
-                    url = str(first.get("link") or "")
-            results.append(
-                {
-                    "title": str(item.get("title", "")),
-                    "company": str(item.get("company_name", "")),
-                    "location": str(item.get("location", "")),
-                    "url": sanitize_url(url),
-                    "snippet": str(item.get("description", ""))[:1000],
-                    "source": "serpapi_google_jobs",
-                    "retrieved_at": retrieved_at,
-                }
-            )
+            common = {
+                "title": str(item.get("title", "")),
+                "company": str(item.get("company_name", "")),
+                "location": str(item.get("location", "")),
+                "snippet": str(item.get("description", ""))[:1000],
+                "source": "serpapi_google_jobs",
+                "retrieved_at": retrieved_at,
+                "provider_position": position,
+            }
+            if isinstance(apply_options, list):
+                for option in apply_options:
+                    if not isinstance(option, dict):
+                        continue
+                    results.append(
+                        {
+                            **common,
+                            "url": sanitize_url(str(option.get("link") or "")),
+                            "url_kind": "structured_apply",
+                        }
+                    )
+            if item.get("share_link"):
+                results.append(
+                    {
+                        **common,
+                        "url": sanitize_url(str(item.get("share_link") or "")),
+                        "url_kind": "structured_share",
+                    }
+                )
         return results
 
     @staticmethod
@@ -464,7 +648,7 @@ class SearchJobsSerpApiTool(Tool):
         items = payload.get("organic_results", [])
         if not isinstance(items, list):
             return results
-        for item in items:
+        for position, item in enumerate(items):
             if (
                 not isinstance(item, dict)
                 or not item.get("title")
@@ -480,6 +664,8 @@ class SearchJobsSerpApiTool(Tool):
                     "snippet": str(item.get("snippet", ""))[:1000],
                     "source": "serpapi_google",
                     "retrieved_at": retrieved_at,
+                    "url_kind": "organic",
+                    "provider_position": position,
                 }
             )
         return results

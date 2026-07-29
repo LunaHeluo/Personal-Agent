@@ -23,7 +23,7 @@ from urllib.robotparser import RobotFileParser
 import httpx
 
 if TYPE_CHECKING:
-    from starter_agent.settings import JobDescriptionToolConfig
+    from starter_agent.settings import PublicWebSafetyConfig
 
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
@@ -328,7 +328,7 @@ class SafeWebFetcher:
     @classmethod
     def from_config(
         cls,
-        config: JobDescriptionToolConfig,
+        config: PublicWebSafetyConfig,
     ) -> SafeWebFetcher:
         # Environment proxy variables would bypass direct address pinning and
         # introduce an additional trust boundary, so production fetches ignore

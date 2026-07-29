@@ -191,6 +191,7 @@ def validate_serpapi_payload(
     data_classes: tuple[str, ...],
     *,
     max_bytes: int = 2_000,
+    sensitive_terms: tuple[str, ...] = (),
 ) -> None:
     allowed_fields = {"query", "keywords", "location", "limit"}
     allowed_classes = {"job_keywords", "location"}
@@ -199,7 +200,7 @@ def validate_serpapi_payload(
     if ("query" in arguments) == ("keywords" in arguments):
         raise ScopeDenied("serpapi_fields")
     query = arguments.get("query", arguments.get("keywords"))
-    if not _safe_job_search_phrase(query):
+    if not _safe_job_search_phrase(query, sensitive_terms=sensitive_terms):
         raise ScopeDenied("serpapi_fields")
     location = arguments.get("location")
     if location is not None and not _safe_search_phrase(location, 80, 10):
@@ -278,6 +279,11 @@ _JOB_INTENT = re.compile(
     r"招聘|人力|项目|顾问|研究员|架构师|测试|运维)",
     re.IGNORECASE,
 )
+_URL_CANDIDATE = re.compile(
+    r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+",
+    re.IGNORECASE,
+)
+_TRAILING_URL_PUNCTUATION = ".,;:!?)]}，。！？；：）】》"
 
 
 def _safe_search_phrase(value: Any, limit: int, words: int) -> bool:
@@ -292,7 +298,9 @@ def _safe_search_phrase(value: Any, limit: int, words: int) -> bool:
     )
 
 
-def _safe_job_search_phrase(value: Any) -> bool:
+def _safe_job_search_phrase(
+    value: Any, *, sensitive_terms: tuple[str, ...] = ()
+) -> bool:
     return bool(
         _safe_search_phrase(value, 160, 20)
         and len(value.split()) <= 6
@@ -303,7 +311,39 @@ def _safe_job_search_phrase(value: Any) -> bool:
         and not _PERSON_COMPANY_HISTORY.search(value)
         and not _RESUME_ACTION.search(value)
         and not _SENTENCE_CONNECTOR.search(value)
+        and not _contains_sensitive_term(value, sensitive_terms)
+        and not _has_identity_like_prefix(value)
     )
+
+
+def _contains_sensitive_term(value: str, sensitive_terms: tuple[str, ...]) -> bool:
+    query_tokens = {
+        match.group(0).casefold()
+        for match in re.finditer(r"[\w&.-]+", value, re.UNICODE)
+    }
+    return any(
+        term.casefold() in query_tokens
+        for term in sensitive_terms
+        if isinstance(term, str) and len(term.strip()) >= 2
+    )
+
+
+def _has_identity_like_prefix(value: str) -> bool:
+    """Reject only high-confidence person plus mixed-case organization prefixes."""
+
+    suspicious = 0
+    has_mixed_case_identifier = False
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9&.-]*", value):
+        if _JOB_INTENT.fullmatch(token):
+            break
+        if token.isupper() and len(token) <= 5:
+            continue
+        if token[0].isupper() and any(character.islower() for character in token):
+            suspicious += 1
+            has_mixed_case_identifier |= any(
+                character.isupper() for character in token[1:]
+            )
+    return suspicious >= 2 and has_mixed_case_identifier
 
 
 def validate_browser_payload(action: str, arguments: Mapping[str, Any]) -> None:
@@ -341,7 +381,12 @@ def validate_browser_payload(action: str, arguments: Mapping[str, Any]) -> None:
         return
     allowed = {
         "url",
+        "urls",
         "uri",
+        "uris",
+        "expected_title",
+        "expected_company",
+        "source_ref",
         "selector",
         "ref",
         "timeout",
@@ -378,9 +423,35 @@ def _is_provably_read_only_script(value: Any) -> bool:
 
 def reject_sensitive_url_query(url: str) -> None:
     try:
-        values = [item for pair in parse_qsl(urlsplit(url).query) for item in pair]
+        pairs = parse_qsl(urlsplit(url).query)
     except ValueError as exc:
         raise ScopeDenied("unsafe_url") from exc
+    for key, _value in pairs:
+        normalized_key = re.sub(r"[^a-z0-9]", "", key.casefold())
+        if (
+            normalized_key in {
+                "apikey",
+                "authorization",
+                "auth",
+                "code",
+                "cookie",
+                "credential",
+                "key",
+                "password",
+                "passwd",
+                "secret",
+                "signature",
+                "token",
+                "accesstoken",
+            }
+            or normalized_key.startswith(("auth", "oauth"))
+            or any(
+                marker in normalized_key
+                for marker in ("apikey", "credential", "password", "secret", "token")
+            )
+        ):
+            raise ScopeDenied("sensitive_url_query")
+    values = [item for pair in pairs for item in pair]
     text = " ".join(values)
     if (
         _EMAIL.search(text)
@@ -394,6 +465,13 @@ def reject_sensitive_url_query(url: str) -> None:
 def extract_url_targets(arguments: Mapping[str, Any]) -> tuple[str, ...]:
     targets: list[str] = []
 
+    def url_targets_from_text(value: str) -> tuple[str, ...]:
+        found = tuple(
+            match.group(0).rstrip(_TRAILING_URL_PUNCTUATION)
+            for match in _URL_CANDIDATE.finditer(value)
+        )
+        return found or (value,)
+
     def visit(value: Any, key: str = "") -> None:
         if isinstance(value, Mapping):
             for nested_key, nested in value.items():
@@ -405,13 +483,15 @@ def extract_url_targets(arguments: Mapping[str, Any]) -> tuple[str, ...]:
             return
         normalized = key.casefold().replace("-", "_")
         if normalized.endswith(("url", "uri")) or normalized in {
+            "urls",
+            "uris",
             "redirect",
             "redirects",
             "final_url",
         }:
             if not isinstance(value, str):
                 raise ScopeDenied("unsafe_url")
-            targets.append(value)
+            targets.extend(url_targets_from_text(value))
 
     visit(arguments)
     return tuple(targets)

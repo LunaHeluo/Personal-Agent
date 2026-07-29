@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 from uuid import UUID, uuid4
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 
 from starter_agent.agent.context import ContextBuilder
 from starter_agent.agent.memory import AutoMemoryWriter
@@ -26,6 +26,11 @@ from starter_agent.domain.models import (
     TokenUsage,
 )
 from starter_agent.infrastructure.session_store import SQLiteSessionStore
+from starter_agent.job_research.candidates import JobCandidate
+from starter_agent.knowledge.routing import (
+    KnowledgeRequestDecision,
+    KnowledgeRequestRouter,
+)
 from starter_agent.observability.logging import get_logger
 from starter_agent.providers.registry import ProviderRegistry
 from starter_agent.settings import AgentSettings
@@ -65,6 +70,45 @@ class ApplicationService:
     def configure_job_research(self, orchestrator) -> None:
         self.job_research = orchestrator
 
+    async def route_knowledge_request(
+        self,
+        *,
+        content: str,
+        provider_name: str | None = None,
+        model: str | None = None,
+    ) -> KnowledgeRequestDecision:
+        provider_key = provider_name or self.settings.model.default_provider
+        configured_provider = self.settings.providers.get(provider_key)
+        selected_model = model
+        if selected_model is None:
+            if provider_key == self.settings.model.default_provider:
+                selected_model = self.settings.model.default_model
+            elif configured_provider and configured_provider.models:
+                selected_model = configured_provider.models[0]
+            else:
+                selected_model = self.settings.model.default_model
+        decision = await KnowledgeRequestRouter(
+            self.context.skill_selector
+        ).route(
+            content,
+            provider=self.providers.get(provider_key),
+            model=selected_model,
+        )
+        runtime_revision = getattr(self, "runtime_revision", None)
+        if runtime_revision is not None:
+            decision = decision.model_copy(
+                update={"runtime_revision": runtime_revision.id}
+            )
+        get_logger().info(
+            "knowledge.request_routed",
+            route=decision.route.value,
+            reason_code=decision.reason_code,
+            skill_name=decision.skill_name,
+            model_attempts=decision.model_attempts,
+            runtime_revision=decision.runtime_revision,
+        )
+        return decision
+
     async def search_job_research(
         self,
         *,
@@ -80,6 +124,77 @@ class ApplicationService:
         return await self.job_research.search(
             query=query,
             location=location,
+            limit=limit,
+            context=self._job_research_context(
+                session_id=session_id,
+                turn_id=turn_id,
+                knowledge_base_id=knowledge_base_id,
+            ),
+        )
+
+    async def search_job_research_from_request(
+        self,
+        *,
+        user_request: str,
+        session_id: UUID,
+        turn_id: UUID | None = None,
+        provider_name: str | None = None,
+        model: str | None = None,
+        limit: int = 3,
+        knowledge_base_id: UUID | None = None,
+    ):
+        if self.job_research is None:
+            raise RuntimeError("job_research_unavailable")
+        provider_key = provider_name or self.settings.model.default_provider
+        return await self.job_research.search_from_request(
+            user_request=user_request,
+            provider=self.providers.get(provider_key),
+            model=model or self.settings.model.default_model,
+            limit=limit,
+            context=self._job_research_context(
+                session_id=session_id,
+                turn_id=turn_id,
+                knowledge_base_id=knowledge_base_id,
+            ),
+        )
+
+    async def prepare_job_research_request(
+        self,
+        *,
+        user_request: str,
+        session_id: UUID,
+        turn_id: UUID | None = None,
+        provider_name: str | None = None,
+        model: str | None = None,
+        knowledge_base_id: UUID | None = None,
+    ):
+        if self.job_research is None:
+            raise RuntimeError("job_research_unavailable")
+        provider_key = provider_name or self.settings.model.default_provider
+        return await self.job_research.prepare_request(
+            user_request=user_request,
+            provider=self.providers.get(provider_key),
+            model=model or self.settings.model.default_model,
+            context=self._job_research_context(
+                session_id=session_id,
+                turn_id=turn_id,
+                knowledge_base_id=knowledge_base_id,
+            ),
+        )
+
+    async def search_prepared_job_research(
+        self,
+        *,
+        prepared,
+        session_id: UUID,
+        turn_id: UUID | None = None,
+        limit: int = 3,
+        knowledge_base_id: UUID | None = None,
+    ):
+        if self.job_research is None:
+            raise RuntimeError("job_research_unavailable")
+        return await self.job_research.search_prepared(
+            prepared=prepared,
             limit=limit,
             context=self._job_research_context(
                 session_id=session_id,
@@ -104,6 +219,33 @@ class ApplicationService:
             query=query,
             selected_url=selected_url,
             top_k=top_k,
+            context=self._job_research_context(
+                session_id=session_id,
+                turn_id=turn_id,
+                knowledge_base_id=knowledge_base_id,
+            ),
+        )
+
+    async def analyze_job_research_candidates(
+        self,
+        *,
+        query: str,
+        candidates: Sequence[JobCandidate],
+        session_id: UUID,
+        turn_id: UUID | None = None,
+        target_count: int = 3,
+        top_k: int = 6,
+        knowledge_base_id: UUID | None = None,
+        resume_evidence: list[dict] | None = None,
+    ):
+        if self.job_research is None:
+            raise RuntimeError("job_research_unavailable")
+        return await self.job_research.analyze_candidates(
+            query=query,
+            candidates=candidates,
+            target_count=target_count,
+            top_k=top_k,
+            resume_evidence=resume_evidence,
             context=self._job_research_context(
                 session_id=session_id,
                 turn_id=turn_id,
@@ -198,6 +340,7 @@ class ApplicationService:
         required_tool_name: str | None = None,
         on_tool_event: Callable[[dict], Awaitable[None]] | None = None,
         tool_governance_enabled: bool = True,
+        allow_tools: bool = True,
     ) -> ChatResult:
         # Tool-result governance is a server safety invariant, not a client option.
         tool_governance_enabled = True
@@ -274,6 +417,7 @@ class ApplicationService:
                 on_tool_event=on_tool_event,
                 on_tool_artifact=on_tool_artifact,
                 tool_governance_enabled=tool_governance_enabled,
+                allow_tools=allow_tools,
             )
             answer_usage = response.usage
             if summary_usage:

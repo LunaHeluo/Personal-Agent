@@ -9,6 +9,14 @@ from bs4 import BeautifulSoup, NavigableString, Tag
 
 
 @dataclass(frozen=True)
+class SourceSpan:
+    category: Literal["responsibility", "requirement", "other"]
+    text: str
+    line_start: int
+    line_end: int
+
+
+@dataclass(frozen=True)
 class ExtractedJobDescription:
     title: str = ""
     company: str = ""
@@ -24,6 +32,11 @@ class ExtractedJobDescription:
     extraction_method: Literal[
         "json_ld", "html", "plain_text", "playwright_snapshot"
     ] = "html"
+    page_type: Literal["job_detail", "collection", "error", "unknown"] = "unknown"
+    validation_state: Literal[
+        "verified", "partial_verified", "rejected"
+    ] = "rejected"
+    source_spans: list[SourceSpan] = field(default_factory=list)
 
 
 class JobDescriptionExtractor:
@@ -33,6 +46,8 @@ class JobDescriptionExtractor:
         "responsibilities": (
             "responsibilities",
             "what you'll do",
+            "what you will do",
+            "about the job",
             "岗位职责",
             "工作职责",
         ),
@@ -40,6 +55,8 @@ class JobDescriptionExtractor:
             "requirements",
             "qualifications",
             "what are we looking for",
+            "what we're looking for",
+            "skills and experience required",
             "任职要求",
             "职位要求",
         ),
@@ -62,14 +79,35 @@ class JobDescriptionExtractor:
         {"privacy notice", "cookie notice", "cookie settings"}
     )
     _SNAPSHOT_HEADING = re.compile(
-        r'-\s+heading\s+"(?P<value>.*?)"\s+\[level=(?P<level>[1-6])\]'
+        r'-\s+heading\s+"(?P<value>.*?)"'
+        r'(?:\s+\[[^\]]+\])*\s*$'
     )
     _SNAPSHOT_VALUE = re.compile(
         r"-\s+(?:generic|listitem|text|strong|paragraph)"
-        r"(?:\s+\[[^\]]+\])?:\s*(?P<value>.+?)\s*$"
+        r"(?:\s+\[[^\]]+\])*:\s*(?P<value>.+?)\s*$"
     )
     _SNAPSHOT_COMPANY = re.compile(
         r"\s+-\s+Jobs\s+-\s+Careers\s+at\s+(?P<company>.+?)\s*$",
+        re.IGNORECASE,
+    )
+    _SNAPSHOT_COMPANY_AT = re.compile(
+        r"\|\s*[^|]*?\bat\s+(?P<company>[^|]+?)\s*$",
+        re.IGNORECASE,
+    )
+    _SNAPSHOT_LOCATION = re.compile(
+        r"^(?:location|work\s+location|工作地点|地点)\s*[:：]\s*(?P<value>.+)$",
+        re.IGNORECASE,
+    )
+    _RESPONSIBILITY_SENTENCE = re.compile(
+        r"\b(?:you will|you['’]ll|responsible for|responsibilities include|"
+        r"build|design|develop|own|lead|deliver|manage)\b|"
+        r"(?:负责|职责|搭建|开发|设计|交付|管理)",
+        re.IGNORECASE,
+    )
+    _REQUIREMENT_SENTENCE = re.compile(
+        r"\b(?:you have|you bring|required|requirements?|qualifications?|"
+        r"experience|proficien(?:t|cy)|knowledge of|degree)\b|"
+        r"(?:要求|具备|经验|熟悉|本科|硕士|学历)",
         re.IGNORECASE,
     )
 
@@ -95,15 +133,21 @@ class JobDescriptionExtractor:
         current_section: str | None = None
         sections = self._empty_sections()
         description_items: list[str] = []
+        job_details_items: list[tuple[str, int]] = []
+        source_spans: list[SourceSpan] = []
         visible: list[str] = []
 
-        for raw_line in snapshot.splitlines():
+        for line_number, raw_line in enumerate(snapshot.splitlines(), start=1):
             line = raw_line.strip()
             if line.startswith("- Page Title:"):
                 page_title = line.partition(":")[2].strip()
                 match = self._SNAPSHOT_COMPANY.search(page_title)
                 if match:
                     company = match.group("company").strip()
+                else:
+                    match = self._SNAPSHOT_COMPANY_AT.search(page_title)
+                    if match:
+                        company = match.group("company").strip()
                 continue
             heading = self._SNAPSHOT_HEADING.search(line)
             if heading:
@@ -120,11 +164,13 @@ class JobDescriptionExtractor:
                     if title:
                         current_section = None
                         continue
-                normalized = value.rstrip(":：").casefold()
+                normalized = value.rstrip(":：.。").casefold()
                 if normalized == "minimum qualifications":
                     current_section = "requirements"
                 elif normalized == "description":
                     current_section = "description"
+                elif normalized in {"job details", "job detail", "role details"}:
+                    current_section = "job_details"
                 else:
                     current_section = self._section_name(value)
                 continue
@@ -137,12 +183,31 @@ class JobDescriptionExtractor:
             if not value:
                 continue
             visible.append(value)
-            if title and not location and current_section is None and "," in value:
-                location = value
+            if title and not location and current_section is None:
+                location_match = self._SNAPSHOT_LOCATION.match(value)
+                if location_match:
+                    location = location_match.group("value").strip()
+                elif self._looks_like_unlabelled_location(value):
+                    location = value
             if current_section in sections:
                 sections[current_section].append(value)
+                if current_section in {"responsibilities", "requirements"}:
+                    source_spans.append(
+                        SourceSpan(
+                            category=(
+                                "responsibility"
+                                if current_section == "responsibilities"
+                                else "requirement"
+                            ),
+                            text=value,
+                            line_start=line_number,
+                            line_end=line_number,
+                        )
+                    )
             elif current_section == "description":
                 description_items.append(value)
+            elif current_section == "job_details":
+                job_details_items.append((value, line_number))
 
         cleaned = {
             name: self._clean_items(values)
@@ -150,21 +215,78 @@ class JobDescriptionExtractor:
         }
         if not cleaned["responsibilities"] and description_items:
             cleaned["responsibilities"] = self._clean_items(description_items)
+        if job_details_items:
+            for value, line_number in job_details_items:
+                category = self._single_block_category(value)
+                if category == "responsibility":
+                    cleaned["responsibilities"].append(value)
+                elif category == "requirement":
+                    cleaned["requirements"].append(value)
+                else:
+                    continue
+                source_spans.append(
+                    SourceSpan(
+                        category=category,
+                        text=value,
+                        line_start=line_number,
+                        line_end=line_number,
+                    )
+                )
+            cleaned = {
+                name: self._clean_items(values)
+                for name, values in cleaned.items()
+            }
         if not company and title:
             suffix = f" - {title}"
             if page_title.endswith(suffix):
                 company = page_title[: -len(suffix)].strip()
+        completeness = self._completeness(
+            cleaned["responsibilities"], cleaned["requirements"]
+        )
         return ExtractedJobDescription(
             title=title,
             company=company,
             location=location,
             raw_text="\n".join(self._clean_items(visible)),
-            completeness=self._completeness(
-                cleaned["responsibilities"], cleaned["requirements"]
-            ),
+            completeness=completeness,
             extraction_method="playwright_snapshot",
+            page_type=("job_detail" if title and completeness != "unverified" else "unknown"),
+            validation_state=(
+                "verified"
+                if completeness == "complete"
+                else "partial_verified"
+                if completeness == "partial" and title
+                else "rejected"
+            ),
+            source_spans=source_spans,
             **cleaned,
         )
+
+    def _single_block_category(
+        self, value: str
+    ) -> Literal["responsibility", "requirement", "other"]:
+        if self._REQUIREMENT_SENTENCE.search(value):
+            return "requirement"
+        if self._RESPONSIBILITY_SENTENCE.search(value):
+            return "responsibility"
+        return "other"
+
+    @staticmethod
+    def _looks_like_unlabelled_location(value: str) -> bool:
+        if any(character in value for character in ".;:："):
+            return False
+        parts = [part.strip() for part in value.split(",")]
+        if not 2 <= len(parts) <= 4 or any(not part for part in parts):
+            return False
+        if sum(len(part.split()) for part in parts) > 8:
+            return False
+        for index, part in enumerate(parts):
+            compact = re.sub(r"[^A-Za-z]", "", part)
+            if compact.isupper() and not (
+                index == len(parts) - 1 and len(compact) == 2
+            ):
+                return False
+        return True
 
     @staticmethod
     def _decode_snapshot_value(value: str) -> str:
@@ -401,7 +523,7 @@ class JobDescriptionExtractor:
         return terminal_blocks
 
     def _section_name(self, value: str) -> str | None:
-        normalized = self._normalise_text(value).rstrip(":：").lower()
+        normalized = self._normalise_text(value).rstrip(":：.。").lower()
         for section_name, aliases in self.SECTION_NAMES.items():
             if normalized in aliases:
                 return section_name
