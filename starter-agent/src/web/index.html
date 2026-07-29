@@ -412,6 +412,16 @@
       gap: 8px;
     }
 
+    .capability-tools-list {
+      display: grid;
+      gap: 8px;
+      max-height: min(52vh, 560px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+      padding-right: 4px;
+    }
+
     .capability-list-item {
       width: 100%;
       display: grid;
@@ -1321,6 +1331,10 @@
 
       .capability-layout {
         grid-template-columns: 1fr;
+      }
+
+      .capability-tools-list {
+        max-height: 420px;
       }
 
       .capability-status-grid {
@@ -4353,10 +4367,11 @@
         "capability-subsection"
       );
       toolsSection.appendChild(capabilityElement("h3", "", `Tools (${tools.length})`));
+      const toolList = capabilityElement("div", "capability-tools-list");
+      toolList.setAttribute("aria-label", "Server tools");
+      toolsSection.appendChild(toolList);
       if (!tools.length) {
-        toolsSection.appendChild(
-          capabilityElement("p", "capability-note", "此快照没有可见 Tool。")
-        );
+        renderCapabilityEmpty(toolList, "此快照没有可见 Tool。");
       }
       for (const tool of tools) {
         const toolButton = capabilityButton(
@@ -4375,7 +4390,7 @@
             `${tool.review || "unreviewed"} · ${tool.enabled ? "enabled" : "disabled"}`
           )
         );
-        toolsSection.appendChild(toolButton);
+        toolList.appendChild(toolButton);
       }
       capabilityDetail.appendChild(toolsSection);
 
