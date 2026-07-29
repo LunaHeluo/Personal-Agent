@@ -78,11 +78,15 @@ memory:
   source_max_chars: 20000
   timeout_seconds: 30
 
+job_research:
+  jd_freshness_days: 30
+  max_candidate_urls: 5
+  target_valid_jds: 3
+
 tools:
   enabled:
     - get_current_time
     - search_jobs_serpapi
-    - search_job_description
     - read_resume
     - list_resume_versions
     - save_resume
@@ -135,7 +139,7 @@ tools:
         api_key_env: SERPAPI_API_KEY
       backup:
         api_key_env: SERPAPI_API_KEY_BACKUP
-  job_description:
+  public_web:
     fetch_timeout_seconds: 10
     max_response_bytes: 1000000
     max_redirects: 3
