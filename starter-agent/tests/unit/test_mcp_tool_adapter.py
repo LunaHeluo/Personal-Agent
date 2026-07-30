@@ -123,13 +123,64 @@ def test_adapter_structures_playwright_snapshot_and_preserves_page_url() -> None
         "raw_text": adapted.data["structured_content"]["raw_text"],
         "completeness": "complete",
         "extraction_method": "playwright_snapshot",
-        "page_type": "job_description",
+        "page_type": "job_detail",
+        "validation_state": "verified",
+        "source_spans": [
+            {
+                "category": "responsibility",
+                "text": "Build models.",
+                "line_start": 9,
+                "line_end": 9,
+            },
+            {
+                "category": "requirement",
+                "text": "Python experience.",
+                "line_start": 11,
+                "line_end": 11,
+            },
+        ],
         "final_url": "https://jobs.example/role",
         "source_url": "https://jobs.example/role",
     }
     assert adapted.metadata["final_url"] == "https://jobs.example/role"
     assert adapted.metadata["source_url"] == "https://jobs.example/role"
     assert len(adapted.metadata["source_content_sha256"]) == 64
+
+
+def test_adapter_extracts_snapshot_from_structured_playwright_wrapper() -> None:
+    snapshot = (
+        "### Page\n"
+        "- Page URL: https://jobs.example/role-42\n"
+        "- Page Title: Example - Agent Engineer\n"
+        "### Snapshot\n"
+        '- heading "Agent Engineer" [level=1]\n'
+        "- generic: Location: Shanghai\n"
+        '- heading "Responsibilities" [level=2]\n'
+        "- listitem: Build reliable agent workflows.\n"
+        '- heading "Requirements" [level=2]\n'
+        "- listitem: Production Python experience."
+    )
+    adapted = McpToolResultAdapter().adapt(
+        CallToolResult(
+            content=[TextContent(type="text", text="Snapshot captured")],
+            structuredContent={"snapshot": snapshot},
+        ),
+        server_id="playwright",
+        call_id="call-structured-snapshot",
+        snapshot_id="snapshot-8",
+        schema_hash="d" * 64,
+        tool_name="browser_snapshot",
+    )
+
+    structured = adapted.data["structured_content"]
+    assert structured["title"] == "Agent Engineer"
+    assert structured["responsibilities"] == [
+        "Build reliable agent workflows."
+    ]
+    assert structured["requirements"] == [
+        "Production Python experience."
+    ]
+    assert structured["source_url"] == "https://jobs.example/role-42"
 
 
 def test_adapter_structures_successful_playwright_navigation_for_skill() -> None:
@@ -180,6 +231,68 @@ def test_adapter_preserves_mcp_error_without_exposing_upstream_secret_metadata()
     assert adapted.ok is False
     assert adapted.error_code == "mcp_tool_error"
     assert "secret" not in repr(adapted.model_dump())
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_code"),
+    [
+        ("Timeout 30000ms exceeded", "playwright_timeout"),
+        ("HTTP 403 Forbidden", "access_blocked_403"),
+        ("locator did not resolve to any element", "selector_unmatched"),
+        (
+            "Target page, context or browser has been closed",
+            "browser_crashed",
+        ),
+        ("unexpected upstream failure", "mcp_unknown_error"),
+    ],
+)
+def test_adapter_classifies_playwright_errors(
+    message: str,
+    expected_code: str,
+) -> None:
+    adapted = McpToolResultAdapter().adapt(
+        CallToolResult(
+            isError=True,
+            content=[TextContent(type="text", text=message)],
+        ),
+        server_id="playwright",
+        call_id="call-playwright-error",
+        snapshot_id="snapshot-7",
+        schema_hash="d" * 64,
+        tool_name="browser_navigate",
+    )
+
+    assert adapted.error_code == expected_code
+    assert adapted.metadata["upstream_error_summary"] == message
+    assert adapted.error_code != "mcp_tool_error"
+
+
+def test_adapter_redacts_sensitive_values_from_playwright_error_summary() -> None:
+    secret = "TEST_ONLY_TOKEN_DO_NOT_USE_123"
+    adapted = McpToolResultAdapter().adapt(
+        CallToolResult(
+            isError=True,
+            content=[
+                TextContent(
+                    type="text",
+                    text=(
+                        "HTTP 403 Forbidden "
+                        f"Authorization: Bearer {secret} "
+                        f"https://jobs.example/role?token={secret}"
+                    ),
+                )
+            ],
+        ),
+        server_id="playwright",
+        call_id="call-playwright-secret",
+        snapshot_id="snapshot-7",
+        schema_hash="e" * 64,
+        tool_name="browser_navigate",
+    )
+
+    persisted = json.dumps(adapted.model_dump(mode="json"), ensure_ascii=False)
+    assert adapted.error_code == "access_blocked_403"
+    assert secret not in persisted
 
 
 class _ResultSession:

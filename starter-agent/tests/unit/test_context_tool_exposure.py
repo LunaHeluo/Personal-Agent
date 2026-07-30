@@ -95,6 +95,7 @@ def test_only_connected_enabled_and_approved_mcp_tools_are_exposed() -> None:
     )
     assert registry.model_snapshot().tools == ()
 
+
     registry.set_tool_review("mcp__browser__read_page", "approved")
     assert registry.model_snapshot().tools == ()
 
@@ -145,3 +146,48 @@ def test_only_connected_enabled_and_approved_mcp_tools_are_exposed() -> None:
         snapshot=_snapshot(stale=True),
     )
     assert registry.model_snapshot().tools == ()
+
+
+def test_disabled_resume_evidence_tool_keeps_only_lightweight_name_until_reenabled() -> None:
+    class _KnowledgeService:
+        class _Scope:
+            user_id = "user"
+            project_id = "project"
+
+        scope = _Scope()
+
+        def retrieve(self, *_args, **_kwargs):
+            return []
+
+    registry = UnifiedToolRegistry(
+        ToolRegistry(
+            ["retrieve_resume_evidence"],
+            knowledge_service=_KnowledgeService(),
+        )
+    )
+    first_snapshot = registry.model_snapshot().provider_tools()
+    assert first_snapshot[0]["function"]["name"] == "retrieve_resume_evidence"
+    assert first_snapshot[0]["function"]["description"]
+    assert first_snapshot[0]["function"]["parameters"]["required"] == ["query"]
+
+    registry.set_tool_enabled("retrieve_resume_evidence", False)
+    lightweight = registry.lightweight_catalog().as_dict()
+    serialized_catalog = json.dumps(lightweight, ensure_ascii=False)
+
+    assert lightweight["capabilities"][0] == {
+        "name": "retrieve_resume_evidence",
+        "server": "builtin",
+        "type": "builtin",
+        "enabled": False,
+        "review": "approved",
+        "callable": False,
+    }
+    assert registry.model_snapshot().provider_tools() == []
+    assert "Retrieve quoted evidence" not in serialized_catalog
+    assert "parameters" not in serialized_catalog
+    assert "query" not in serialized_catalog
+
+    registry.set_tool_enabled("retrieve_resume_evidence", True)
+    restored = registry.model_snapshot().provider_tools()
+
+    assert restored == first_snapshot

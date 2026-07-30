@@ -1,4 +1,5 @@
 import json
+from datetime import date, datetime
 
 import pytest
 
@@ -89,3 +90,25 @@ def test_unrestricted_or_caller_claimed_truncation_recovery_is_rejected() -> Non
 
     with pytest.raises(ValueError, match="restricted_artifact_required"):
         JobDescriptionNormalizer().normalize_artifact(untrusted)
+
+
+def test_normalizer_preserves_optional_freshness_and_status_metadata() -> None:
+    normalized = JobDescriptionNormalizer().normalize_artifact(
+        _artifact(
+            data={
+                "retrieved_at": "2026-07-27T08:30:00Z",
+                "status": "open",
+                "closing_date": "2026-08-31",
+            }
+        )
+    )
+
+    assert normalized.retrieved_at == datetime.fromisoformat(
+        "2026-07-27T08:30:00+00:00"
+    )
+    assert normalized.status == "open"
+    assert normalized.closing_date == date(2026, 8, 31)
+    markdown = normalized.to_markdown()
+    assert "- Retrieved At: 2026-07-27T08:30:00+00:00" in markdown
+    assert "- Status: open" in markdown
+    assert "- Closing Date: 2026-08-31" in markdown

@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 from mcp import types
 
-from starter_agent.mcp.discovery import DiscoveryError, collect_capabilities
+from starter_agent.capabilities.models import Server
+from starter_agent.capabilities.store import CapabilityStore
+from starter_agent.mcp.discovery import (
+    DiscoveryError,
+    collect_capabilities,
+    discover_and_activate,
+)
 from starter_agent.mcp.config import TrustedServerProfile
 
 
@@ -159,6 +165,51 @@ async def test_trusted_playwright_navigation_has_explicit_navigation_action() ->
     )
 
     assert bundle.tools[0].metadata["action"] == "navigate"
+
+
+@pytest.mark.asyncio
+async def test_startup_rediscovery_preserves_review_for_unchanged_tool_schema(
+    tmp_path,
+) -> None:
+    store = CapabilityStore("sqlite:///:memory:", tmp_path)
+    store.create_server(
+        Server(
+            id="playwright",
+            name="playwright",
+            config_source="mcp.json",
+            config_hash="a" * 64,
+        )
+    )
+    first = await discover_and_activate(
+        store,
+        _PlaywrightNavigateSession(),
+        server_id="playwright",
+    )
+    approved = store.update_tool(
+        first.id,
+        "browser_navigate",
+        expected_revision=0,
+        review_state="approved",
+    )
+    enabled = store.update_tool(
+        first.id,
+        "browser_navigate",
+        expected_revision=approved.revision,
+        enabled=True,
+    )
+
+    second = await discover_and_activate(
+        store,
+        _PlaywrightNavigateSession(),
+        server_id="playwright",
+    )
+    rediscovered = store.list_tools(second.id)[0]
+
+    assert rediscovered.schema_hash == enabled.schema_hash
+    assert rediscovered.review_state == "approved"
+    assert rediscovered.reviewed_at == enabled.reviewed_at
+    assert rediscovered.enabled is True
+    assert rediscovered.revision == enabled.revision
 
 
 @pytest.mark.asyncio

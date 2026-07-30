@@ -70,9 +70,9 @@ def test_guard_preserves_untrusted_marker_for_oversized_job_description() -> Non
 
     result = guard.guard(
         raw,
-        "search_job_description",
+        "mcp__playwright__browser_snapshot",
         "call-job-description",
-        "tool:search_job_description:turn-1:call-job-description",
+        "tool:mcp__playwright__browser_snapshot:turn-1:call-job-description",
     )
     payload = json.loads(result.content)
 
@@ -98,9 +98,9 @@ def test_guard_structured_truncation_keeps_only_safe_classification_metadata() -
 
     result = guard.guard(
         raw,
-        "search_job_description",
+        "mcp__playwright__browser_snapshot",
         "call-job-list",
-        "tool:search_job_description:turn-1:call-job-list",
+        "tool:mcp__playwright__browser_snapshot:turn-1:call-job-list",
     )
     payload = json.loads(result.content)
 
@@ -127,9 +127,9 @@ def test_guard_generic_fallback_never_repeats_untrusted_source_metadata() -> Non
 
     result = guard.guard(
         raw,
-        "search_job_description",
+        "mcp__playwright__browser_snapshot",
         "call-job-description",
-        "tool:search_job_description:turn-1:call-job-description",
+        "tool:mcp__playwright__browser_snapshot:turn-1:call-job-description",
     )
     payload = json.loads(result.content)
 
@@ -149,9 +149,9 @@ def test_guard_generic_fallback_stays_within_budget_after_final_metadata() -> No
 
     result = guard.guard(
         raw,
-        "search_job_description",
+        "mcp__playwright__browser_snapshot",
         "call-job-description",
-        "tool:search_job_description:turn-1:call-job-description",
+        "tool:mcp__playwright__browser_snapshot:turn-1:call-job-description",
     )
 
     assert result.is_truncated is True
@@ -172,9 +172,9 @@ def test_guard_uses_empty_content_when_even_metadata_only_exceeds_tiny_budget() 
 
     result = guard.guard(
         raw,
-        "search_job_description",
+        "mcp__playwright__browser_snapshot",
         "call-job-description",
-        "tool:search_job_description:turn-1:call-job-description",
+        "tool:mcp__playwright__browser_snapshot:turn-1:call-job-description",
     )
 
     assert result.is_truncated is True

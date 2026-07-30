@@ -25,6 +25,11 @@ HIGH_CONFIDENCE_SECRETS = (
     "AIza" + "A" * 35,
     "xoxb-" + "A" * 10,
 )
+HIGH_CONFIDENCE_SECRET_IDS = (
+    "jwt-shape",
+    "google-key-shape",
+    "slack-token-shape",
+)
 
 
 def _json_hash(value: object) -> str:
@@ -225,7 +230,11 @@ def test_confirmation_secret_detection_propagates_through_nested_containers() ->
         )
 
 
-@pytest.mark.parametrize("secret_value", HIGH_CONFIDENCE_SECRETS)
+@pytest.mark.parametrize(
+    "secret_value",
+    HIGH_CONFIDENCE_SECRETS,
+    ids=HIGH_CONFIDENCE_SECRET_IDS,
+)
 def test_confirmation_summary_rejects_mcp_high_confidence_secret_shapes(
     secret_value: str,
 ) -> None:
@@ -247,7 +256,11 @@ def test_confirmation_summary_rejects_mcp_high_confidence_secret_shapes(
         )
 
 
-@pytest.mark.parametrize("secret_value", HIGH_CONFIDENCE_SECRETS)
+@pytest.mark.parametrize(
+    "secret_value",
+    HIGH_CONFIDENCE_SECRETS,
+    ids=HIGH_CONFIDENCE_SECRET_IDS,
+)
 def test_audit_event_text_rejects_mcp_high_confidence_secret_shapes(
     secret_value: str,
 ) -> None:
@@ -264,7 +277,11 @@ def test_audit_event_text_rejects_mcp_high_confidence_secret_shapes(
         )
 
 
-@pytest.mark.parametrize("secret_value", HIGH_CONFIDENCE_SECRETS)
+@pytest.mark.parametrize(
+    "secret_value",
+    HIGH_CONFIDENCE_SECRETS,
+    ids=HIGH_CONFIDENCE_SECRET_IDS,
+)
 def test_audit_event_payload_rejects_mcp_high_confidence_secret_shapes(
     secret_value: str,
 ) -> None:
@@ -294,6 +311,16 @@ def test_audit_event_payload_rejects_mcp_high_confidence_secret_shapes(
         ("turn_id", "AKIA" + "B" * 16),
         ("call_id", "ghp_" + "C" * 36),
     ],
+    ids=(
+        "event-id",
+        "actor",
+        "action",
+        "target",
+        "reason-code",
+        "session-id",
+        "turn-id",
+        "call-id",
+    ),
 )
 def test_audit_event_rejects_secrets_in_every_persisted_text_field(
     field_name: str,

@@ -79,6 +79,21 @@ def test_capability_layout_is_keyboard_and_narrow_screen_accessible() -> None:
         assert contract in HTML
 
 
+def test_server_tools_use_a_bounded_responsive_scroll_region() -> None:
+    for contract in (
+        ".capability-tools-list {",
+        "max-height: min(52vh, 560px);",
+        "overflow-y: auto;",
+        "overscroll-behavior: contain;",
+        "scrollbar-gutter: stable;",
+        "max-height: 420px;",
+        '"capability-tools-list"',
+        'toolList.setAttribute("aria-label", "Server tools")',
+        "toolList.appendChild(toolButton)",
+    ):
+        assert contract in HTML
+
+
 def test_management_confirmation_and_raw_definition_state_are_isolated() -> None:
     for contract in (
         "reconcileManagementConfirmations",

@@ -269,6 +269,23 @@ def test_serpapi_accepts_short_job_role_or_skill_search(query: str) -> None:
     _policy_module().validate_serpapi_payload({"query": query}, (), max_bytes=600)
 
 
+def test_serpapi_rejects_compact_name_and_employer_prefix() -> None:
+    policy_module = _policy_module()
+
+    with pytest.raises(policy_module.ScopeDenied, match="serpapi_fields"):
+        policy_module.validate_serpapi_payload(
+            {"query": "Alice OpenAI Python engineer"}, (), max_bytes=600
+        )
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["Machine Learning Engineer", "Natural Language Processing Engineer"],
+)
+def test_serpapi_accepts_title_case_multiword_roles(query: str) -> None:
+    _policy_module().validate_serpapi_payload({"query": query}, (), max_bytes=600)
+
+
 @pytest.mark.parametrize(
     "query",
     [
@@ -330,6 +347,43 @@ def test_serpapi_accepts_compact_job_keyword_bags(query: str) -> None:
 )
 def test_serpapi_accepts_common_job_role_queries(query: str) -> None:
     _policy_module().validate_serpapi_payload({"query": query}, (), max_bytes=600)
+
+
+def test_serpapi_accepts_bounded_location_alias_search_plan() -> None:
+    _policy_module().validate_serpapi_payload(
+        {
+            "query": "AI Agent",
+            "query_variants": [
+                "上海 AI Agent 工程师 招聘",
+                "Shanghai AI Agent Engineer jobs",
+            ],
+            "location": "上海",
+            "location_alias": "Shanghai",
+            "hl": "zh-cn",
+            "gl": "cn",
+            "google_domain": "google.com",
+            "limit": 5,
+        },
+        (),
+        max_bytes=2000,
+    )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"query_variants": ["AI Agent"] * 13},
+        {"google_domain": "evil.example"},
+        {"hl": "zh cn"},
+        {"gl": "china"},
+        {"location_alias": "上海"},
+    ],
+)
+def test_serpapi_rejects_unsafe_or_unbounded_search_plan(extra) -> None:
+    with pytest.raises(_policy_module().ScopeDenied, match="serpapi_fields"):
+        _policy_module().validate_serpapi_payload(
+            {"query": "AI Agent", **extra}, (), max_bytes=2000
+        )
 
 
 @pytest.mark.parametrize(

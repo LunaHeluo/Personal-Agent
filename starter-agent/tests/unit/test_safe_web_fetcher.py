@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Callable
 import httpx
 import pytest
 
-from starter_agent.settings import JobDescriptionToolConfig
+from starter_agent.settings import PublicWebSafetyConfig
 from starter_agent.tools.adapters import safe_web_fetcher as fetcher_module
 from starter_agent.tools.adapters.safe_web_fetcher import (
     FetchFailure,
@@ -1147,7 +1147,7 @@ async def test_from_config_disables_environment_proxy_and_owns_client(
         return client
 
     monkeypatch.setattr(fetcher_module.httpx, "AsyncClient", client_factory)
-    fetcher = SafeWebFetcher.from_config(JobDescriptionToolConfig())
+    fetcher = SafeWebFetcher.from_config(PublicWebSafetyConfig())
 
     assert captured["follow_redirects"] is False
     assert captured["trust_env"] is False

@@ -58,3 +58,32 @@ def test_pending_confirmations_restore_by_current_session_without_freezing_views
         assert contract in HTML
 
     assert "capabilitiesNavButton.disabled" not in HTML
+
+
+def test_chat_confirmation_cards_are_compact_and_scroll_long_details() -> None:
+    for contract in (
+        "width: min(720px, calc(100% - 40px));",
+        "justify-self: start;",
+        "max-height: min(34vh, 280px);",
+        "overflow: auto;",
+        "min-width: 0;",
+        "overflow-wrap: anywhere;",
+        "chat-confirmation-details",
+        "查看技术详情",
+    ):
+        assert contract in HTML
+
+
+def test_terminal_chat_confirmations_are_removed_from_all_authoritative_paths() -> None:
+    for contract in (
+        "isTerminalToolConfirmation",
+        "function removeChatConfirmation",
+        "function pruneTerminalChatConfirmations",
+        "pruneTerminalChatConfirmations();",
+        "removeChatConfirmation(decided.id)",
+        "removeChatConfirmation(resolved.id)",
+        "removeChatConfirmation(normalized.id)",
+        "removeChatConfirmation(event.confirmation_id)",
+        "!isTerminalToolConfirmation(normalized)",
+    ):
+        assert contract in HTML

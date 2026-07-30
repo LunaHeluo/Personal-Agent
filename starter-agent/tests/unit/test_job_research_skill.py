@@ -1,12 +1,27 @@
 from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
 
 from starter_agent.agent.context import ContextBuilder
-from starter_agent.domain.models import Message
+from starter_agent.capabilities.gate import PreToolCallGate, UnifiedToolExecutor
+from starter_agent.capabilities.registry import UnifiedToolRegistry
+from starter_agent.capabilities.store import CapabilityStore
+from starter_agent.domain.models import Message, ToolResult
+from starter_agent.job_research.candidates import JobCandidate
+from starter_agent.job_research.search_profile import PublicJobSearchProfile
+from starter_agent.skills.job_research import JobResearchOrchestrator
+from starter_agent.skills.models import SkillRunResult, SkillToolTrace
 from starter_agent.skills.registry import SkillRegistry
 from starter_agent.skills.selector import SkillSelector
+from starter_agent.tools.base import ToolContext
+from starter_agent.tools.registry import ToolRegistry
 
 
-SKILLS_ROOT = Path(__file__).parents[2] / "skills"
+SKILLS_ROOT = (
+    Path(__file__).parents[2] / "src" / "starter_agent" / "skills"
+)
 
 
 def test_job_research_definition_contains_fixed_governed_workflow():
@@ -16,7 +31,11 @@ def test_job_research_definition_contains_fixed_governed_workflow():
 
     assert snapshot.stale is False
     assert skill is not None
+    assert skill.source_path.endswith(
+        "src/starter_agent/skills/job-research/SKILL.md"
+    )
     assert skill.enabled is True
+    assert skill.version == "1.3.0"
     assert {item.key for item in skill.dependencies} == {
         "tool:search_jobs_serpapi",
         "tool:retrieve_resume_evidence",
@@ -25,19 +44,126 @@ def test_job_research_definition_contains_fixed_governed_workflow():
         "service:job_description_ingestion",
     }
     steps = [
-        "Use SerpAPI",
-        "select a URL",
-        "Use Browser",
-        "Validate the JD",
-        "Use RAG",
-        "JD sources",
-        "user confirmation",
+        "retrieve_resume_evidence",
+        "search_jobs_serpapi",
+        "规范化并排序",
+        "browser_navigate",
+        "browser_snapshot",
+        "提取职责",
+        "生成带引用",
     ]
-    fixed_steps = skill.definition.split("## Fixed Steps", 1)[1].split(
-        "## Verification", 1
+    fixed_steps = skill.definition.split("## Workflow", 1)[1].split(
+        "## Validation", 1
     )[0]
     positions = [fixed_steps.index(token) for token in steps]
     assert positions == sorted(positions)
+    for heading in (
+        "## Preconditions",
+        "## Workflow",
+        "## Validation",
+        "## Failure Handling",
+        "## Output Format",
+        "## Safety Boundaries",
+        "## Trigger Examples",
+        "## Non-trigger Examples",
+    ):
+        assert heading in skill.definition
+    for phrase in (
+        "不使用默认岗位或默认城市",
+        "Locations API",
+        "检索简历证据",
+        "最小公开搜索画像",
+        "不向搜索 Tool 发送简历正文",
+        "多个候选",
+        "职责",
+        "必备要求",
+        "加分项",
+        "关键限制",
+        "内容被裁剪",
+        "未验证信息",
+        "Tool Trace",
+        "能力管理",
+        "Pre-Tool-Call Gate",
+    ):
+        assert phrase in skill.definition
+
+
+def test_job_validation_accepts_source_backed_jd_when_employer_is_undisclosed() -> None:
+    validation = JobResearchOrchestrator._validate_job(
+        {
+            "title": "Agent Engineer",
+            "company": "",
+            "location": "Shanghai",
+            "responsibilities": ["Build agent workflows"],
+            "requirements": ["Production Python experience"],
+            "source_url": "https://example.test/jobs/42",
+            "page_type": "job_detail",
+            "validation_state": "verified",
+            "source_spans": [
+                {"text": "Build agent workflows"},
+                {"text": "Production Python experience"},
+            ],
+        },
+        "https://example.test/jobs/42",
+    )
+
+    assert validation.state == "verified"
+    assert validation.reason_codes == ("company_not_disclosed",)
+
+
+def test_job_validation_rejects_browser_error_page_with_complete_looking_fields() -> None:
+    validation = JobResearchOrchestrator._validate_job(
+        {
+            "title": "Agent Engineer",
+            "company": "Example",
+            "location": "Shanghai",
+            "responsibilities": ["Build agent workflows"],
+            "requirements": ["Production Python experience"],
+            "source_url": "https://example.test/jobs/42",
+            "page_type": "error",
+        },
+        "https://example.test/jobs/42",
+    )
+
+    assert validation.state == "rejected"
+    assert "not_job_detail_page" in validation.reason_codes
+
+
+def test_candidate_attempt_audit_persists_only_safe_bounded_summary() -> None:
+    registry = UnifiedToolRegistry(ToolRegistry([]))
+    store = CapabilityStore("sqlite:///:memory:", Path("."))
+    gate = PreToolCallGate(store, registry=registry)
+    orchestrator = JobResearchOrchestrator(
+        registry,
+        UnifiedToolExecutor(store, gate=gate),
+    )
+    context = ToolContext(session_id=uuid4(), turn_id=uuid4())
+    fake_secret = "TEST_ONLY_TOKEN_DO_NOT_USE_123"
+
+    orchestrator._audit_candidate_attempt(
+        {
+            "candidate_index": 0,
+            "source_url": f"https://example.test/jobs/42?token={fake_secret}",
+            "status": "invalid_jd",
+            "error_code": "incomplete_job_description",
+            "page_type": "unknown",
+            "truncated": False,
+            "duration_ms": 12,
+            "validation_state": "rejected",
+            "reason_codes": ["missing_requirements"],
+        },
+        context=context,
+        call_id="snapshot-call-1",
+    )
+
+    event = store.list_audit_events()[-1]
+    persisted = event.model_dump_json()
+    assert event.action == "job_research.candidate.completed"
+    assert event.call_id == "snapshot-call-1"
+    assert len(event.payload["source_url_hash"]) == 64
+    assert event.payload["reason_codes"] == ("missing_requirements",)
+    assert fake_secret not in persisted
+    assert "https://example.test" not in persisted
 
 
 def test_selector_triggers_research_but_not_general_advice_or_rewrite():
@@ -79,3 +205,321 @@ def test_context_has_light_catalog_until_a_skill_is_triggered(tmp_path: Path):
     assert "SerpAPI" not in idle[1].content
     assert "Full Skill Definition: job-research" in triggered[2].content
     assert "SerpAPI" in triggered[2].content
+
+
+class _ScriptedCandidateOrchestrator(JobResearchOrchestrator):
+    def __init__(self) -> None:
+        async def no_sleep(_seconds: float) -> None:
+            return None
+
+        super().__init__(  # type: ignore[arg-type]
+            None,
+            None,
+            ingestion_available=True,
+            browser_sleeper=no_sleep,
+        )
+        self.calls: list[tuple[str, dict]] = []
+        self.audited_attempts: list[tuple[dict, str]] = []
+        self.snapshot_count = 0
+
+    def _audit_candidate_attempt(self, attempt, *, context, call_id):
+        del context
+        self.audited_attempts.append((dict(attempt), call_id))
+
+    def _missing(self, dependencies):
+        return ()
+
+    async def _call(self, tool_name, arguments, context):
+        del context
+        self.calls.append((tool_name, dict(arguments)))
+        if tool_name == self.browser_tool_name:
+            result = ToolResult(
+                ok=True,
+                data={"source_url": arguments["url"]},
+            )
+        elif tool_name == self.browser_snapshot_tool_name:
+            self.snapshot_count += 1
+            if self.snapshot_count <= 2:
+                result = ToolResult(
+                    ok=True,
+                    data={
+                        "title": "Job Search Results",
+                        "company": "",
+                        "location": "",
+                        "responsibilities": [],
+                        "requirements": [],
+                        "source_url": "https://jobs.example.test/listing",
+                    },
+                )
+            else:
+                result = ToolResult(
+                    ok=True,
+                    data={
+                        "title": "Agent Engineer",
+                        "company": "Example",
+                        "location": "Berlin",
+                        "responsibilities": ["Build agents"],
+                        "requirements": ["Python"],
+                        "source_url": "https://employer.example.test/jobs/42",
+                        "retrieved_at": "2026-07-27T00:00:00Z",
+                    },
+                )
+        else:
+            result = ToolResult(
+                ok=True,
+                data={
+                    "evidence": [
+                        {
+                            "chunk_id": str(uuid4()),
+                            "document_id": str(uuid4()),
+                            "version": 1,
+                            "section": "Skills",
+                            "start_line": 1,
+                            "end_line": 1,
+                            "quote": "Python agent systems",
+                            "source_ref": "resume.md@v1#L1-L1",
+                        }
+                    ]
+                },
+            )
+        trace = SkillToolTrace(
+            tool_name=tool_name,
+            call_id=f"call-{len(self.calls)}",
+            arguments=dict(arguments),
+            result=result.model_dump(mode="json"),
+            gate_outcome="allow",
+            error_code=result.error_code,
+        )
+        return result, trace
+
+
+@pytest.mark.asyncio
+async def test_candidate_failure_continues_and_resume_evidence_is_read_once():
+    orchestrator = _ScriptedCandidateOrchestrator()
+    candidates = (
+        JobCandidate(
+            url="https://jobs.example.test/listing",
+            title="Search results",
+            url_kind="organic",
+            confidence=0.4,
+            provider_position=0,
+        ),
+        JobCandidate(
+            url="https://employer.example.test/jobs/42",
+            title="Agent Engineer",
+            url_kind="structured_apply",
+            confidence=1.0,
+            provider_position=1,
+        ),
+    )
+
+    result = await orchestrator.analyze_candidates(
+        query="Berlin Agent Engineer",
+        candidates=candidates,
+        context=ToolContext(session_id=uuid4(), turn_id=uuid4()),
+        target_count=1,
+    )
+
+    assert [item["status"] for item in result.data["candidate_attempts"]] == [
+        "browser_failed",
+        "succeeded",
+    ]
+    assert [item["candidate_index"] for item in result.data["candidate_attempts"]] == [
+        0,
+        1,
+    ]
+    assert all(
+        item["page_type"] in {"unknown", "job_description"}
+        for item in result.data["candidate_attempts"]
+    )
+    assert all(item["truncated"] is False for item in result.data["candidate_attempts"])
+    assert all(item["duration_ms"] >= 0 for item in result.data["candidate_attempts"])
+    assert result.data["job"]["source_url"] == candidates[1].url
+    assert len(result.data["jobs"]) == 1
+    assert [name for name, _ in orchestrator.calls].count(
+        orchestrator.evidence_tool_name
+    ) == 1
+    evidence_arguments = next(
+        arguments
+        for name, arguments in orchestrator.calls
+        if name == orchestrator.evidence_tool_name
+    )
+    assert "Build agents" in evidence_arguments["query"]
+    assert "Python" in evidence_arguments["query"]
+    assert "Berlin Agent Engineer" in evidence_arguments["query"]
+    assert [item[0]["status"] for item in orchestrator.audited_attempts] == [
+        "browser_failed",
+        "succeeded",
+    ]
+    assert [item[1] for item in orchestrator.audited_attempts] == [
+        "call-8",
+        "call-12",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_prepared_requests_generic_location_alias_expansion() -> None:
+    class CapturingOrchestrator(JobResearchOrchestrator):
+        def __init__(self) -> None:
+            super().__init__(None, None)  # type: ignore[arg-type]
+            self.arguments = None
+
+        def _missing(self, dependencies):
+            return ()
+
+        async def _call(self, tool_name, arguments, context):
+            self.arguments = dict(arguments)
+            result = ToolResult(ok=True, data={"results": [{
+                "title": "智能体研发工程师",
+                "url": "https://example.test/jobs/42",
+            }]})
+            return result, SkillToolTrace(
+                tool_name=tool_name,
+                call_id="search-call",
+                arguments=dict(arguments),
+                result=result.model_dump(mode="json"),
+                gate_outcome="allow",
+            )
+
+    orchestrator = CapturingOrchestrator()
+    prepared = SkillRunResult(
+        status="search_profile_ready",
+        data={"search_profile": {
+            "query": "AI Agent engineer",
+            "location": "深圳",
+            "location_alias": "Shenzhen",
+            "evidence_refs": ["E1"],
+        }},
+    )
+
+    await orchestrator.search_prepared(
+        prepared=prepared,
+        context=ToolContext(session_id=uuid4(), turn_id=uuid4()),
+        limit=5,
+    )
+
+    assert orchestrator.arguments == {
+        "query": "AI Agent engineer",
+        "location": "深圳",
+        "location_alias": "Shenzhen",
+        "limit": 5,
+        "expand_location_aliases": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_prepare_request_adds_alias_only_for_non_latin_location() -> None:
+    class ProfileBuilder:
+        async def build(self, **kwargs):
+            return PublicJobSearchProfile(
+                query="AI Agent engineer",
+                location="深圳",
+                evidence_refs=("E1",),
+            )
+
+    class AliasBuilder:
+        def __init__(self):
+            self.locations = []
+
+        async def build(self, *, location, provider, model):
+            self.locations.append(location)
+            return "Shenzhen"
+
+    class PreparingOrchestrator(JobResearchOrchestrator):
+        def _missing(self, dependencies):
+            return ()
+
+        def _audit_profile_attempts(self, *args, **kwargs):
+            return None
+
+        async def _call(self, tool_name, arguments, context):
+            result = ToolResult(
+                ok=True,
+                data={
+                    "evidence": [
+                        {
+                            "quote": "Python and AI systems",
+                            "filename": "resume.md",
+                            "start_line": 1,
+                            "end_line": 1,
+                        }
+                    ]
+                },
+            )
+            return result, SkillToolTrace(
+                tool_name=tool_name,
+                call_id="evidence-call",
+                arguments=dict(arguments),
+                result=result.model_dump(mode="json"),
+                gate_outcome="allow",
+            )
+
+    alias_builder = AliasBuilder()
+    orchestrator = PreparingOrchestrator(
+        None,  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        profile_builder=ProfileBuilder(),  # type: ignore[arg-type]
+        location_alias_builder=alias_builder,  # type: ignore[arg-type]
+    )
+
+    result = await orchestrator.prepare_request(
+        user_request="根据我的简历查询深圳的岗位",
+        context=ToolContext(session_id=uuid4(), turn_id=uuid4()),
+        provider=SimpleNamespace(name="test-provider"),
+        model="test-model",
+    )
+
+    assert result.data["search_profile"]["location_alias"] == "Shenzhen"
+    assert alias_builder.locations == ["深圳"]
+
+
+@pytest.mark.asyncio
+async def test_resume_evidence_falls_back_to_local_comparison_retrieval() -> None:
+    class FallbackOrchestrator(_ScriptedCandidateOrchestrator):
+        def __init__(self) -> None:
+            super().__init__()
+            self.evidence_calls = 0
+
+        async def _call(self, tool_name, arguments, context):
+            if tool_name == self.evidence_tool_name:
+                self.evidence_calls += 1
+                if self.evidence_calls == 1:
+                    self.calls.append((tool_name, dict(arguments)))
+                    result = ToolResult(
+                        ok=False,
+                        data={"evidence": []},
+                        error_code="no_evidence",
+                    )
+                    return result, SkillToolTrace(
+                        tool_name=tool_name,
+                        call_id="call-evidence-empty",
+                        arguments=dict(arguments),
+                        result=result.model_dump(mode="json"),
+                        gate_outcome="allow",
+                        error_code=result.error_code,
+                    )
+            return await super()._call(tool_name, arguments, context)
+
+    orchestrator = FallbackOrchestrator()
+    result, traces = await orchestrator._retrieve_resume_evidence(
+        query="AI Engineer",
+        jobs=(
+            {
+                "title": "AI Engineer",
+                "responsibilities": ["Build agents"],
+                "requirements": ["Python"],
+            },
+        ),
+        top_k=6,
+        context=ToolContext(session_id=uuid4(), turn_id=uuid4()),
+    )
+
+    assert result.ok is True
+    assert len(traces) == 2
+    evidence_calls = [
+        arguments["query"]
+        for name, arguments in orchestrator.calls
+        if name == orchestrator.evidence_tool_name
+    ]
+    assert evidence_calls[0] != evidence_calls[1]
+    assert evidence_calls[1] == "我的简历匹配这个岗位"

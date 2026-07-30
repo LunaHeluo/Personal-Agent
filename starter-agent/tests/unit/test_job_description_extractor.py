@@ -144,6 +144,45 @@ def test_extracts_and_normalizes_plain_text() -> None:
     assert result.completeness == "complete"
 
 
+def test_extracts_chinese_position_description_and_job_requirements_from_html() -> None:
+    result = JobDescriptionExtractor().extract(
+        """
+        <html><body><h1>智能体研发工程师</h1>
+        <h2>职位描述</h2><ul><li>设计并交付企业智能体。</li></ul>
+        <h2>岗位要求</h2><ul><li>熟悉 Python 和大模型应用。</li></ul>
+        </body></html>
+        """,
+        "text/html",
+    )
+
+    assert result.responsibilities == ["设计并交付企业智能体。"]
+    assert result.requirements == ["熟悉 Python 和大模型应用。"]
+
+
+def test_extracts_chinese_work_duties_and_position_requirements_from_plain_text() -> None:
+    result = JobDescriptionExtractor().extract(
+        "智能体工程师\n工作职责\n研发智能体平台。\n职位要求\n具备 Python 经验。",
+        "text/plain",
+    )
+
+    assert result.responsibilities == ["研发智能体平台。"]
+    assert result.requirements == ["具备 Python 经验。"]
+
+
+def test_extracts_chinese_job_duties_and_employment_requirements_from_snapshot() -> None:
+    result = JobDescriptionExtractor().extract_playwright_snapshot(
+        '''- Page Title: 示例科技 - 大模型应用工程师
+- heading "大模型应用工程师" [level=1]
+- heading "岗位职责" [level=2]
+- listitem: 负责生成式 AI 应用开发。
+- heading "任职要求" [level=2]
+- listitem: 熟悉 Python 与 LLM。'''
+    )
+
+    assert result.responsibilities == ["负责生成式 AI 应用开发。"]
+    assert result.requirements == ["熟悉 Python 与 LLM。"]
+
+
 def test_extracts_playwright_accessibility_snapshot() -> None:
     snapshot = """
     ### Page
@@ -212,6 +251,119 @@ def test_extracts_lever_playwright_snapshot_shape() -> None:
     assert result.responsibilities == ["Build reliable models."]
     assert result.requirements == ["Production Python experience."]
     assert result.completeness == "complete"
+
+
+def test_extracts_company_and_sections_from_generic_career_page_title() -> None:
+    snapshot = """
+    ### Page
+    - Page URL: https://careers.example.test/job/42/software-engineer
+    - Page Title: Software Engineer in Chengdu, Sichuan, China | IT at Example Corp
+    ### Snapshot
+    ```yaml
+    - heading "Software Engineer" [level=1] [ref=e1]
+    - generic [ref=e2]: Location: Chengdu
+    - heading "What you will do" [level=2] [ref=e3]
+    - listitem [ref=e4]: Build reliable backend services.
+    - heading "What we're looking for" [level=2] [ref=e5]
+    - listitem [ref=e6]: Strong Python experience.
+    ```
+    """
+
+    result = JobDescriptionExtractor().extract_playwright_snapshot(snapshot)
+
+    assert result.title == "Software Engineer"
+    assert result.company == "Example Corp"
+    assert result.location == "Chengdu"
+    assert result.responsibilities == ["Build reliable backend services."]
+    assert result.requirements == ["Strong Python experience."]
+    assert result.completeness == "complete"
+
+
+def test_extracts_randstad_style_job_and_requirements_sections() -> None:
+    snapshot = """
+    ### Page
+    - Page URL: https://www.randstad.com/jobs/agent-engineer_shanghai_42/
+    - Page Title: Job opening - AI Agent Engineer in 上海 | Randstad
+    ### Snapshot
+    ```yaml
+    - heading "AI Agent Engineer" [level=1] [ref=e1]
+    - generic [ref=e2]: Location: 上海, Shanghai
+    - heading "about the company." [level=2] [ref=e3]
+    - paragraph [ref=e4]: An undisclosed technology company.
+    - heading "about the job." [level=2] [ref=e5]
+    - listitem [ref=e6]: Design and maintain Python agent services.
+    - listitem [ref=e7]: Build multi-agent tool integrations.
+    - heading "skills and experience required." [level=2] [ref=e8]
+    - listitem [ref=e9]: Five years of Python backend experience.
+    - listitem [ref=e10]: Production experience with agent frameworks.
+    ```
+    """
+
+    result = JobDescriptionExtractor().extract_playwright_snapshot(snapshot)
+
+    assert result.title == "AI Agent Engineer"
+    assert result.company == ""
+    assert result.location == "上海, Shanghai"
+    assert result.responsibilities == [
+        "Design and maintain Python agent services.",
+        "Build multi-agent tool integrations.",
+    ]
+    assert result.requirements == [
+        "Five years of Python backend experience.",
+        "Production experience with agent frameworks.",
+    ]
+    assert result.completeness == "complete"
+
+
+def test_extracts_source_backed_sections_from_single_job_details_block() -> None:
+    snapshot = """
+    ### Page
+    - Page URL: https://careers.example.test/role/42
+    - Page Title: Agent Engineer | Example Careers
+    ### Snapshot
+    ```yaml
+    - heading "Agent Engineer" [level=1] [ref=e1]
+    - generic [ref=e2]: Location: Shanghai
+    - heading "Job details" [level=2] [ref=e3]
+    - paragraph [ref=e4]: You will build and evaluate agent workflows.
+    - paragraph [ref=e5]: You have production Python and API experience.
+    ```
+    """
+
+    result = JobDescriptionExtractor().extract_playwright_snapshot(snapshot)
+
+    assert result.responsibilities == [
+        "You will build and evaluate agent workflows."
+    ]
+    assert result.requirements == [
+        "You have production Python and API experience."
+    ]
+    assert result.page_type == "job_detail"
+    assert result.validation_state == "verified"
+    assert [item.category for item in result.source_spans] == [
+        "responsibility",
+        "requirement",
+    ]
+    assert all(item.text in result.raw_text for item in result.source_spans)
+
+
+def test_does_not_treat_arbitrary_comma_text_as_location() -> None:
+    snapshot = """
+    ### Page
+    - Page URL: https://careers.example.test/role/42
+    - Page Title: Agent Engineer
+    ### Snapshot
+    ```yaml
+    - heading "Agent Engineer" [level=1] [ref=e1]
+    - paragraph [ref=e2]: Python, RAG, APIs
+    - heading "Requirements" [level=2] [ref=e3]
+    - listitem [ref=e4]: Production experience.
+    ```
+    """
+
+    result = JobDescriptionExtractor().extract_playwright_snapshot(snapshot)
+
+    assert result.location == ""
 
 
 def test_malformed_json_ld_falls_back_to_html() -> None:
@@ -405,3 +557,25 @@ def test_deep_wrappers_do_not_use_recursive_container_search(monkeypatch) -> Non
 
     assert result.responsibilities == ["Own roadmap."]
     assert result.requirements == ["3 years of experience."]
+
+
+def test_playwright_snapshot_accepts_reordered_and_multiple_node_attributes() -> None:
+    snapshot = (
+        "### Page\n"
+        "- Page URL: https://jobs.example/role-84\n"
+        "### Snapshot\n"
+        '- heading "Agent Engineer" [ref=e1]\n'
+        "- generic [ref=e2] [cursor=pointer]: Location: Shanghai\n"
+        '- heading "Responsibilities" [ref=e3] [level=2]\n'
+        "- listitem [ref=e4] [cursor=pointer]: Build agent workflows.\n"
+        '- heading "Requirements" [ref=e5]\n'
+        "- listitem [ref=e6] [cursor=pointer]: Python experience required."
+    )
+
+    result = JobDescriptionExtractor().extract_playwright_snapshot(snapshot)
+
+    assert result.title == "Agent Engineer"
+    assert result.location == "Shanghai"
+    assert result.responsibilities == ["Build agent workflows."]
+    assert result.requirements == ["Python experience required."]
+    assert result.validation_state == "verified"

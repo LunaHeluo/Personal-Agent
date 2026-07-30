@@ -40,3 +40,12 @@ def test_unconfigured_local_provider_is_not_exposed() -> None:
     settings = load_settings(config_path)
 
     assert "local" not in settings.providers
+
+
+def test_job_research_settings_have_bounded_defaults() -> None:
+    config_path = Path(__file__).resolve().parents[2] / "config" / "config.example.yaml"
+    settings = load_settings(config_path)
+
+    assert settings.job_research.jd_freshness_days == 30
+    assert settings.job_research.max_candidate_urls == 5
+    assert settings.job_research.target_valid_jds == 3

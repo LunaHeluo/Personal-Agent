@@ -8,6 +8,7 @@ from starter_agent.tools.builtin.job_search import (
     SearchJobsSerpApiTool,
     sanitize_url,
 )
+from starter_agent.tools.adapters.serpapi_location import LocationResolution
 
 
 class FakeResponse:
@@ -17,7 +18,13 @@ class FakeResponse:
         self.response = httpx.Response(status_code, request=request)
 
     def raise_for_status(self) -> None:
-        self.response.raise_for_status()
+        if self.response.status_code >= 400:
+            response = httpx.Response(
+                self.response.status_code,
+                request=self.response.request,
+                json=self.payload,
+            )
+            response.raise_for_status()
 
     def json(self) -> object:
         return self.payload
@@ -36,9 +43,104 @@ class FakeClient:
         return response
 
 
+class FakeLocationResolver:
+    def __init__(self, result: LocationResolution):
+        self.result = result
+        self.calls = []
+
+    async def resolve(self, location: str) -> LocationResolution:
+        self.calls.append(location)
+        return self.result
+
+
+class SequentialLocationResolver:
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    async def resolve(self, location: str) -> LocationResolution:
+        self.calls.append(location)
+        return self.results.pop(0)
+
+
+def resolved_location(value: str) -> FakeLocationResolver:
+    return FakeLocationResolver(
+        LocationResolution(
+            requested=value,
+            canonical_name=value,
+            status="resolved",
+        )
+    )
+
+
 def context() -> ToolContext:
     return ToolContext(session_id=uuid4(), turn_id=uuid4())
 
+
+async def test_non_latin_location_uses_only_provider_validated_alias():
+    resolver = SequentialLocationResolver(
+        [
+            LocationResolution("上海", None, "not_found"),
+            LocationResolution(
+                "Shanghai",
+                "Shanghai,Shanghai,China",
+                "resolved",
+                city_alias="Shanghai",
+                country_code="cn",
+            ),
+        ]
+    )
+    client = FakeClient(
+        [
+            FakeResponse({"jobs_results": []}),
+            FakeResponse(
+                {
+                    "organic_results": [
+                        {
+                            "title": "上海 AI Agent 工程师",
+                            "link": "https://employer.example/jobs/42",
+                            "snippet": "岗位职责：构建智能体。任职要求：Python。",
+                        }
+                    ]
+                }
+            ),
+        ]
+        + [
+            FakeResponse({"jobs_results": []}),
+            FakeResponse({"organic_results": []}),
+        ]
+        * 11
+    )
+    tool = SearchJobsSerpApiTool(
+        key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
+        client=client,
+        location_resolver=resolver,
+    )
+
+    result = await tool.execute(
+        {
+            "query": "AI Agent engineer",
+            "location": "上海",
+            "location_alias": "Shanghai",
+            "expand_location_aliases": True,
+        },
+        context(),
+    )
+
+    assert result.ok
+    assert resolver.calls == ["上海", "Shanghai"]
+    assert result.data["resolved_location"] == "Shanghai,Shanghai,China"
+    assert result.data["location_aliases"] == ["上海", "Shanghai"]
+    assert all(
+        call["params"]["hl"]
+        == ("zh" if call["params"]["engine"] == "google_jobs" else "zh-cn")
+        for call in client.calls
+    )
+    assert all(call["params"]["gl"] == "cn" for call in client.calls)
+    assert all(
+        call["params"]["google_domain"] == "google.com"
+        for call in client.calls
+    )
 
 async def test_missing_key_is_safe_and_does_not_call_provider() -> None:
     client = FakeClient([])
@@ -82,6 +184,7 @@ async def test_google_jobs_result_has_source_time_and_no_secret() -> None:
     tool = SearchJobsSerpApiTool(
         key_resolver=lambda: ("primary", secret, "SERPAPI_API_KEY"),
         client=client,
+        location_resolver=resolved_location("Sydney"),
     )
 
     result = await tool.execute(
@@ -95,6 +198,273 @@ async def test_google_jobs_result_has_source_time_and_no_secret() -> None:
     assert result.data["results"][0]["retrieved_at"]
     assert result.data["results"][0]["url"] == "https://jobs.example/1?ref=public"
     assert secret not in result.model_dump_json()
+
+
+async def test_google_jobs_prefers_all_direct_apply_links_before_share_link() -> None:
+    client = FakeClient(
+        [
+            FakeResponse(
+                {
+                    "jobs_results": [
+                        {
+                            "title": "Agent Engineer",
+                            "company_name": "Example",
+                            "location": "Berlin",
+                            "share_link": "https://search.example.test/share/42",
+                            "apply_options": [
+                                {
+                                    "title": "Employer",
+                                    "link": "https://employer.example.test/jobs/42",
+                                },
+                                {
+                                    "title": "Board",
+                                    "link": "https://board.example-new.test/jobs/42",
+                                },
+                            ],
+                        }
+                    ]
+                }
+            )
+        ]
+    )
+    tool = SearchJobsSerpApiTool(
+        key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
+        client=client,
+        location_resolver=resolved_location("Berlin"),
+    )
+
+    result = await tool.execute(
+        {"query": "Agent engineer", "location": "Berlin", "limit": 3},
+        context(),
+    )
+
+    assert [item["url_kind"] for item in result.data["results"]] == [
+        "structured_apply",
+        "structured_apply",
+        "structured_share",
+    ]
+    assert result.data["results"][0]["url"] == (
+        "https://employer.example.test/jobs/42"
+    )
+
+
+async def test_sparse_google_jobs_results_are_augmented_with_organic_details() -> None:
+    client = FakeClient(
+        [
+            FakeResponse(
+                {
+                    "jobs_results": [
+                        {
+                            "title": "Agent Engineer",
+                            "company_name": "Example",
+                            "location": "Shanghai",
+                            "apply_options": [
+                                {
+                                    "title": "Employer",
+                                    "link": "https://employer.example.test/jobs/42",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ),
+            FakeResponse(
+                {
+                    "organic_results": [
+                        {
+                            "title": "Agent Platform Engineer",
+                            "link": "https://careers.example.test/jobs/84",
+                            "snippet": "Build agent platforms",
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+    tool = SearchJobsSerpApiTool(
+        key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
+        client=client,
+        location_resolver=resolved_location("Shanghai"),
+    )
+
+    result = await tool.execute(
+        {"query": "AI Agent", "location": "Shanghai", "limit": 3},
+        context(),
+    )
+
+    assert result.ok
+    assert result.data["search_engine"] == "google_jobs+google"
+    assert {item["url"] for item in result.data["results"]} == {
+        "https://employer.example.test/jobs/42",
+        "https://careers.example.test/jobs/84",
+    }
+
+
+async def test_sparse_share_links_are_augmented_with_organic_detail_pages() -> None:
+    client = FakeClient(
+        [
+            FakeResponse(
+                {
+                    "jobs_results": [
+                        {
+                            "title": "Agent Engineer",
+                            "company_name": "Example",
+                            "location": "Shanghai",
+                            "share_link": "https://jobs.google.com/share/42",
+                        }
+                    ]
+                }
+            ),
+            FakeResponse(
+                {
+                    "organic_results": [
+                        {
+                            "title": "Agent Engineer | Example Careers",
+                            "link": "https://careers.example.test/jobs/42",
+                            "snippet": "Responsibilities and requirements",
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+    tool = SearchJobsSerpApiTool(
+        key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
+        client=client,
+        location_resolver=resolved_location("Shanghai"),
+    )
+
+    result = await tool.execute(
+        {"query": "AI Agent", "location": "Shanghai", "limit": 3},
+        context(),
+    )
+
+    assert result.ok
+    assert result.data["search_engine"] == "google_jobs+google"
+    assert {item["url"] for item in result.data["results"]} == {
+        "https://jobs.google.com/share/42",
+        "https://careers.example.test/jobs/42",
+    }
+
+
+async def test_search_uses_dynamically_resolved_canonical_location() -> None:
+    client = FakeClient([FakeResponse({"jobs_results": []}), FakeResponse({"organic_results": []})])
+    resolver = FakeLocationResolver(
+        LocationResolution(
+            requested="深圳",
+            canonical_name="Shenzhen,Guangdong Province,China",
+            status="resolved",
+        )
+    )
+    tool = SearchJobsSerpApiTool(
+        key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
+        client=client,
+        location_resolver=resolver,
+    )
+
+    result = await tool.execute(
+        {"query": "Python backend engineer", "location": "深圳"}, context()
+    )
+
+    assert result.error_code == "no_results"
+    assert resolver.calls == ["深圳"]
+    assert client.calls[0]["params"]["location"] == (
+        "Shenzhen,Guangdong Province,China"
+    )
+    assert client.calls[0]["params"]["q"] == "Python backend engineer"
+
+
+async def test_unsupported_location_degrades_to_query_without_location_parameter() -> None:
+    client = FakeClient([FakeResponse({"jobs_results": []}), FakeResponse({"organic_results": []})])
+    resolver = FakeLocationResolver(
+        LocationResolution(
+            requested="深圳",
+            canonical_name=None,
+            status="not_found",
+        )
+    )
+    tool = SearchJobsSerpApiTool(
+        key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
+        client=client,
+        location_resolver=resolver,
+    )
+
+    result = await tool.execute(
+        {"query": "Python backend engineer", "location": "深圳"}, context()
+    )
+
+    assert result.error_code == "no_results"
+    assert client.calls[0]["params"]["q"] == "Python backend engineer 深圳"
+    assert "location" not in client.calls[0]["params"]
+    assert client.calls[1]["params"]["q"] == (
+        'Python backend engineer 深圳 "responsibilities" "requirements" '
+        "current opening apply"
+    )
+    assert result.metadata["location_resolution_status"] == "not_found"
+
+
+async def test_provider_rejected_location_retries_once_without_location_parameter():
+    client = FakeClient(
+        [
+            FakeResponse(
+                {"error": "Unsupported location - location parameter."},
+                status_code=400,
+            ),
+            FakeResponse(
+                {
+                    "jobs_results": [
+                        {
+                            "title": "Python Backend Engineer",
+                            "company_name": "Example",
+                            "location": "Shenzhen",
+                            "share_link": "https://jobs.example.com/backend",
+                        }
+                    ]
+                }
+            ),
+            FakeResponse({"organic_results": []}),
+        ]
+    )
+    resolver = FakeLocationResolver(
+        LocationResolution(
+            requested="深圳",
+            canonical_name="Shenzhen,Guangdong Province,China",
+            status="resolved",
+        )
+    )
+    tool = SearchJobsSerpApiTool(
+        key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
+        client=client,
+        location_resolver=resolver,
+    )
+
+    result = await tool.execute(
+        {"query": "Python backend engineer", "location": "深圳"}, context()
+    )
+
+    assert result.ok
+    assert len(client.calls) == 3
+    assert client.calls[0]["params"]["location"] == (
+        "Shenzhen,Guangdong Province,China"
+    )
+    assert client.calls[1]["params"]["q"] == "Python backend engineer 深圳"
+    assert "location" not in client.calls[1]["params"]
+    assert result.metadata["location_fallback_used"] is True
+
+
+async def test_http_400_keeps_bounded_safe_provider_error_classification():
+    tool = SearchJobsSerpApiTool(
+        key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
+        client=FakeClient(
+            [FakeResponse({"error": "Malformed search request"}, status_code=400)]
+        ),
+    )
+
+    result = await tool.execute({"query": "Python backend engineer"}, context())
+
+    assert result.error_code == "invalid_search_request"
+    assert result.metadata["provider_error_code"] == "invalid_request"
+    assert result.metadata["provider_error_summary"] == "Malformed search request"
 
 
 async def test_empty_google_jobs_falls_back_to_google() -> None:
@@ -117,6 +487,7 @@ async def test_empty_google_jobs_falls_back_to_google() -> None:
     tool = SearchJobsSerpApiTool(
         key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
         client=client,
+        location_resolver=resolved_location("Sydney"),
     )
 
     result = await tool.execute(
@@ -128,8 +499,68 @@ async def test_empty_google_jobs_falls_back_to_google() -> None:
     assert len(client.calls) == 2
     assert client.calls[0]["params"]["engine"] == "google_jobs"
     assert client.calls[1]["params"]["engine"] == "google"
+    assert client.calls[1]["params"]["q"] == (
+        'AI Agent engineer jobs Sydney "responsibilities" "requirements" '
+        "current opening apply"
+    )
     assert result.data["search_engine"] == "google"
     assert result.data["results"][0]["source"] == "serpapi_google"
+
+
+async def test_unusable_google_jobs_candidates_fall_back_to_google() -> None:
+    client = FakeClient(
+        [
+            FakeResponse(
+                {
+                    "jobs_results": [
+                        {
+                            "title": "成都ai工程师招聘信息",
+                            "company_name": "",
+                            "location": "成都",
+                            "apply_options": [
+                                {
+                                    "title": "Search page",
+                                    "link": "https://board.example/zhaopin/ai-engineer/",
+                                }
+                            ],
+                            "share_link": (
+                                "https://social.example/jobs/ai-chengdu-jobs"
+                                "?position=1&pageNum=0"
+                            ),
+                        }
+                    ]
+                }
+            ),
+            FakeResponse(
+                {
+                    "organic_results": [
+                        {
+                            "title": "AI Agent Platform Engineer",
+                            "link": "https://employer.example/careers/openings/agent-42",
+                            "snippet": "Build and operate production agent systems.",
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+    tool = SearchJobsSerpApiTool(
+        key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
+        client=client,
+        location_resolver=resolved_location("Chengdu"),
+    )
+
+    result = await tool.execute(
+        {"query": "AI Agent engineer", "location": "Chengdu", "limit": 5},
+        context(),
+    )
+
+    assert result.ok
+    assert len(client.calls) == 2
+    assert result.data["search_engine"] == "google"
+    assert [item["url"] for item in result.data["results"]] == [
+        "https://employer.example/careers/openings/agent-42"
+    ]
 
 
 async def test_google_jobs_no_results_error_falls_back_to_google() -> None:
@@ -154,6 +585,7 @@ async def test_google_jobs_no_results_error_falls_back_to_google() -> None:
     tool = SearchJobsSerpApiTool(
         key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
         client=client,
+        location_resolver=resolved_location("Sydney"),
     )
 
     result = await tool.execute(
@@ -190,6 +622,107 @@ async def test_invalid_limit_is_rejected(limit) -> None:
     result = await tool.execute(
         {"query": "AI Agent jobs", "limit": limit}, context()
     )
+    assert result.error_code == "invalid_arguments"
+
+
+async def test_multi_query_search_uses_engine_compatible_localization() -> None:
+    client = FakeClient(
+        [
+            FakeResponse({"jobs_results": []}),
+            FakeResponse({"organic_results": [{
+                "title": "智能体研发工程师",
+                "link": "https://employer.example/jobs/agent-1",
+                "snippet": "岗位职责：研发智能体。任职要求：熟悉 Python。",
+            }]}),
+        ]
+    )
+    tool = SearchJobsSerpApiTool(
+        key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
+        client=client,
+        location_resolver=resolved_location("Shanghai, China"),
+    )
+
+    result = await tool.execute(
+        {
+            "query": "AI Agent",
+            "query_variants": ["上海 AI Agent 工程师 招聘"],
+            "location": "Shanghai, China",
+            "hl": "zh-cn",
+            "gl": "cn",
+            "google_domain": "google.com",
+            "limit": 5,
+        },
+        context(),
+    )
+
+    assert result.ok
+    assert len(client.calls) == 2
+    assert {item["params"]["engine"] for item in client.calls} == {
+        "google_jobs", "google"
+    }
+    assert all(item["params"]["location"] == "Shanghai, China" for item in client.calls)
+    by_engine = {item["params"]["engine"]: item["params"] for item in client.calls}
+    assert by_engine["google_jobs"]["hl"] == "zh"
+    assert by_engine["google"]["hl"] == "zh-cn"
+    assert all(item["params"]["gl"] == "cn" for item in client.calls)
+    assert all(item["params"]["google_domain"] == "google.com" for item in client.calls)
+    assert result.data["planned_queries"] == ["上海 AI Agent 工程师 招聘"]
+    assert result.data["request_count"] == 2
+    assert result.data["raw_result_count"] == 1
+    assert result.data["results"][0]["matched_queries"] == [
+        "上海 AI Agent 工程师 招聘"
+    ]
+    assert result.data["results"][0]["search_engines"] == ["google"]
+
+
+async def test_ranking_diagnostics_keep_top_ten_independent_of_result_limit() -> None:
+    organic = [
+        {
+            "title": f"AI Agent Engineer {index}",
+            "link": f"https://employer-{index}.example/jobs/{index}",
+            "snippet": "Responsibilities: build agents. Requirements: Python.",
+        }
+        for index in range(6)
+    ]
+    tool = SearchJobsSerpApiTool(
+        key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
+        client=FakeClient([
+            FakeResponse({"jobs_results": []}),
+            FakeResponse({"organic_results": organic}),
+        ]),
+    )
+
+    result = await tool.execute(
+        {
+            "query": "AI Agent",
+            "query_variants": ["Munich AI Agent Engineer jobs"],
+            "limit": 1,
+        },
+        context(),
+    )
+
+    assert len(result.data["results"]) == 1
+    assert len(result.data["ranking_diagnostics"]) == 6
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"query": "AI Agent", "query_variants": ["q"] * 13},
+        {"query": "AI Agent", "query_variants": []},
+        {"query": "AI Agent", "hl": "bad locale"},
+        {"query": "AI Agent", "gl": "china"},
+        {"query": "AI Agent", "google_domain": "evil.example"},
+    ],
+)
+async def test_multi_query_localization_arguments_are_bounded(arguments) -> None:
+    tool = SearchJobsSerpApiTool(
+        key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
+        client=FakeClient([]),
+    )
+
+    result = await tool.execute(arguments, context())
+
     assert result.error_code == "invalid_arguments"
 
 
@@ -232,6 +765,7 @@ async def test_transient_timeout_is_retried_then_succeeds() -> None:
                     ]
                 }
             ),
+            FakeResponse({"organic_results": []}),
         ]
     )
     tool = SearchJobsSerpApiTool(
@@ -239,6 +773,7 @@ async def test_transient_timeout_is_retried_then_succeeds() -> None:
         client=client,
         max_retries=1,
         retry_backoff_seconds=0,
+        location_resolver=resolved_location("Shanghai"),
     )
 
     result = await tool.execute(
@@ -246,7 +781,7 @@ async def test_transient_timeout_is_retried_then_succeeds() -> None:
     )
 
     assert result.ok
-    assert len(client.calls) == 2
+    assert len(client.calls) == 3
 
 
 async def test_connection_failure_has_actionable_error_after_retry() -> None:

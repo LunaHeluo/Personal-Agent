@@ -15,6 +15,7 @@ from starter_agent.capabilities.models import (
 )
 from starter_agent.capabilities.store import CapabilityStore
 from starter_agent.capabilities.registry import UnifiedToolRegistry
+from starter_agent.tools.base import Tool as BuiltinTool
 from starter_agent.tools.registry import ToolRegistry
 
 
@@ -25,6 +26,16 @@ SCHEMA = {
     "additionalProperties": False,
 }
 SCHEMA_HASH = canonical_json_sha256(SCHEMA)
+
+
+class _BuiltinSource:
+    email_manager = None
+
+    def __init__(self, tools: list[BuiltinTool]) -> None:
+        self._tools = tools
+
+    def list(self) -> list[BuiltinTool]:
+        return self._tools
 
 
 def _gate_module():

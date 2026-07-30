@@ -162,7 +162,12 @@ def test_implemented_dependencies_match_project_scope() -> None:
     assert evidence_tool in _declared_tool_names()
     assert registry.get(evidence_tool) is None
     assert _project_skill_definitions() == [
-        PROJECT_ROOT / "skills" / "job-research" / "SKILL.md"
+        PROJECT_ROOT
+        / "src"
+        / "starter_agent"
+        / "skills"
+        / "job-research"
+        / "SKILL.md"
     ]
     assert {
         "SkillRegistry",
@@ -178,3 +183,52 @@ def test_serpapi_source_comparison_detects_documented_schema_drift() -> None:
     assert drifted_audit != audit
     with pytest.raises(AssertionError):
         _assert_serpapi_contract_matches_source(drifted_audit)
+
+
+def test_trust_layer_task1_audit_captures_current_runtime_and_gaps() -> None:
+    audit = _audit_text()
+    required_current_entries = (
+        "src/starter_agent/agent/runtime.py",
+        "src/starter_agent/application.py",
+        "src/starter_agent/agent/context.py",
+        "src/starter_agent/capabilities/registry.py",
+        "src/starter_agent/mcp/manager.py",
+        "src/starter_agent/skills/registry.py",
+        "src/starter_agent/capabilities/gate.py",
+        "src/starter_agent/capabilities/store.py",
+        "src/starter_agent/infrastructure/session_store.py",
+        "src/starter_agent/observability/logging.py",
+        "src/web/index.html",
+        "model.context.snapshot",
+        "gate.evaluated",
+        "tool.started",
+        "tool.completed",
+        "/v1/capabilities/traces",
+        "/v1/capabilities/context-snapshots/{session_id}",
+        "turn_usage",
+        "tool_artifacts",
+        "job-research",
+        "JobResearchOrchestrator",
+        "search_jobs_serpapi",
+        "mcp__playwright__browser_navigate",
+        "mcp__playwright__browser_snapshot",
+        "retrieve_resume_evidence",
+        "#/chat",
+        "#/knowledge",
+        "#/capabilities/mcp-servers",
+        "#/capabilities/skills",
+    )
+    required_gaps = (
+        "没有专用 Eval Runner",
+        "没有固定求职调研 Fixture 目录",
+        "没有 Eval Run/Case 存储",
+        "没有完整 Trust Center",
+        "没有真实模型 Smoke",
+        "缺少独立 model_request_id",
+        "缺少独立 policy_decision_id",
+    )
+
+    for entry in required_current_entries:
+        assert entry in audit
+    for gap in required_gaps:
+        assert gap in audit
