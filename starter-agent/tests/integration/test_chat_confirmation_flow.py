@@ -295,8 +295,8 @@ async def test_runtime_run_cancel_and_timeout_each_emit_one_terminal(
             on_tool_event=on_event,
         )
     )
-    pending = await _wait_for_pending(confirmations)
     if decision is not None:
+        pending = await _wait_for_pending(confirmations)
         confirmations.decide(
             pending.id,
             expected_revision=pending.revision,
@@ -317,6 +317,7 @@ async def test_runtime_run_cancel_and_timeout_each_emit_one_terminal(
     completed = [
         event for event in flow_events if event["type"] == "tool_completed"
     ][0]
+    assert any(event["type"] == "confirmation_required" for event in flow_events)
     assert completed["status"] == terminal_status
     assert completed["tool_invoked"] is False
     assert tool.calls == 0
@@ -397,8 +398,8 @@ async def test_cancel_and_timeout_emit_authoritative_zero_invocation_terminal(
             on_tool_event=on_event,
         )
     )
-    pending = await _wait_for_pending(confirmations)
     if decision is not None:
+        pending = await _wait_for_pending(confirmations)
         confirmations.decide(
             pending.id,
             expected_revision=pending.revision,
@@ -411,6 +412,7 @@ async def test_cancel_and_timeout_emit_authoritative_zero_invocation_terminal(
         await task
 
     assert tool.calls == 0
+    assert any(event["type"] == "confirmation_required" for event in events)
     assert not any(event["type"] == "tool_started" for event in events)
     terminal = [
         event for event in events if event["type"] == "confirmation_resolved"

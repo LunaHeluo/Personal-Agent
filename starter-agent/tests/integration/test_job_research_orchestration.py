@@ -1,3 +1,4 @@
+import asyncio
 import ipaddress
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -7,6 +8,10 @@ from starter_agent.capabilities.gate import (
     NetworkGuardAttestation,
     PreToolCallGate,
     UnifiedToolExecutor,
+)
+from starter_agent.capabilities.confirmations import (
+    ConfirmationService,
+    TurnCoordinator,
 )
 from starter_agent.capabilities.models import (
     PolicyRule,
@@ -18,8 +23,9 @@ from starter_agent.capabilities.models import (
 from starter_agent.capabilities.policy import BrowserScopePolicy
 from starter_agent.capabilities.registry import UnifiedToolRegistry
 from starter_agent.capabilities.store import CapabilityStore
-from starter_agent.domain.models import ToolResult
+from starter_agent.domain.models import ModelResponse, ToolResult
 from starter_agent.skills.job_research import JobResearchOrchestrator
+from starter_agent.skills.models import SkillRunResult
 from starter_agent.settings import load_settings
 from starter_agent.mcp.config import McpConfiguration, McpServerConfig
 from starter_agent.mcp.manager import McpManager
@@ -51,6 +57,7 @@ class _SearchTool(Tool):
             "query": {"type": "string"},
             "location": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 10},
+            "expand_location_aliases": {"type": "boolean"},
         },
         "required": ["query"],
         "additionalProperties": False,
@@ -90,6 +97,123 @@ class _Knowledge:
                 rank=1,
             )
         ]
+
+
+class _ProfileProvider:
+    name = "profile-test"
+
+    async def complete(self, messages, model, tools, **kwargs):
+        return ModelResponse(
+            content=(
+                '{"query":"AI Agent engineer","location":"Shanghai",'
+                '"evidence_refs":["E1"]}'
+            ),
+            provider=self.name,
+            model=model,
+        )
+
+    async def health(self, model):
+        return True, "ok"
+
+
+class _InvalidProfileProvider:
+    name = "invalid-profile-test"
+
+    async def complete(self, messages, model, tools, **kwargs):
+        return ModelResponse(
+            content="这不是 JSON 搜索画像。",
+            provider=self.name,
+            model=model,
+        )
+
+    async def health(self, model):
+        return True, "ok"
+
+
+async def test_job_skill_waits_for_confirmation_and_invokes_search_once(tmp_path):
+    search = _SearchTool()
+    registry = UnifiedToolRegistry(_Builtins([search]))
+    store = CapabilityStore("sqlite:///:memory:", tmp_path)
+    gate = PreToolCallGate(store, registry=registry)
+    executor = UnifiedToolExecutor(store, gate=gate)
+    calls = 0
+
+    async def invoke(arguments, context):
+        nonlocal calls
+        calls += 1
+        return await search.execute(dict(arguments), context)
+
+    executor.register_invoker(
+        server_id="builtin",
+        tool_name=search.name,
+        invoker=invoke,
+    )
+    confirmations = ConfirmationService(
+        store,
+        gate,
+        confirmation_ttl_seconds=2,
+    )
+    coordinator = TurnCoordinator(
+        confirmations,
+        confirmation_timeout_seconds=2,
+    )
+    events = []
+
+    async def on_event(event):
+        events.append(event)
+
+    context = ToolContext(
+        session_id=uuid4(),
+        turn_id=uuid4(),
+        on_tool_event=on_event,
+    )
+    orchestrator = JobResearchOrchestrator(
+        registry,
+        executor,
+        turn_coordinator=coordinator,
+    )
+    prepared = SkillRunResult(
+        status="search_profile_ready",
+        data={
+            "search_profile": {
+                "query": "AI Agent engineer",
+                "location": "Shanghai",
+            }
+        },
+    )
+
+    task = asyncio.create_task(
+        orchestrator.search_prepared(
+            prepared=prepared,
+            context=context,
+            limit=1,
+        )
+    )
+    for _ in range(100):
+        pending = confirmations.list_pending(session_id=str(context.session_id))
+        if pending:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("confirmation was not persisted")
+    assert calls == 0
+    confirmation = pending[0]
+    confirmations.decide(
+        confirmation.id,
+        expected_revision=confirmation.revision,
+        idempotency_key="job-search-confirm-once",
+        decision="once",
+        actor="local-user",
+    )
+
+    result = await task
+
+    assert result.status == "waiting_for_url_selection"
+    assert calls == 1
+    assert [event["type"] for event in events] == [
+        "confirmation_required",
+        "confirmation_resolved",
+    ]
 
 
 async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(tmp_path):
@@ -273,9 +397,10 @@ async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(t
         knowledge_base_id=knowledge_base_id,
     )
 
-    search_result = await orchestrator.search(
-        query="AI Agent engineer",
-        location="Shanghai",
+    search_result = await orchestrator.search_from_request(
+        user_request="根据我的简历搜索上海的岗位",
+        provider=_ProfileProvider(),
+        model="profile-test-model",
         limit=1,
         context=context,
     )
@@ -290,12 +415,14 @@ async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(t
         result.status == "waiting_for_jd_ingestion_confirmation"
     ), result.model_dump()
     assert invoked == [
+        "retrieve_resume_evidence",
         "search_jobs_serpapi",
         "browser_navigate",
         "browser_snapshot",
         "retrieve_resume_evidence",
     ]
     assert [item.tool_name for item in (*search_result.trace, *result.trace)] == [
+        "retrieve_resume_evidence",
         "search_jobs_serpapi",
         "mcp__playwright__browser_navigate",
         "mcp__playwright__browser_snapshot",
@@ -311,7 +438,7 @@ async def test_job_research_calls_every_real_tool_through_gate_and_keeps_trace(t
             for event in store.list_audit_events()
             if event.action == "tool.invoked" and event.decision == "allow"
         ]
-    ) == 4
+    ) == 5
 
 
 async def test_missing_dependency_fails_closed_without_tool_invocation(tmp_path):
@@ -333,6 +460,93 @@ async def test_missing_dependency_fails_closed_without_tool_invocation(tmp_path)
     assert result.missing_dependencies == ("tool:search_jobs_serpapi",)
     assert result.trace == ()
     assert store.list_audit_events() == []
+
+
+async def test_invalid_profile_is_audited_without_search_or_sensitive_text(tmp_path):
+    search = _SearchTool()
+    rag = RetrieveResumeEvidenceTool(_Knowledge())
+    registry = UnifiedToolRegistry(_Builtins([search, rag]))
+    store = CapabilityStore("sqlite:///:memory:", tmp_path)
+    for tool in (search, rag):
+        store.create_policy_rule(
+            PolicyRule(
+                id=f"allow-{tool.name}",
+                server_id="builtin",
+                tool_name=tool.name,
+                effect="allowlist_auto",
+                schema_hash=canonical_json_sha256(tool.input_schema),
+                created_by="test",
+            )
+        )
+    gate = PreToolCallGate(store, registry=registry)
+    executor = UnifiedToolExecutor(store, gate=gate)
+    invoked = []
+    knowledge_base_id = uuid4()
+
+    async def invoke_builtin(arguments, context, *, tool):
+        invoked.append(tool.name)
+        return await tool.execute(dict(arguments), context)
+
+    for tool in (search, rag):
+        executor.register_invoker(
+            server_id="builtin",
+            tool_name=tool.name,
+            invoker=lambda arguments, context, tool=tool: invoke_builtin(
+                arguments,
+                context,
+                tool=tool,
+            ),
+            context_factory=lambda request: ToolContext(
+                session_id=uuid4(),
+                turn_id=uuid4(),
+                tool_call_id=request.call_id,
+                user_id="local-user",
+                project_id="project",
+                knowledge_base_id=knowledge_base_id,
+            ),
+        )
+    context = ToolContext(
+        session_id=uuid4(),
+        turn_id=uuid4(),
+        user_id="local-user",
+        project_id="project",
+        knowledge_base_id=knowledge_base_id,
+    )
+
+    result = await JobResearchOrchestrator(registry, executor).search_from_request(
+        user_request="根据我的简历查询深圳的岗位",
+        context=context,
+        provider=_InvalidProfileProvider(),
+        model="profile-test-model",
+    )
+
+    assert result.status == "search_profile_required"
+    assert result.error_code == "invalid_json"
+    assert invoked == ["retrieve_resume_evidence"]
+    events = [
+        event
+        for event in store.list_audit_events()
+        if event.action == "model.job_search_profile.completed"
+    ]
+    assert len(events) == 2
+    assert all(event.decision == "error" for event in events)
+    assert all(event.reason_code == "invalid_json" for event in events)
+    assert all(event.session_id == str(context.session_id) for event in events)
+    assert all(event.turn_id == str(context.turn_id) for event in events)
+    for event in events:
+        assert set(event.payload) == {
+            "attempt",
+            "model_request_id",
+            "output_length",
+            "fields",
+            "error_code",
+            "provider",
+            "model",
+            "issues",
+        }
+        assert tuple(event.payload["issues"]) == ("$:json_invalid",)
+        assert "简历" not in str(event.payload)
+        assert "这不是 JSON" not in str(event.payload)
 
 
 async def test_bootstrap_application_entry_fails_closed_after_real_browser_publish(

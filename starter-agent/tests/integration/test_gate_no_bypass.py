@@ -7,11 +7,40 @@ from importlib import import_module
 
 import pytest
 
-from starter_agent.capabilities.models import ExecutionPermit, canonical_json_sha256
+from starter_agent.capabilities.models import (
+    ExecutionPermit,
+    PolicyRule,
+    canonical_json_sha256,
+)
+from starter_agent.capabilities.registry import UnifiedToolRegistry
 from starter_agent.capabilities.store import CapabilityStore
 from starter_agent.bootstrap import create_application
 from starter_agent.domain.models import ToolResult
+from starter_agent.tools.base import Tool
 from mcp import types
+
+
+class _SchemaChangingReadTool(Tool):
+    name = "schema_changing_read"
+    description = "Read public fixture data"
+    risk_level = "read"
+    input_schema = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+        "additionalProperties": False,
+    }
+
+    async def execute(self, arguments, context):
+        return ToolResult(ok=True, data=dict(arguments))
+
+
+class _BuiltinView:
+    def __init__(self, tools):
+        self._tools = list(tools)
+
+    def list(self):
+        return list(self._tools)
 
 
 def _gate_module():
@@ -176,9 +205,70 @@ def test_bootstrap_seeds_explicit_safe_builtin_allowlist_only() -> None:
     resume_rules = runtime.gate.store.list_policy_rules("builtin", "read_resume")
     email_rules = runtime.gate.store.list_policy_rules("builtin", "email_read")
 
-    assert any(rule.effect == "allowlist_auto" for rule in time_rules)
-    assert not any(rule.effect == "allowlist_auto" for rule in resume_rules)
-    assert not any(rule.effect == "allowlist_auto" for rule in email_rules)
+    assert any(
+        rule.effect == "allowlist_auto" and rule.created_by == "bootstrap"
+        for rule in time_rules
+    )
+    assert not any(
+        rule.effect == "allowlist_auto" and rule.created_by == "bootstrap"
+        for rule in resume_rules
+    )
+    assert not any(
+        rule.effect == "allowlist_auto" and rule.created_by == "bootstrap"
+        for rule in email_rules
+    )
+
+
+def test_bootstrap_read_rule_rebinds_only_its_stale_schema_hash() -> None:
+    runtime_module = import_module("starter_agent.agent.runtime")
+    tool = _SchemaChangingReadTool()
+    registry = UnifiedToolRegistry(_BuiltinView([tool]))
+    capability = registry.resolve_execution(tool.name)
+    assert capability is not None
+    store = CapabilityStore("sqlite:///:memory:", project_root=__file__)
+    stale = PolicyRule(
+        id=f"builtin-auto-{tool.name}",
+        server_id="builtin",
+        tool_name=tool.name,
+        effect="allowlist_auto",
+        actions=("read",),
+        schema_hash="a" * 64,
+        created_by="bootstrap",
+    )
+    store.create_policy_rule(stale)
+
+    runtime_module._reconcile_bootstrap_auto_rule(store, capability)
+
+    migrated = store.get_policy_rule(stale.id)
+    assert migrated is not None
+    assert migrated.schema_hash == capability.schema_hash
+    assert migrated.revision == 1
+
+
+def test_bootstrap_rule_reconciliation_never_rebinds_user_rule() -> None:
+    runtime_module = import_module("starter_agent.agent.runtime")
+    tool = _SchemaChangingReadTool()
+    registry = UnifiedToolRegistry(_BuiltinView([tool]))
+    capability = registry.resolve_execution(tool.name)
+    assert capability is not None
+    store = CapabilityStore("sqlite:///:memory:", project_root=__file__)
+    user_rule = PolicyRule(
+        id=f"builtin-auto-{tool.name}",
+        server_id="builtin",
+        tool_name=tool.name,
+        effect="allowlist_auto",
+        actions=("read",),
+        schema_hash="b" * 64,
+        created_by="local-user",
+    )
+    store.create_policy_rule(user_rule)
+
+    runtime_module._reconcile_bootstrap_auto_rule(store, capability)
+
+    unchanged = store.get_policy_rule(user_rule.id)
+    assert unchanged is not None
+    assert unchanged.schema_hash == "b" * 64
+    assert unchanged.revision == 0
 
 
 async def test_executor_revalidates_and_cannot_accept_arbitrary_invoker() -> None:

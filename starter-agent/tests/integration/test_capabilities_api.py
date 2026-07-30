@@ -535,3 +535,52 @@ def test_builtin_enable_override_is_cas_persistent_and_review_is_stable_4xx() ->
     for override in store.list_builtin_tool_overrides():
         restarted.set_tool_enabled(override.tool_name, override.enabled)
     assert restarted.resolve_execution("get_current_time").enabled is False
+
+
+def test_allowlist_policy_confirmation_binds_registry_revision_not_tool_revision() -> None:
+    store = CapabilityStore("sqlite:///:memory:", Path("."))
+    registry = UnifiedToolRegistry(ToolRegistry(["get_current_time"]))
+    registry.notify_policy_changed()
+    services = CapabilityApiServices(
+        manager=_Manager(),
+        registry=registry,
+        skill_registry=None,
+        confirmations=ConfirmationService(
+            store, PreToolCallGate(store, registry=registry)
+        ),
+        store=store,
+        application=None,
+    )
+    app = FastAPI()
+    app.include_router(create_capabilities_router())
+    app.dependency_overrides[get_capability_services] = lambda: services
+    app.dependency_overrides[get_management_principal] = lambda: ManagementPrincipal(
+        subject="test-admin", role="admin"
+    )
+
+    with TestClient(app) as client:
+        proposed = client.post(
+            "/v1/capabilities/tools/get_current_time/policies",
+            json={
+                "expected_revision": 0,
+                "rule_id": "public-read-auto",
+                "effect": "allowlist_auto",
+                "actions": ["read"],
+                "roles": ["user"],
+            },
+        )
+        confirmation = proposed.json()["confirmation"]
+        approved = client.post(
+            f"/v1/capabilities/confirmations/{confirmation['id']}/decisions",
+            json={
+                "expected_revision": confirmation["revision"],
+                "decision": "once",
+                "idempotency_key": "approve-public-read-auto",
+                "session_id": "management",
+            },
+        )
+
+    assert proposed.status_code == 200
+    assert confirmation["arguments_summary"]["expected_revision"] == 1
+    assert approved.status_code == 200
+    assert store.get_policy_rule("public-read-auto") is not None

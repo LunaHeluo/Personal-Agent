@@ -15,6 +15,11 @@ def test_health() -> None:
         response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert len(response.json()["runtime_revision"]) == 64
+    assert response.json()["desired_runtime_revision"] == response.json()[
+        "runtime_revision"
+    ]
+    assert response.json()["restart_required"] is False
 
 
 def test_chat_with_mock() -> None:
@@ -161,8 +166,8 @@ def test_tools_endpoint_returns_enabled_tools() -> None:
     assert "get_current_time" in tools
     assert "search_jobs_serpapi" in tools
     assert tools["search_jobs_serpapi"]["risk_level"] == "read"
-    assert "search_job_description" in tools
-    assert tools["search_job_description"]["risk_level"] == "read"
+    removed_name = "search_job" + "_description"
+    assert removed_name not in tools
     assert tools["read_resume"]["risk_level"] == "read"
     assert tools["list_resume_versions"]["risk_level"] == "read"
     assert tools["save_resume"]["risk_level"] == "write"

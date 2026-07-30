@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -241,6 +242,127 @@ def test_api_lifespan_uses_controlled_manager_in_test_suite(
     assert response.status_code == 200
     assert mcp_test_manager.start_count == 1
     assert mcp_test_manager.shutdown_count == 1
+
+
+def test_api_lifespan_installs_and_restores_windows_proactor_filter(
+    monkeypatch,
+    mcp_test_manager,
+) -> None:
+    events: list[str] = []
+
+    def install(_loop: object):
+        events.append("install")
+
+        def restore() -> None:
+            events.append("restore")
+
+        return restore
+
+    monkeypatch.setattr(
+        api_module,
+        "install_windows_proactor_reset_filter",
+        install,
+        raising=False,
+    )
+
+    with TestClient(api_module.create_api()) as client:
+        assert client.get("/health").status_code == 200
+        assert events == ["install"]
+
+    assert events == ["install", "restore"]
+
+
+def test_api_lifespan_discovers_ready_enabled_mcp_servers(monkeypatch) -> None:
+    class DiscoveringManager:
+        def __init__(self) -> None:
+            self.discovered: list[str] = []
+            self.shutdown_called = False
+
+        async def start(self) -> dict[str, object]:
+            return {
+                "playwright": SimpleNamespace(
+                    enabled=True,
+                    connection_state="ready",
+                ),
+                "disabled": SimpleNamespace(
+                    enabled=False,
+                    connection_state="ready",
+                ),
+                "failed": SimpleNamespace(
+                    enabled=True,
+                    connection_state="failed",
+                ),
+            }
+
+        async def discover(self, server_id: str) -> None:
+            self.discovered.append(server_id)
+
+        async def shutdown(self) -> dict[str, str]:
+            self.shutdown_called = True
+            return {}
+
+    manager = DiscoveringManager()
+    monkeypatch.setattr(api_module, "create_mcp_manager", lambda: manager)
+
+    with TestClient(api_module.create_api()) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert manager.discovered == ["playwright"]
+    assert manager.shutdown_called is True
+
+
+def test_api_lifespan_reloads_skill_dependencies_after_mcp_discovery(
+    monkeypatch,
+) -> None:
+    events: list[str] = []
+
+    class DiscoveringManager:
+        async def start(self) -> dict[str, object]:
+            return {
+                "playwright": SimpleNamespace(
+                    enabled=True,
+                    connection_state="ready",
+                )
+            }
+
+        async def discover(self, server_id: str) -> None:
+            events.append(f"discover:{server_id}")
+
+        async def shutdown(self) -> dict[str, str]:
+            return {}
+
+    class ToolRegistry:
+        def refresh_from_manager(self, _manager: object) -> None:
+            events.append("tools:refresh")
+
+    class SkillRegistry:
+        def reload(self) -> None:
+            events.append("skills:reload")
+
+    class Application:
+        runtime = SimpleNamespace(tools=ToolRegistry())
+        context = SimpleNamespace(skill_registry=SkillRegistry())
+
+        async def wait_for_background_tasks(self) -> None:
+            return None
+
+    application = Application()
+    monkeypatch.setattr(
+        api_module,
+        "create_mcp_manager",
+        lambda: DiscoveringManager(),
+    )
+    monkeypatch.setattr(api_module, "create_application", lambda: application)
+
+    with TestClient(api_module.create_api()):
+        pass
+
+    assert events == [
+        "discover:playwright",
+        "tools:refresh",
+        "skills:reload",
+    ]
 
 
 @pytest.mark.asyncio

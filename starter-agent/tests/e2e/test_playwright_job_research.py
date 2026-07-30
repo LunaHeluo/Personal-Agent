@@ -583,7 +583,9 @@ async def test_real_playwright_mcp_initializes_and_discovers(
             reviewed.model_alias,
             snapshot_tool.model_alias,
             rag_tool.name,
+            rag_tool.name,
         ]
+        assert research.trace[-1].arguments["query"] == "我的简历匹配这个岗位"
         assert all(item.result for item in research.trace)
         analysis = research.data["analysis"]
         matched = [row for row in analysis if row["status"] == "matched"]

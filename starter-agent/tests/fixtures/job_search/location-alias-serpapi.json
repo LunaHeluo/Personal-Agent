@@ -1,0 +1,16 @@
+{
+  "location_aliases": ["深圳", "Shenzhen"],
+  "before_results": [
+    {"title": "AI Application Engineer", "location": "Shanghai", "url": "https://jobs.apple.example/jobs/1", "url_kind": "structured_apply", "provider_position": 0},
+    {"title": "AI Engineer - MLabs", "location": "United States", "url": "https://builtin.com/job/ai-engineer/2", "url_kind": "structured_apply", "provider_position": 1},
+    {"title": "智能体研发工程师", "location": "深圳", "company": "示例一", "url": "https://careers.example-one.cn/jobs/3", "url_kind": "organic", "provider_position": 7}
+  ],
+  "expanded_results": [
+    {"title": "智能体研发工程师", "location": "深圳", "company": "示例一", "snippet": "岗位职责：研发智能体。任职要求：熟悉 Python。", "url": "https://careers.example-one.cn/jobs/3", "url_kind": "organic", "provider_position": 7, "matched_queries": ["深圳 智能体工程师 招聘"]},
+    {"title": "大模型应用工程师", "location": "Shenzhen", "company": "示例二", "snippet": "职位描述：开发大模型应用。岗位要求：熟悉 LLM。", "url": "https://jobs.example-two.cn/jobs/4", "url_kind": "organic", "provider_position": 5, "matched_queries": ["Shenzhen 大模型应用工程师 招聘"]},
+    {"title": "生成式 AI 工程师", "location": "深圳", "company": "示例三", "snippet": "工作职责：交付生成式 AI。职位要求：熟悉 Python。", "url": "https://careers.example-three.cn/jobs/5", "url_kind": "organic", "provider_position": 6},
+    {"title": "AI 智能体算法工程师", "location": "深圳", "company": "示例四", "snippet": "岗位职责：训练智能体。任职要求：算法经验。", "url": "https://jobs.example-four.cn/jobs/6", "url_kind": "structured_apply", "provider_position": 3},
+    {"title": "大模型智能体平台工程师", "location": "Shenzhen", "company": "示例五", "snippet": "岗位职责：建设平台。岗位要求：工程经验。", "url": "https://careers.example-five.cn/jobs/7", "url_kind": "organic", "provider_position": 4},
+    {"title": "AI Engineer - MLabs", "location": "United States", "url": "https://builtin.com/job/ai-engineer/2", "url_kind": "structured_apply", "provider_position": 0}
+  ]
+}

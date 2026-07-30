@@ -1,0 +1,11 @@
+id: bad-secret-fixtures
+version: v1
+fixtures:
+  - id: secret
+    type: jd_page
+    version: v1
+    path: secret.json
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    redaction:
+      secrets: none
+    case_ids: []

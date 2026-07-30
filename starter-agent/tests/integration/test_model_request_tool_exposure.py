@@ -17,6 +17,7 @@ from starter_agent.capabilities.models import (
 from starter_agent.capabilities.registry import UnifiedToolRegistry
 from starter_agent.domain.models import Message, ModelResponse
 from starter_agent.providers.base import Provider
+from starter_agent.runtime_revision import RuntimeRevision
 from starter_agent.settings import RuntimeConfig
 from starter_agent.tools.policy import ToolPolicy
 from starter_agent.tools.registry import ToolRegistry
@@ -151,3 +152,69 @@ async def test_provider_request_trace_removes_and_restores_complete_tool_definit
     disabled_wire_payload = repr(provider.requests[1]["tools"])
     for absent in (TOOL_NAME, TOOL_DESCRIPTION, repr(TOOL_SCHEMA)):
         assert absent not in disabled_wire_payload
+
+
+@pytest.mark.asyncio
+async def test_turn_level_tool_free_mode_hides_enabled_schema_without_mutating_registry() -> None:
+    registry = UnifiedToolRegistry(ToolRegistry([]))
+    registry.refresh_server(_server(), [_tool()], snapshot=_snapshot())
+    provider = _RequestCapturingProvider()
+    runtime = AgentRuntime(
+        registry,
+        ToolPolicy(["external"]),
+        RuntimeConfig(max_model_calls=1),
+    )
+
+    await runtime.run(
+        provider=provider,
+        model="test-model",
+        messages=[Message(role="user", content="你好")],
+        session_id=uuid4(),
+        turn_id=uuid4(),
+        allow_tools=False,
+    )
+    await runtime.run(
+        provider=provider,
+        model="test-model",
+        messages=[Message(role="user", content="读取公开页面")],
+        session_id=uuid4(),
+        turn_id=uuid4(),
+    )
+
+    assert provider.requests[0]["tools"] == []
+    assert provider.requests[1]["tools"][0]["function"]["name"] == TOOL_NAME
+
+
+@pytest.mark.asyncio
+async def test_model_context_snapshot_records_active_runtime_revision() -> None:
+    registry = UnifiedToolRegistry(ToolRegistry([]))
+    provider = _RequestCapturingProvider()
+    revision = RuntimeRevision.build(
+        code_version="abc123",
+        skill_revision=1,
+        tool_revision="tools-a",
+        prompt_hash="a" * 64,
+        config_hash="b" * 64,
+    )
+    runtime = AgentRuntime(
+        registry,
+        ToolPolicy(["external"]),
+        RuntimeConfig(max_model_calls=1),
+        runtime_revision=revision,
+    )
+
+    await runtime.run(
+        provider=provider,
+        model="test-model",
+        messages=[Message(role="user", content="hello")],
+        session_id=uuid4(),
+        turn_id=uuid4(),
+        allow_tools=False,
+    )
+
+    event = next(
+        item
+        for item in runtime.gate.store.list_audit_events()
+        if item.action == "model.context.snapshot"
+    )
+    assert event.payload["runtime_revision"] == revision.id
