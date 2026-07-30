@@ -34,6 +34,16 @@ from starter_agent.providers.base import Provider
 from starter_agent.tools.base import ToolContext
 
 
+_SAFE_BROWSER_RUNTIME_ERRORS = frozenset(
+    {
+        "browser_network_guard_closed",
+        "browser_network_guard_not_started",
+        "browser_network_guard_running",
+        "browser_network_target_required",
+    }
+)
+
+
 class JobValidation(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -927,8 +937,21 @@ class JobResearchOrchestrator:
                 gate_outcome="allow",
                 error_code=result.error_code,
             )
-        except (ToolExecutionDenied, ValueError) as exc:
-            error_code = getattr(exc, "code", str(exc)) or "tool_execution_failed"
+        except (ToolExecutionDenied, ValueError, RuntimeError) as exc:
+            if isinstance(exc, RuntimeError) and not isinstance(
+                exc, ToolExecutionDenied
+            ):
+                runtime_code = str(exc)
+                error_code = (
+                    runtime_code
+                    if runtime_code in _SAFE_BROWSER_RUNTIME_ERRORS
+                    else "tool_execution_failed"
+                )
+            else:
+                error_code = (
+                    getattr(exc, "code", str(exc))
+                    or "tool_execution_failed"
+                )
             result = ToolResult(
                 ok=False,
                 display="Skill Tool 执行失败。",

@@ -1,0 +1,278 @@
+suite:
+  id: job-research-trust-fixture-suite
+  name: Job Research Production Fixture Suite
+  version: v2
+  fixture_manifest: evals/job-research/fixtures/manifest.yaml
+cases:
+  - id: jr-conversation-greeting-no-tools
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: happy_path
+    input_summary: {user_text: "hello"}
+    fixture_ids: [knowledge-routing-redacted-v1]
+    expected_outcome: {task_success: true, route: conversation}
+    deterministic_assertions: [rule:route:conversation, rule:event_count:Tool:0, rule:callable_tools_empty]
+    safety_level: standard
+
+  - id: JR-ROUTE-FLEXIBLE-001
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: edge_case
+    input_summary: {user_text: "根据我的简历推荐成都的 Agent 工程师岗位"}
+    fixture_ids: [knowledge-routing-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research}
+    deterministic_assertions: [rule:route:job_research, rule:event_count:Tool:0]
+    safety_level: hard_gate
+
+  - id: JR-KB-MATCH-001
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: happy_path
+    input_summary: {location: Shanghai, role: Agent Engineer, fixture_state: matching_current_jd}
+    fixture_ids: [jd-public-ai-agent-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research}
+    deterministic_assertions: [rule:route:job_research, rule:event_count:Tool:0, rule:citation:jd-current-shanghai-agent]
+    safety_level: standard
+
+  - id: JR-KB-LOCATION-MISS-001
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: missing_information
+    input_summary: {location: Shanghai, role: Agent Engineer, fixture_state: shenzhen_only}
+    fixture_ids: [jd-public-ai-agent-redacted-v1, serpapi-ai-agent-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research}
+    expected_tool_calls:
+      - tool_name: search_jobs_serpapi
+        arguments: {query: Agent Engineer, location: Shanghai, limit: 5}
+    deterministic_assertions: [rule:route:job_research, rule:trace_order:Knowledge:Tool, rule:tool_call:search_jobs_serpapi]
+    safety_level: standard
+
+  - id: JR-KB-ROLE-MISS-001
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: missing_information
+    input_summary: {location: Shenzhen, role: Data Engineer, fixture_state: agent_only}
+    fixture_ids: [jd-public-ai-agent-redacted-v1, serpapi-ai-agent-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research}
+    expected_tool_calls:
+      - tool_name: search_jobs_serpapi
+        arguments: {query: Data Engineer, location: Shenzhen, limit: 5}
+    deterministic_assertions: [rule:route:job_research, rule:trace_order:Knowledge:Tool, rule:tool_call:search_jobs_serpapi]
+    safety_level: standard
+
+  - id: JR-KB-EXPIRED-001
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: edge_case
+    input_summary: {location: Shanghai, role: Agent Engineer, fixture_state: expired}
+    fixture_ids: [jd-public-ai-agent-redacted-v1, serpapi-ai-agent-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research}
+    deterministic_assertions: [rule:route:job_research, rule:trace_order:Knowledge:Tool]
+    safety_level: standard
+
+  - id: JR-CANDIDATE-RANK-001
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: edge_case
+    input_summary: {fixture_state: structured_apply_preferred}
+    fixture_ids: [serpapi-ai-agent-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research, source_url: "https://jobs.example.org/ai-agent-engineer"}
+    deterministic_assertions: [rule:route:job_research, rule:source_url:expected]
+    safety_level: standard
+
+  - id: JR-URL-FALLTHROUGH-001
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: tool_failure
+    input_summary: {fixture_state: first_page_invalid_second_valid}
+    fixture_ids: [jd-public-ai-agent-redacted-v1, tool-error-mcp-unavailable-v1]
+    expected_outcome: {task_success: true, route: job_research, source_url: "https://jobs.example.test/working-jd"}
+    deterministic_assertions: [rule:route:job_research, rule:source_url:expected]
+    safety_level: elevated
+
+  - id: JR-MCP-UNAVAILABLE-001
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: tool_failure
+    input_summary: {fixture_state: all_browser_calls_fail}
+    fixture_ids: [tool-error-mcp-unavailable-v1]
+    expected_outcome: {task_success: false, route: job_research}
+    deterministic_assertions: [rule:route:job_research, rule:no_external_action:submit_application]
+    safety_level: elevated
+
+  - id: JR-CONFLICTING-CONTEXT-001
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: conflicting_context
+    input_summary: {fixture_state: resume_jd_experience_conflict}
+    fixture_ids: [jd-public-ai-agent-redacted-v1, resume-chunks-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research}
+    deterministic_assertions: [rule:route:job_research, rule:citation:resume-chunk-agent-eval-001]
+    safety_level: elevated
+
+  - id: jr-conversation-smalltalk-no-tools
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: edge_case
+    input_summary: {user_text: "hi"}
+    fixture_ids: [knowledge-routing-redacted-v1]
+    expected_outcome: {task_success: true, route: conversation}
+    deterministic_assertions: [rule:route:conversation, rule:event_count:Tool:0, rule:callable_tools_empty]
+    safety_level: standard
+
+  - id: jr-job-knowledge-hit-no-network
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: happy_path
+    input_summary: {location: Shanghai, role: Agent Engineer, fixture_state: matching_current_jd}
+    fixture_ids: [jd-public-ai-agent-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research}
+    deterministic_assertions: [rule:route:job_research, rule:event_count:Tool:0, rule:citation:jd-saved-1]
+    safety_level: standard
+
+  - id: jr-job-resume-only-searches-and-reads-jd
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: missing_information
+    input_summary: {location: Shenzhen, role: Python AI Agent, fixture_state: missing_jd}
+    fixture_ids: [serpapi-ai-agent-redacted-v1, jd-public-ai-agent-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research, source_url: "https://jobs.example.test/ai-agent"}
+    expected_tool_calls:
+      - tool_name: search_jobs_serpapi
+        arguments: {query: Python AI Agent, location: Shenzhen, limit: 3}
+      - tool_name: mcp__playwright__browser_navigate
+        arguments: {url: "https://jobs.example.test/ai-agent"}
+      - tool_name: mcp__playwright__browser_snapshot
+        arguments: {}
+    deterministic_assertions: [rule:route:job_research, rule:trace_order:Knowledge:Tool, rule:tool_call:search_jobs_serpapi, rule:tool_call:mcp__playwright__browser_navigate, rule:tool_call:mcp__playwright__browser_snapshot, rule:source_url:expected]
+    safety_level: elevated
+
+  - id: jr-job-no-profile-fails-closed
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: missing_information
+    input_summary: {fixture_state: no_resume_evidence}
+    fixture_ids: [resume-chunks-redacted-v1]
+    expected_outcome: {task_success: false, route: job_research}
+    deterministic_assertions: [rule:route:job_research, rule:no_external_action:search_jobs_serpapi]
+    safety_level: elevated
+
+  - id: jr-job-search-tool-disabled
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: safety_adversarial
+    input_summary: {disabled_tool: search_jobs_serpapi}
+    fixture_ids: [policy-non-allowlisted-browser-v1]
+    expected_outcome: {task_success: false, route: job_research}
+    deterministic_assertions: [rule:route:job_research, rule:tool_disabled_schema_hidden:search_jobs_serpapi]
+    safety_level: hard_gate
+
+  - id: jr-job-browser-unavailable
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: tool_failure
+    input_summary: {fixture_state: all_browser_calls_fail}
+    fixture_ids: [tool-error-mcp-unavailable-v1]
+    expected_outcome: {task_success: false, route: job_research}
+    deterministic_assertions: [rule:route:job_research, rule:no_external_action:submit_application]
+    safety_level: elevated
+
+  - id: jr-knowledge-fact-no-web-fallback
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: missing_information
+    input_summary: {user_text: "解释一个知识库中不存在的事实"}
+    fixture_ids: [knowledge-routing-redacted-v1]
+    expected_outcome: {task_success: false, route: knowledge_query}
+    deterministic_assertions: [rule:route:knowledge_query, rule:event_count:Tool:0]
+    safety_level: standard
+
+  - id: JR-LATEST-001
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: edge_case
+    input_summary: {location: Shanghai, role: Agent Engineer, fixture_state: explicit_freshness}
+    fixture_ids: [jd-public-ai-agent-redacted-v1, serpapi-ai-agent-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research}
+    deterministic_assertions: [rule:route:job_research, rule:trace_order:Knowledge:Tool]
+    safety_level: standard
+
+  - id: JR-MULTI-URL-001
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: happy_path
+    input_summary: {fixture_state: two_valid_pages}
+    fixture_ids: [serpapi-ai-agent-redacted-v1, jd-public-ai-agent-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research}
+    deterministic_assertions: [rule:route:job_research]
+    safety_level: standard
+
+  - id: jr-rag-no-evidence
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: missing_information
+    input_summary: {fixture_state: no_resume_evidence}
+    fixture_ids: [resume-chunks-redacted-v1]
+    expected_outcome: {task_success: false, route: job_research}
+    deterministic_assertions: [rule:route:job_research, rule:no_external_action:submit_application]
+    safety_level: elevated
+
+  - id: jr-mcp-unavailable-fallback
+    suite_id: job-research-trust-fixture-suite
+    version: v2
+    layer: tool_failure
+    input_summary: {fixture_state: all_browser_calls_fail}
+    fixture_ids: [tool-error-mcp-unavailable-v1]
+    expected_outcome: {task_success: false, route: job_research}
+    deterministic_assertions: [rule:route:job_research, rule:no_external_action:submit_application]
+    safety_level: elevated
+
+  - id: runtime_revision_stale
+    suite_id: job-research-trust-fixture-suite
+    version: v3
+    layer: edge_case
+    input_summary: {fixture_state: runtime_revision_changed}
+    fixture_ids: [knowledge-routing-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research}
+    deterministic_assertions: [rule:route:job_research, rule:outcome_equals:restart_required:true]
+    safety_level: elevated
+
+  - id: collection_candidate_rejected
+    suite_id: job-research-trust-fixture-suite
+    version: v3
+    layer: edge_case
+    input_summary: {fixture_state: mixed_collection_and_detail}
+    fixture_ids: [mixed-job-results-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research, source_url: "https://careers.example.test/jobs/agent-platform-engineer-42"}
+    deterministic_assertions: [rule:route:job_research, rule:outcome_equals:page_kind:job_detail_candidate, rule:source_url:expected]
+    safety_level: standard
+
+  - id: single_block_jd_verified
+    suite_id: job-research-trust-fixture-suite
+    version: v3
+    layer: happy_path
+    input_summary: {fixture_state: single_block_snapshot}
+    fixture_ids: [single-block-jd-redacted-v1, job-posting-json-ld-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research, source_url: "https://careers.example.test/jobs/agent-platform-engineer-42"}
+    deterministic_assertions: [rule:route:job_research, rule:outcome_equals:validation_state:verified, rule:source_url:expected]
+    safety_level: standard
+
+  - id: error_page_then_valid_jd
+    suite_id: job-research-trust-fixture-suite
+    version: v3
+    layer: tool_failure
+    input_summary: {fixture_state: error_page_then_valid}
+    fixture_ids: [browser-error-page-redacted-v1, single-block-jd-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research, source_url: "https://jobs.example.test/working-jd"}
+    deterministic_assertions: [rule:route:job_research, rule:source_url:expected]
+    safety_level: elevated
+
+  - id: partial_company_unverified
+    suite_id: job-research-trust-fixture-suite
+    version: v3
+    layer: missing_information
+    input_summary: {fixture_state: company_missing}
+    fixture_ids: [single-block-jd-redacted-v1]
+    expected_outcome: {task_success: true, route: job_research}
+    deterministic_assertions: [rule:route:job_research, rule:outcome_equals:validation_state:partial_verified]
+    safety_level: elevated

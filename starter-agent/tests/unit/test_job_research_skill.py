@@ -358,6 +358,89 @@ async def test_candidate_failure_continues_and_resume_evidence_is_read_once():
 
 
 @pytest.mark.asyncio
+async def test_network_guard_snapshot_rejection_uses_fallback_instead_of_crashing():
+    class Gate:
+        def request_for_tool(self, *, tool_name, arguments, **_kwargs):
+            return SimpleNamespace(tool_name=tool_name, arguments=arguments)
+
+        async def evaluate(self, _request):
+            return SimpleNamespace(
+                outcome="allow",
+                permit=SimpleNamespace(id="permit-1"),
+            )
+
+    class Executor:
+        gate = Gate()
+
+        async def execute(self, request, **_kwargs):
+            if request.tool_name.endswith("browser_snapshot"):
+                raise RuntimeError("browser_network_target_required")
+            return ToolResult(
+                ok=True,
+                data={"source_url": request.arguments.get("url", "")},
+            )
+
+    class Fallback:
+        async def retrieve(self, candidate):
+            return SimpleNamespace(
+                jobs=(
+                    {
+                        "title": "Agent Engineer",
+                        "company": "Example",
+                        "location": "Shanghai",
+                        "responsibilities": ["Build agent workflows"],
+                        "requirements": ["Python"],
+                        "source_url": candidate.url,
+                        "retrieval_method": "http_json_ld",
+                        "validation_state": "verified",
+                    },
+                ),
+                partial_jobs=(),
+                method="http_json_ld",
+                failures=(),
+            )
+
+    class Orchestrator(JobResearchOrchestrator):
+        def _missing(self, _dependencies):
+            return ()
+
+        def _audit_candidate_attempt(self, *_args, **_kwargs):
+            return None
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    orchestrator = Orchestrator(
+        None,  # type: ignore[arg-type]
+        Executor(),  # type: ignore[arg-type]
+        page_fallback=Fallback(),  # type: ignore[arg-type]
+        browser_sleeper=no_sleep,
+    )
+    candidate = JobCandidate(
+        url="https://jobs.example.test/agent",
+        title="Agent Engineer",
+        url_kind="structured_apply",
+        confidence=1.0,
+        provider_position=0,
+    )
+
+    result = await orchestrator.analyze_candidates(
+        query="Shanghai Agent Engineer",
+        candidates=(candidate,),
+        context=ToolContext(session_id=uuid4(), turn_id=uuid4()),
+        target_count=1,
+        resume_evidence=[],
+    )
+
+    assert result.data["jobs"][0]["source_url"] == candidate.url
+    assert result.data["candidate_attempts"][0]["status"] == "fallback_succeeded"
+    assert result.data["candidate_attempts"][0]["browser_error_code"] == (
+        "browser_network_target_required"
+    )
+    assert result.data["candidate_attempts"][0]["fallback_method"] == "http_json_ld"
+
+
+@pytest.mark.asyncio
 async def test_search_prepared_requests_generic_location_alias_expansion() -> None:
     class CapturingOrchestrator(JobResearchOrchestrator):
         def __init__(self) -> None:

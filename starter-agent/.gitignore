@@ -7,6 +7,7 @@ __pycache__/
 .ruff_cache/
 .playwright-mcp/
 .codex-*/
+.diagnostic-*/
 .session-only-*/
 .tmp-*/
 .verification-*/
