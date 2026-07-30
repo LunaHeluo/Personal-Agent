@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -16,6 +17,7 @@ class ToolContext:
     user_id: str | None = None
     project_id: str | None = None
     knowledge_base_id: UUID | None = None
+    on_tool_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None
 
 
 class Tool(ABC):

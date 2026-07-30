@@ -4,6 +4,7 @@ from collections.abc import Callable, Sequence
 import asyncio
 from datetime import UTC, datetime
 import hashlib
+import re
 from time import perf_counter
 from typing import Any, Literal
 from uuid import uuid4
@@ -14,11 +15,13 @@ from starter_agent.capabilities.gate import (
     ToolExecutionDenied,
     UnifiedToolExecutor,
 )
+from starter_agent.capabilities.confirmations import TurnCoordinator
 from starter_agent.capabilities.registry import UnifiedToolRegistry
 from starter_agent.capabilities.models import AuditEvent
 from starter_agent.domain.models import ToolResult
 from starter_agent.job_research.candidates import JobCandidate
 from starter_agent.job_research.fallback import JobPageFallback
+from starter_agent.job_research.location_alias import LocationAliasBuilder
 from starter_agent.job_research.page_reader import PlaywrightJobPageReader
 from starter_agent.skills.models import SkillRunResult, SkillToolTrace
 from starter_agent.job_research.search_profile import (
@@ -56,6 +59,8 @@ class JobResearchOrchestrator:
         profile_builder: JobSearchProfileBuilder | None = None,
         page_fallback: JobPageFallback | None = None,
         browser_sleeper: Callable[[float], Any] = asyncio.sleep,
+        turn_coordinator: TurnCoordinator | None = None,
+        location_alias_builder: LocationAliasBuilder | None = None,
     ) -> None:
         self.registry = registry
         self.executor = executor
@@ -63,6 +68,8 @@ class JobResearchOrchestrator:
         self.profile_builder = profile_builder or JobSearchProfileBuilder()
         self.page_fallback = page_fallback
         self.browser_sleeper = browser_sleeper
+        self.turn_coordinator = turn_coordinator
+        self.location_alias_builder = location_alias_builder or LocationAliasBuilder()
 
     async def prepare_request(
         self,
@@ -106,7 +113,16 @@ class JobResearchOrchestrator:
                 status="search_profile_required",
                 error_code=exc.code,
                 trace=(evidence_trace,),
-                data={"resume_evidence_count": len(evidence)},
+                data={
+                    "resume_evidence_count": len(evidence),
+                    "profile_issues": list(
+                        dict.fromkeys(
+                            issue
+                            for attempt in exc.attempts
+                            for issue in attempt.issues
+                        )
+                    )[:8],
+                },
             )
         self._audit_profile_attempts(
             profile.attempts,
@@ -114,12 +130,20 @@ class JobResearchOrchestrator:
             provider=provider,
             model=model,
         )
+        location_alias = None
+        if profile.location and re.search(r"[^\x00-\x7f]", profile.location):
+            location_alias = await self.location_alias_builder.build(
+                location=profile.location,
+                provider=provider,
+                model=model,
+            )
         return SkillRunResult(
             status="search_profile_ready",
             data={
                 "search_profile": {
                     "query": profile.query,
                     "location": profile.location,
+                    "location_alias": location_alias,
                     "evidence_refs": list(profile.evidence_refs),
                     "explicit_freshness": profile.explicit_freshness,
                     "role_terms": list(profile.role_terms),
@@ -180,6 +204,10 @@ class JobResearchOrchestrator:
         location = profile.get("location")
         if isinstance(location, str) and location:
             arguments["location"] = location
+            arguments["expand_location_aliases"] = True
+            location_alias = profile.get("location_alias")
+            if isinstance(location_alias, str) and location_alias:
+                arguments["location_alias"] = location_alias
         search_result, search_trace = await self._call(
             self.search_tool_name,
             arguments,
@@ -208,6 +236,22 @@ class JobResearchOrchestrator:
                 "results": results,
                 "search_profile": profile,
                 "resume_evidence": prepared.data.get("resume_evidence", []),
+                "search_statistics": {
+                    key: data.get(key)
+                    for key in (
+                        "planned_queries",
+                        "executed_queries",
+                        "request_count",
+                        "raw_result_count",
+                        "deduplicated_count",
+                        "chinese_title_count",
+                        "request_failures",
+                        "location_aliases",
+                        "plan_reason_codes",
+                    )
+                    if key in data
+                },
+                "ranking_diagnostics": data.get("ranking_diagnostics", []),
             },
             trace=trace,
         )
@@ -838,6 +882,15 @@ class JobResearchOrchestrator:
                 arguments=arguments,
             )
             decision = await self.executor.gate.evaluate(request)
+            if (
+                decision.outcome == "require_confirmation"
+                and self.turn_coordinator is not None
+            ):
+                decision = await self.turn_coordinator.wait_for_permit(
+                    request,
+                    decision,
+                    on_event=context.on_tool_event,
+                )
             if decision.outcome != "allow" or decision.permit is None:
                 error_code = (
                     "tool_confirmation_required"
@@ -939,6 +992,7 @@ class JobResearchOrchestrator:
                         "error_code": error_code,
                         "provider": provider.name,
                         "model": model,
+                        "issues": list(item.issues),
                     },
                     created_at=datetime.now(UTC),
                 )

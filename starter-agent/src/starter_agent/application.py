@@ -118,6 +118,7 @@ class ApplicationService:
         location: str | None = None,
         limit: int = 5,
         knowledge_base_id: UUID | None = None,
+        on_tool_event: Callable[[dict], Awaitable[None]] | None = None,
     ):
         if self.job_research is None:
             raise RuntimeError("job_research_unavailable")
@@ -129,6 +130,7 @@ class ApplicationService:
                 session_id=session_id,
                 turn_id=turn_id,
                 knowledge_base_id=knowledge_base_id,
+                on_tool_event=on_tool_event,
             ),
         )
 
@@ -142,6 +144,7 @@ class ApplicationService:
         model: str | None = None,
         limit: int = 3,
         knowledge_base_id: UUID | None = None,
+        on_tool_event: Callable[[dict], Awaitable[None]] | None = None,
     ):
         if self.job_research is None:
             raise RuntimeError("job_research_unavailable")
@@ -155,6 +158,7 @@ class ApplicationService:
                 session_id=session_id,
                 turn_id=turn_id,
                 knowledge_base_id=knowledge_base_id,
+                on_tool_event=on_tool_event,
             ),
         )
 
@@ -167,6 +171,7 @@ class ApplicationService:
         provider_name: str | None = None,
         model: str | None = None,
         knowledge_base_id: UUID | None = None,
+        on_tool_event: Callable[[dict], Awaitable[None]] | None = None,
     ):
         if self.job_research is None:
             raise RuntimeError("job_research_unavailable")
@@ -179,6 +184,7 @@ class ApplicationService:
                 session_id=session_id,
                 turn_id=turn_id,
                 knowledge_base_id=knowledge_base_id,
+                on_tool_event=on_tool_event,
             ),
         )
 
@@ -190,6 +196,7 @@ class ApplicationService:
         turn_id: UUID | None = None,
         limit: int = 3,
         knowledge_base_id: UUID | None = None,
+        on_tool_event: Callable[[dict], Awaitable[None]] | None = None,
     ):
         if self.job_research is None:
             raise RuntimeError("job_research_unavailable")
@@ -200,6 +207,7 @@ class ApplicationService:
                 session_id=session_id,
                 turn_id=turn_id,
                 knowledge_base_id=knowledge_base_id,
+                on_tool_event=on_tool_event,
             ),
         )
 
@@ -212,6 +220,7 @@ class ApplicationService:
         turn_id: UUID | None = None,
         top_k: int = 6,
         knowledge_base_id: UUID | None = None,
+        on_tool_event: Callable[[dict], Awaitable[None]] | None = None,
     ):
         if self.job_research is None:
             raise RuntimeError("job_research_unavailable")
@@ -223,6 +232,7 @@ class ApplicationService:
                 session_id=session_id,
                 turn_id=turn_id,
                 knowledge_base_id=knowledge_base_id,
+                on_tool_event=on_tool_event,
             ),
         )
 
@@ -237,6 +247,7 @@ class ApplicationService:
         top_k: int = 6,
         knowledge_base_id: UUID | None = None,
         resume_evidence: list[dict] | None = None,
+        on_tool_event: Callable[[dict], Awaitable[None]] | None = None,
     ):
         if self.job_research is None:
             raise RuntimeError("job_research_unavailable")
@@ -250,6 +261,7 @@ class ApplicationService:
                 session_id=session_id,
                 turn_id=turn_id,
                 knowledge_base_id=knowledge_base_id,
+                on_tool_event=on_tool_event,
             ),
         )
 
@@ -259,6 +271,7 @@ class ApplicationService:
         session_id: UUID,
         turn_id: UUID | None,
         knowledge_base_id: UUID | None,
+        on_tool_event: Callable[[dict], Awaitable[None]] | None = None,
     ) -> ToolContext:
         scope = self.runtime.knowledge_scope
         return ToolContext(
@@ -269,6 +282,7 @@ class ApplicationService:
             knowledge_base_id=(
                 knowledge_base_id or self.runtime.knowledge_base_id
             ),
+            on_tool_event=on_tool_event,
         )
 
     def prepare_job_description_ingestion(

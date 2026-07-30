@@ -193,7 +193,11 @@ def validate_serpapi_payload(
     max_bytes: int = 2_000,
     sensitive_terms: tuple[str, ...] = (),
 ) -> None:
-    allowed_fields = {"query", "keywords", "location", "limit"}
+    allowed_fields = {
+        "query", "keywords", "location", "limit", "query_variants",
+        "hl", "gl", "google_domain", "expand_location_aliases",
+        "location_alias",
+    }
     allowed_classes = {"job_keywords", "location"}
     if set(arguments) - allowed_fields or set(data_classes) - allowed_classes:
         raise ScopeDenied("serpapi_fields")
@@ -205,6 +209,14 @@ def validate_serpapi_payload(
     location = arguments.get("location")
     if location is not None and not _safe_search_phrase(location, 80, 10):
         raise ScopeDenied("serpapi_fields")
+    location_alias = arguments.get("location_alias")
+    if location_alias is not None and (
+        not isinstance(location_alias, str)
+        or not 1 <= len(location_alias.strip()) <= 100
+        or re.fullmatch(r"[A-Za-z][A-Za-z0-9 .,'()&/\-]*", location_alias)
+        is None
+    ):
+        raise ScopeDenied("serpapi_fields")
     limit = arguments.get("limit")
     if (
         limit is not None
@@ -214,6 +226,32 @@ def validate_serpapi_payload(
             or not 1 <= limit <= 10
         )
     ):
+        raise ScopeDenied("serpapi_fields")
+    variants = arguments.get("query_variants")
+    if variants is not None and (
+        not isinstance(variants, list)
+        or not 1 <= len(variants) <= 12
+        or any(
+            not _safe_job_search_phrase(item, sensitive_terms=sensitive_terms)
+            for item in variants
+        )
+    ):
+        raise ScopeDenied("serpapi_fields")
+    hl = arguments.get("hl")
+    if hl is not None and (
+        not isinstance(hl, str)
+        or re.fullmatch(r"[a-zA-Z]{2}(?:-[a-zA-Z]{2})?", hl) is None
+    ):
+        raise ScopeDenied("serpapi_fields")
+    gl = arguments.get("gl")
+    if gl is not None and (
+        not isinstance(gl, str)
+        or re.fullmatch(r"[a-zA-Z]{2}", gl) is None
+    ):
+        raise ScopeDenied("serpapi_fields")
+    if arguments.get("google_domain", "google.com") != "google.com":
+        raise ScopeDenied("serpapi_fields")
+    if not isinstance(arguments.get("expand_location_aliases", False), bool):
         raise ScopeDenied("serpapi_fields")
     encoded = json_bytes(arguments)
     if len(encoded) > max_bytes:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -49,6 +50,7 @@ from starter_agent.capabilities.models import Confirmation, canonical_json_sha25
 from starter_agent.capabilities.store import RecordAlreadyExistsError
 from starter_agent.interfaces.capabilities_api import create_capabilities_router
 from starter_agent.interfaces.trust_api import create_trust_router
+from starter_agent.mcp.windows_asyncio import install_windows_proactor_reset_filter
 
 
 class ChatRequest(BaseModel):
@@ -147,6 +149,7 @@ async def _chat_with_public_job_search_fallback(
     *,
     application=None,
     knowledge=None,
+    on_tool_event=None,
 ) -> ChatResult:
     application = application or create_application()
     session_id = (
@@ -174,6 +177,7 @@ async def _chat_with_public_job_search_fallback(
         provider_name=provider,
         model=model,
         knowledge_base_id=request.knowledge_base_id,
+        on_tool_event=on_tool_event,
     )
     if prepared_run.status != "search_profile_ready":
         content = _public_job_search_failure_answer(prepared_run)
@@ -322,6 +326,7 @@ async def _chat_with_public_job_search_fallback(
         turn_id=turn_id,
         limit=get_settings().job_research.max_candidate_urls,
         knowledge_base_id=request.knowledge_base_id,
+        on_tool_event=on_tool_event,
     )
     tool_calls = len(search_run.trace)
     if search_run.status != "waiting_for_url_selection":
@@ -344,7 +349,17 @@ async def _chat_with_public_job_search_fallback(
         )
     search_result = ToolResult(
         ok=True,
-        data={"results": search_run.data.get("results", [])},
+        data={
+            "results": search_run.data.get("results", []),
+            **(
+                search_run.data.get("search_statistics", {})
+                if isinstance(search_run.data.get("search_statistics"), dict)
+                else {}
+            ),
+            "ranking_diagnostics": search_run.data.get(
+                "ranking_diagnostics", []
+            ),
+        },
         display="岗位搜索完成。",
     )
     jd_result: ToolResult | None = None
@@ -358,6 +373,7 @@ async def _chat_with_public_job_search_fallback(
             target_count=get_settings().job_research.target_valid_jds,
             knowledge_base_id=request.knowledge_base_id,
             resume_evidence=search_run.data.get("resume_evidence", []),
+            on_tool_event=on_tool_event,
         )
         tool_calls += len(analysis_run.trace)
         verified_jobs = analysis_run.data.get("jobs", [])
@@ -458,6 +474,7 @@ async def _dispatch_classified_chat(
     *,
     application,
     route,
+    on_tool_event=None,
 ) -> ChatResult:
     if route.route is KnowledgeRequestRoute.CONVERSATION:
         return await application.chat(
@@ -479,6 +496,7 @@ async def _dispatch_classified_chat(
             request,
             application=application,
             knowledge=knowledge,
+            on_tool_event=on_tool_event,
         )
 
     use_knowledge = request.knowledge_mode == "required" or (
@@ -644,11 +662,21 @@ def _public_job_search_failure_answer(search_run) -> str:
             "invalid_json",
             "schema_validation_failed",
         }:
-            return (
+            answer = (
                 "模型未能生成符合结构的岗位搜索条件，自动重试后仍未通过校验。"
                 "这不代表简历缺失；可以重试，或补充目标岗位方向后继续。"
                 f"\n错误码：{search_run.error_code}"
             )
+            issues = search_run.data.get("profile_issues", [])
+            safe_issues = [
+                item[:120]
+                for item in issues[:8]
+                if isinstance(item, str)
+                and re.fullmatch(r"[A-Za-z0-9_.$-]+:[A-Za-z0-9_.$-]+", item)
+            ]
+            if safe_issues:
+                answer += f"\n校验项：{', '.join(safe_issues)}"
+            return answer
         return (
             "当前简历证据不足以生成安全的公开岗位搜索条件。"
             "请补充目标岗位方向或技术关键词后重试。"
@@ -716,6 +744,7 @@ def _public_job_search_answer(
         return "\n".join(lines)
 
     rows = []
+    search_data = search_result.data if isinstance(search_result.data, dict) else {}
     if isinstance(search_result.data, dict):
         raw_rows = search_result.data.get("results")
         if isinstance(raw_rows, list):
@@ -727,6 +756,16 @@ def _public_job_search_answer(
             company = row.get("company") or row.get("company_name") or "未知公司"
             url = row.get("url") or row.get("source_url") or "无 URL"
             lines.append(f"{index}. {title} · {company} · {url}")
+    planned = search_data.get("planned_queries")
+    executed = search_data.get("executed_queries")
+    if isinstance(planned, list) and isinstance(executed, list):
+        lines.append(f"搜索统计：查询变体：{len(executed)}/{len(planned)}")
+        lines.append(f"SerpAPI 请求：{int(search_data.get('request_count') or 0)}")
+        lines.append(
+            f"原始结果：{int(search_data.get('raw_result_count') or 0)}；"
+            f"去重后：{int(search_data.get('deduplicated_count') or 0)}；"
+            f"中文标题：{int(search_data.get('chinese_title_count') or 0)}"
+        )
 
     if jd_result is None:
         lines.append("搜索结果中没有可自动读取的公开 JD URL。")
@@ -754,6 +793,9 @@ def _public_job_search_answer(
                 )
                 lines.append(f"{index}. {title} \u00b7 {company} \u00b7 {location}")
                 lines.append(f"   \u5f85\u786e\u8ba4\uff1a{reason_text}")
+                snippet = job.get("snippet") or job.get("raw_text") or ""
+                if isinstance(snippet, str) and snippet.strip():
+                    lines.append(f"   搜索摘要：{snippet.strip()[:500]}")
                 lines.append(f"   \u6765\u6e90\uff1a{source_url}")
         lines.append(jd_result.display or "自动读取 JD 失败。")
         if jd_result.error_code:
@@ -803,14 +845,22 @@ def _public_job_search_answer(
     lines.append("请选择一个岗位后，我再继续做最终匹配分析或确认入库。")
     partial_jobs = data.get("partial_jobs") if isinstance(data, dict) else None
     if isinstance(partial_jobs, list) and partial_jobs:
-        lines.append(f"部分岗位证据（{len(partial_jobs)} 个，非完整 JD）：")
+        if len(partial_jobs) > 3:
+            lines.append(f"部分岗位证据共 {len(partial_jobs)} 个，以下展示前 3 个：")
+        else:
+            lines.append(f"部分岗位证据（{len(partial_jobs)} 个，非完整 JD）：")
         for job in partial_jobs[:3]:
             if isinstance(job, dict):
                 lines.append(
                     f"- {job.get('title') or '未命名岗位'} · "
+                    f"{job.get('company') or '未知公司'} · "
+                    f"{job.get('location') or '未知地点'} · "
                     f"{job.get('retrieval_method') or 'search_snippet'} · "
                     f"{job.get('source_url') or ''}"
                 )
+                snippet = job.get("snippet") or job.get("raw_text") or ""
+                if isinstance(snippet, str) and snippet.strip():
+                    lines.append(f"  搜索摘要：{snippet.strip()[:500]}")
     attempts = data.get("candidate_attempts") if isinstance(data, dict) else None
     failed = [
         item for item in attempts or []
@@ -828,6 +878,12 @@ def _public_job_search_answer(
                 or "mcp_unknown_error"
             )
             lines.append(f"- {item.get('source_url') or ''} · {code}")
+    verified_count = len(jobs) if isinstance(jobs, list) else 0
+    partial_count = len(partial_jobs) if isinstance(partial_jobs, list) else 0
+    lines.append(
+        f"结果统计：完整 JD：{verified_count}；"
+        f"部分证据：{partial_count}；失败链接：{len(failed)}"
+    )
     return "\n".join(lines)
 
 
@@ -1053,48 +1109,54 @@ def _summary_text(value: str | None, limit: int = 80) -> str | None:
 
 @asynccontextmanager
 async def _api_lifespan(_api: FastAPI):
+    restore_loop_handler = install_windows_proactor_reset_filter(
+        asyncio.get_running_loop()
+    )
     manager = None
     try:
-        manager = create_mcp_manager()
-        statuses = await manager.start()
-        for server_id, status in statuses.items():
-            if not status.enabled or status.connection_state != "ready":
-                continue
-            try:
-                await manager.discover(server_id)
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                get_logger(
-                    error_type=type(error).__name__,
-                    server_id=server_id,
-                ).error("mcp.discovery_failed")
-        application = create_application()
-        registry = application.runtime.tools
-        refresh = getattr(registry, "refresh_from_manager", None)
-        if callable(refresh):
-            refresh(manager)
-        skill_registry = getattr(application.context, "skill_registry", None)
-        reload_skills = getattr(skill_registry, "reload", None)
-        if callable(reload_skills):
-            reload_skills()
-    except asyncio.CancelledError:
-        raise
-    except Exception as error:
-        get_logger(error_type=type(error).__name__).error("mcp.startup_failed")
-    try:
-        yield
+        try:
+            manager = create_mcp_manager()
+            statuses = await manager.start()
+            for server_id, status in statuses.items():
+                if not status.enabled or status.connection_state != "ready":
+                    continue
+                try:
+                    await manager.discover(server_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    get_logger(
+                        error_type=type(error).__name__,
+                        server_id=server_id,
+                    ).error("mcp.discovery_failed")
+            application = create_application()
+            registry = application.runtime.tools
+            refresh = getattr(registry, "refresh_from_manager", None)
+            if callable(refresh):
+                refresh(manager)
+            skill_registry = getattr(application.context, "skill_registry", None)
+            reload_skills = getattr(skill_registry, "reload", None)
+            if callable(reload_skills):
+                reload_skills()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            get_logger(error_type=type(error).__name__).error("mcp.startup_failed")
+        try:
+            yield
+        finally:
+            if manager is not None:
+                try:
+                    await manager.shutdown()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    get_logger(error_type=type(error).__name__).error(
+                        "mcp.shutdown_failed"
+                    )
+            await create_application().wait_for_background_tasks()
     finally:
-        if manager is not None:
-            try:
-                await manager.shutdown()
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:
-                get_logger(error_type=type(error).__name__).error(
-                    "mcp.shutdown_failed"
-                )
-        await create_application().wait_for_background_tasks()
+        restore_loop_handler()
 
 
 def create_api() -> FastAPI:
@@ -1700,66 +1762,75 @@ def create_api() -> FastAPI:
         )
         if use_buffered_route:
             async def knowledge_events():
-                try:
-                    result = await _dispatch_classified_chat(
-                        request,
-                        application=application,
-                        route=route,
-                    )
-                    yield (
-                        "data: "
-                        + json.dumps(
-                            {
-                                "type": "delta",
-                                "content": result.content,
-                            },
-                            ensure_ascii=False,
+                queue: asyncio.Queue[dict | None] = asyncio.Queue()
+
+                async def on_tool_event(event: dict) -> None:
+                    await queue.put(event)
+
+                async def run_dispatch() -> None:
+                    try:
+                        result = await _dispatch_classified_chat(
+                            request,
+                            application=application,
+                            route=route,
+                            on_tool_event=on_tool_event,
                         )
-                        + "\n\n"
-                    )
-                    yield (
-                        "data: "
-                        + json.dumps(
+                        await queue.put(
+                            {"type": "delta", "content": result.content}
+                        )
+                        await queue.put(
                             {
                                 "type": "done",
                                 "result": result.model_dump(mode="json"),
-                            },
-                            ensure_ascii=False,
+                            }
                         )
-                        + "\n\n"
-                    )
-                except HTTPException as exc:
-                    yield (
-                        "data: "
-                        + json.dumps(
-                            {"type": "error", "error": exc.detail},
-                            ensure_ascii=False,
+                    except HTTPException as exc:
+                        await queue.put(
+                            {"type": "error", "error": exc.detail}
                         )
-                        + "\n\n"
-                    )
-                except KnowledgeError as exc:
-                    yield (
-                        "data: "
-                        + json.dumps(
+                    except KnowledgeError as exc:
+                        await queue.put(
                             {
                                 "type": "error",
                                 "error": _knowledge_http_error(exc).detail,
-                            },
-                            ensure_ascii=False,
+                            }
                         )
-                        + "\n\n"
-                    )
-                except AgentError as exc:
-                    yield (
-                        "data: "
-                        + json.dumps(
-                            {"type": "error", "error": exc.to_public_dict()},
-                            ensure_ascii=False,
+                    except AgentError as exc:
+                        await queue.put(
+                            {
+                                "type": "error",
+                                "error": exc.to_public_dict(),
+                            }
                         )
-                        + "\n\n"
-                    )
+                    finally:
+                        await queue.put(None)
+
+                task = asyncio.create_task(run_dispatch())
+                active_chat_tasks.add(task)
+                task.add_done_callback(active_chat_tasks.discard)
+                try:
+                    while True:
+                        event = await queue.get()
+                        if event is None:
+                            break
+                        yield (
+                            f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                        )
+                finally:
+                    if task.done():
+                        await task
+                    else:
+                        try:
+                            await asyncio.shield(task)
+                        except asyncio.CancelledError:
+                            pass
             return StreamingResponse(
-                knowledge_events(), media_type="text/event-stream"
+                knowledge_events(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                },
             )
 
         async def events():

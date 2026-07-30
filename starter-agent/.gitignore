@@ -6,6 +6,12 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .playwright-mcp/
+.codex-*/
+.session-only-*/
+.tmp-*/
+.verification-*/
+test-output/
+reports/
 data/*
 !data/.gitkeep
 logs/*

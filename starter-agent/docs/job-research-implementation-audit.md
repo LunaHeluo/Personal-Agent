@@ -59,7 +59,7 @@
 - **Name**：`search_jobs_serpapi`
 - **Description**：`Search public job listings with sources and retrieval timestamps. Use structured job keywords, location, and desired result count. Results are leads that must be verified on the source page.`
 - **Risk**：`read`
-- **Input Schema 摘要**：`query`：必填，字符串长度 2–300；`location`：可选，字符串最长 100；`limit`：1–10，可选整数，默认 5；禁止额外字段。
+- **Input Schema 摘要**：`query`：必填，字符串长度 2–300；`location`：可选，字符串最长 100；`location_alias`：可选的拉丁字母地点别名，必须再由 Locations API 验证；`limit`：1–10，可选整数，默认 5；`query_variants`：可选，1–12 条查询；`hl`/`gl`：可选 locale；`google_domain` 仅允许 `google.com`；`expand_location_aliases` 控制 provider 驱动的地点别名扩展；禁止额外字段。
 
 完整 schema：
 
@@ -78,11 +78,44 @@
       "description": "Optional city or region, such as Sydney.",
       "maxLength": 100
     },
+    "location_alias": {
+      "type": "string",
+      "description": "Optional Latin alias; validated by Locations API.",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[A-Za-z][A-Za-z0-9 .,'()&/\\-]*$"
+    },
     "limit": {
       "type": "integer",
       "minimum": 1,
       "maximum": 10,
       "default": 5
+    },
+    "query_variants": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 2,
+        "maxLength": 300
+      },
+      "minItems": 1,
+      "maxItems": 12
+    },
+    "hl": {
+      "type": "string",
+      "pattern": "^[a-z]{2}(?:-[a-z]{2})?$"
+    },
+    "gl": {
+      "type": "string",
+      "pattern": "^[a-z]{2}$"
+    },
+    "google_domain": {
+      "type": "string",
+      "enum": ["google.com"]
+    },
+    "expand_location_aliases": {
+      "type": "boolean",
+      "default": false
     }
   },
   "required": ["query"],
@@ -98,7 +131,7 @@
 
 ### 行为、风险与错误码
 
-- Tool 先请求 SerpAPI `google_jobs`，无结果时回退 `google`；结果只是岗位线索，包含来源 URL 与 `retrieved_at`，snippet 最长 1000 字符，必须回到来源页核验。
+- 单查询兼容路径先请求 SerpAPI `google_jobs`，不足时补充 `google`。地点别名扩展路径最多生成 12 条查询并同时覆盖两种 engine（最多 24 请求），合并 URL 并保留 query/engine provenance；结果仍只是岗位线索，必须回到来源页核验。
 - `sanitize_url()` 仅保留 HTTP(S) URL，并移除 fragment 及常见敏感 query key。外部服务、网络、配额、认证与响应格式仍是不可信边界。
 - 真实错误码集合：`invalid_arguments`、`missing_api_key`、`search_timeout`、`search_connection_failed`、`search_transport_error`、`invalid_response`、`no_results`、`authentication_failed`、`rate_limited`、`quota_exceeded`、`service_unavailable`、`invalid_search_request`、`search_failed`。
 

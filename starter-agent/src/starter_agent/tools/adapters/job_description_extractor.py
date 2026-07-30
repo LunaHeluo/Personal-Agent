@@ -50,6 +50,7 @@ class JobDescriptionExtractor:
             "about the job",
             "岗位职责",
             "工作职责",
+            "职位描述",
         ),
         "requirements": (
             "requirements",
@@ -58,6 +59,7 @@ class JobDescriptionExtractor:
             "what we're looking for",
             "skills and experience required",
             "任职要求",
+            "岗位要求",
             "职位要求",
         ),
         "preferred_qualifications": (

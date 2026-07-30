@@ -163,6 +163,7 @@ def create_application() -> ApplicationService:
         JobResearchOrchestrator(
             tools,
             executor,
+            turn_coordinator=runtime.turn_coordinator,
             ingestion_available=lambda: (
                 application.job_description_ingestion is not None
             ),

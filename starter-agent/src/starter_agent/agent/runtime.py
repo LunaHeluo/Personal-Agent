@@ -76,6 +76,55 @@ def _builtin_source(source):
     return source if callable(getattr(source, "list", None)) else _BuiltinRegistryView(source)
 
 
+def _reconcile_bootstrap_auto_rule(store, capability) -> None:
+    """Keep only the app-owned, read-only builtin rule bound to its schema."""
+
+    if not (
+        capability.server_id == "builtin"
+        and capability.enabled
+        and capability.connected
+        and capability.review_state == "approved"
+        and capability.risk_level == "read"
+    ):
+        return
+    rule_id = f"builtin-auto-{capability.canonical_name}"
+    existing = store.get_policy_rule(rule_id)
+    if existing is None:
+        store.create_policy_rule(
+            PolicyRule(
+                id=rule_id,
+                server_id="builtin",
+                tool_name=capability.canonical_name,
+                effect="allowlist_auto",
+                actions=("read",),
+                schema_hash=capability.schema_hash,
+                created_by="bootstrap",
+            )
+        )
+        return
+    safe_scope = (
+        existing.id == rule_id
+        and existing.server_id == "builtin"
+        and existing.tool_name == capability.canonical_name
+        and existing.effect == "allowlist_auto"
+        and existing.actions == ("read",)
+        and existing.created_by == "bootstrap"
+        and existing.enabled
+        and not existing.schemes
+        and not existing.domains
+        and not existing.parameter_constraints
+        and not existing.data_classes
+        and not existing.roles
+        and existing.expires_at is None
+    )
+    if safe_scope and existing.schema_hash != capability.schema_hash:
+        store.update_policy_rule(
+            existing.id,
+            expected_revision=existing.revision,
+            schema_hash=capability.schema_hash,
+        )
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -129,17 +178,11 @@ class AgentRuntime:
 
             capability = self.gate.registry.resolve_execution(builtin.name)
             if capability is not None and builtin.name in safe_auto_tools:
-                rule = PolicyRule(
-                    id=f"builtin-auto-{builtin.name}",
-                    server_id="builtin",
-                    tool_name=builtin.name,
-                    effect="allowlist_auto",
-                    actions=("read",),
-                    schema_hash=capability.schema_hash,
-                    created_by="bootstrap",
-                )
                 try:
-                    self.gate.store.create_policy_rule(rule)
+                    _reconcile_bootstrap_auto_rule(
+                        self.gate.store,
+                        capability,
+                    )
                 except RecordAlreadyExistsError:
                     pass
             network_guard = getattr(builtin, "network_guard_attestation", None)

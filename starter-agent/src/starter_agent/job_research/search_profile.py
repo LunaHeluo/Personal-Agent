@@ -55,6 +55,7 @@ class ProfileAttemptSummary:
     output_length: int
     fields: tuple[str, ...]
     error_code: str | None
+    issues: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +107,7 @@ class JobSearchProfileBuilder:
         last_code = "invalid_search_profile"
         attempts: list[ProfileAttemptSummary] = []
         for attempt in range(2):
+            issues: tuple[str, ...] = ()
             model_request_id = f"job-search-profile-{uuid4().hex}"
             response = await provider.complete(messages, model, tools=[])
             content = response.content or ""
@@ -130,6 +132,8 @@ class JobSearchProfileBuilder:
                 last_code = exc.code
             except (ValidationError, ValueError, json.JSONDecodeError) as exc:
                 last_code = self._structure_error_code(exc)
+                if isinstance(exc, ValidationError):
+                    issues = self._safe_validation_issues(exc)
             except ScopeDenied:
                 last_code = "unsafe_search_profile"
             else:
@@ -156,6 +160,7 @@ class JobSearchProfileBuilder:
                     output_length=len(content),
                     fields=self._json_fields(content),
                     error_code=last_code,
+                    issues=issues,
                 )
             )
             if attempt == 0:
@@ -175,6 +180,17 @@ class JobSearchProfileBuilder:
         if isinstance(exc, json.JSONDecodeError):
             return "invalid_json"
         return "schema_validation_failed"
+
+    @staticmethod
+    def _safe_validation_issues(exc: ValidationError) -> tuple[str, ...]:
+        issues: list[str] = []
+        for item in exc.errors()[:8]:
+            path = ".".join(str(part)[:40] for part in item.get("loc", ()))
+            error_type = str(item.get("type") or "validation_error")[:60]
+            issue = f"{path or '$'}:{error_type}"[:120]
+            if issue not in issues:
+                issues.append(issue)
+        return tuple(issues)
 
     @staticmethod
     def _parse(content: str) -> _GeneratedProfile:

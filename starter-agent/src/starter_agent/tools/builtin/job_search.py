@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 from collections.abc import Callable
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -12,6 +13,7 @@ import httpx
 
 from starter_agent.domain.models import ToolResult
 from starter_agent.job_research.candidates import rank_job_candidates
+from starter_agent.job_research.query_planner import build_job_query_plan
 from starter_agent.tools.base import Tool, ToolContext
 from starter_agent.tools.adapters.serpapi_location import (
     SerpApiLocationResolver,
@@ -29,6 +31,21 @@ SENSITIVE_QUERY_KEYS = {
 DETAIL_DISCOVERY_TERMS = (
     '"responsibilities" "requirements" current opening apply'
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _SearchArguments:
+    query: str
+    location: str
+    location_alias: str | None
+    limit: int
+    query_variants: tuple[str, ...] = ()
+    hl: str | None = None
+    gl: str | None = None
+    google_domain: str = "google.com"
+    expand_location_aliases: bool = False
+    location_aliases: tuple[str, ...] = ()
+    plan_reason_codes: tuple[str, ...] = ()
 
 
 class SerpApiRequestError(Exception):
@@ -77,12 +94,29 @@ class SearchJobsSerpApiTool(Tool):
                 "description": "Optional city or region, such as Sydney.",
                 "maxLength": 100,
             },
+            "location_alias": {
+                "type": "string",
+                "description": "Optional Latin alias; validated by Locations API.",
+                "minLength": 1,
+                "maxLength": 100,
+                "pattern": "^[A-Za-z][A-Za-z0-9 .,'()&/\\-]*$",
+            },
             "limit": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 10,
                 "default": 5,
             },
+            "query_variants": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 2, "maxLength": 300},
+                "minItems": 1,
+                "maxItems": 12,
+            },
+            "hl": {"type": "string", "pattern": "^[a-z]{2}(?:-[a-z]{2})?$"},
+            "gl": {"type": "string", "pattern": "^[a-z]{2}$"},
+            "google_domain": {"type": "string", "enum": ["google.com"]},
+            "expand_location_aliases": {"type": "boolean", "default": False},
         },
         "required": ["query"],
         "additionalProperties": False,
@@ -117,7 +151,7 @@ class SearchJobsSerpApiTool(Tool):
         parsed = self._validate_arguments(arguments)
         if isinstance(parsed, ToolResult):
             return parsed
-        query, location, limit = parsed
+        query, location, limit = parsed.query, parsed.location, parsed.limit
         profile, api_key, api_key_env = self.key_resolver()
         safe_metadata = {
             "api_key_profile": profile,
@@ -135,18 +169,44 @@ class SearchJobsSerpApiTool(Tool):
         location_resolution_status = "not_requested"
         if location:
             resolution = await self.location_resolver.resolve(location)
+            if (
+                not resolution.canonical_name
+                and parsed.location_alias is not None
+            ):
+                alias_resolution = await self.location_resolver.resolve(
+                    parsed.location_alias
+                )
+                if alias_resolution.canonical_name:
+                    resolution = alias_resolution
             location_resolution_status = resolution.status
             if resolution.canonical_name:
                 location = resolution.canonical_name
             else:
                 query = " ".join((query, requested_location))
+                parsed = replace(parsed, query=query)
                 location = ""
+            if parsed.expand_location_aliases:
+                language = "zh-cn" if re.search(r"[\u3400-\u9fff]", f"{query} {requested_location}") else "en"
+                plan = build_job_query_plan(
+                    query=query,
+                    requested_location=requested_location,
+                    resolution=resolution,
+                    user_language=language,
+                )
+                parsed = replace(
+                    parsed,
+                    query_variants=plan.queries,
+                    hl=plan.hl,
+                    gl=plan.gl,
+                    location_aliases=plan.location_aliases,
+                    plan_reason_codes=plan.reason_codes,
+                )
 
         try:
             if self.client is not None:
-                result = await self._search_with_location_fallback(
+                result = await self._dispatch_search(
                     self.client,
-                    query,
+                    parsed,
                     location,
                     requested_location,
                     limit,
@@ -156,9 +216,9 @@ class SearchJobsSerpApiTool(Tool):
                 )
             else:
                 async with httpx.AsyncClient() as client:
-                    result = await self._search_with_location_fallback(
+                    result = await self._dispatch_search(
                         client,
-                        query,
+                        parsed,
                         location,
                         requested_location,
                         limit,
@@ -234,6 +294,188 @@ class SearchJobsSerpApiTool(Tool):
                 retryable=True,
                 metadata={**safe_metadata, "failure_type": "http_error"},
             )
+
+    async def _dispatch_search(
+        self,
+        client: Any,
+        parsed: _SearchArguments,
+        resolved_location: str,
+        requested_location: str,
+        limit: int,
+        profile: str,
+        api_key: str,
+        api_key_env: str,
+    ) -> ToolResult:
+        if parsed.query_variants:
+            return await self._search_variants(
+                client,
+                parsed.query_variants,
+                resolved_location,
+                limit,
+                profile,
+                api_key,
+                api_key_env,
+                hl=parsed.hl,
+                gl=parsed.gl,
+                google_domain=parsed.google_domain,
+                location_aliases=parsed.location_aliases,
+                plan_reason_codes=parsed.plan_reason_codes,
+            )
+        return await self._search_with_location_fallback(
+            client,
+            parsed.query,
+            resolved_location,
+            requested_location,
+            limit,
+            profile,
+            api_key,
+            api_key_env,
+        )
+
+    async def _search_variants(
+        self,
+        client: Any,
+        queries: tuple[str, ...],
+        location: str,
+        limit: int,
+        profile: str,
+        api_key: str,
+        api_key_env: str,
+        *,
+        hl: str | None,
+        gl: str | None,
+        google_domain: str,
+        location_aliases: tuple[str, ...] = (),
+        plan_reason_codes: tuple[str, ...] = (),
+    ) -> ToolResult:
+        retrieved_at = datetime.now(UTC).isoformat()
+        semaphore = asyncio.Semaphore(4)
+
+        async def run_one(query: str, engine: str) -> tuple[str, str, Any]:
+            try:
+                async with semaphore:
+                    payload = await self._request(
+                        client,
+                        engine,
+                        query,
+                        location,
+                        api_key,
+                        hl=hl,
+                        gl=gl,
+                        google_domain=google_domain,
+                    )
+                error = self._payload_error(payload, profile, api_key_env)
+                if error is not None and not self._is_no_results_error(payload):
+                    return query, engine, error
+                return query, engine, payload
+            except SerpApiRequestError as exc:
+                return query, engine, ToolResult(
+                    ok=False,
+                    error_code=f"search_{exc.failure_type}",
+                    display="SerpAPI request failed",
+                )
+            except httpx.HTTPStatusError as exc:
+                return query, engine, self._http_error(
+                    exc.response.status_code,
+                    {"api_key_profile": profile, "api_key_env": api_key_env},
+                    response=exc.response,
+                )
+            except (ValueError, TypeError):
+                return query, engine, ToolResult(
+                    ok=False,
+                    error_code="invalid_response",
+                    display="SerpAPI response was invalid",
+                )
+
+        calls = [
+            run_one(query, engine)
+            for query in queries[:12]
+            for engine in ("google_jobs", "google")
+        ]
+        outcomes = await asyncio.gather(*calls)
+        raw_results: list[dict[str, Any]] = []
+        failures: list[dict[str, str]] = []
+        for query, engine, value in outcomes:
+            if isinstance(value, ToolResult):
+                failures.append(
+                    {"query": query, "engine": engine, "error_code": value.error_code or "search_failed"}
+                )
+                continue
+            parsed_rows = (
+                self._parse_google_jobs(value, retrieved_at)
+                if engine == "google_jobs"
+                else self._parse_google(value, retrieved_at)
+            )
+            for row in parsed_rows:
+                row["matched_queries"] = [query]
+                row["search_engines"] = [engine]
+                raw_results.append(row)
+
+        merged: dict[str, dict[str, Any]] = {}
+        for row in raw_results:
+            url = str(row.get("url") or "")
+            if not url:
+                continue
+            current = merged.get(url)
+            if current is None:
+                merged[url] = row
+                continue
+            current["matched_queries"] = list(dict.fromkeys([
+                *current.get("matched_queries", []), *row.get("matched_queries", [])
+            ]))
+            current["search_engines"] = list(dict.fromkeys([
+                *current.get("search_engines", []), *row.get("search_engines", [])
+            ]))
+
+        diagnostic_ranked = rank_job_candidates(
+            list(merged.values()),
+            limit=10,
+            location_aliases=location_aliases,
+        )
+        ranked = diagnostic_ranked[:limit]
+        results = [item.model_dump(mode="json") for item in ranked]
+        diagnostic_results = [
+            item.model_dump(mode="json") for item in diagnostic_ranked
+        ]
+        safe_metadata = {
+            "api_key_profile": profile,
+            "api_key_env": api_key_env,
+            "retrieved_at": retrieved_at,
+            "result_count": len(results),
+        }
+        data = {
+            "query": queries[0],
+            "planned_queries": list(queries[:12]),
+            "executed_queries": list(queries[:12]),
+            "location": location,
+            "search_engine": "google_jobs+google",
+            "request_count": len(outcomes),
+            "raw_result_count": len(raw_results),
+            "deduplicated_count": len(merged),
+            "chinese_title_count": sum(
+                1 for item in merged.values()
+                if re.search(r"[\u3400-\u9fff]", str(item.get("title") or ""))
+            ),
+            "request_failures": failures,
+            "location_aliases": list(location_aliases),
+            "plan_reason_codes": list(plan_reason_codes),
+            "results": results,
+            "ranking_diagnostics": [
+                {
+                    "title": item.get("title"),
+                    "url": item.get("url"),
+                    "score": item.get("score"),
+                    "page_kind": item.get("page_kind"),
+                    "reason_codes": item.get("reason_codes", []),
+                    "matched_queries": item.get("matched_queries", []),
+                    "search_engines": item.get("search_engines", []),
+                }
+                for item in diagnostic_results
+            ],
+        }
+        if not results:
+            return ToolResult(ok=False, data=data, error_code="no_results", display="No usable job results", metadata=safe_metadata)
+        return ToolResult(ok=True, data=data, display=f"Found {len(results)} job leads", metadata=safe_metadata)
 
     async def _search(
         self,
@@ -402,6 +644,10 @@ class SearchJobsSerpApiTool(Tool):
         query: str,
         location: str,
         api_key: str,
+        *,
+        hl: str | None = None,
+        gl: str | None = None,
+        google_domain: str | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "engine": engine,
@@ -410,6 +656,14 @@ class SearchJobsSerpApiTool(Tool):
         }
         if location:
             params["location"] = location
+        if hl:
+            params["hl"] = (
+                hl.split("-", 1)[0] if engine == "google_jobs" else hl
+            )
+        if gl:
+            params["gl"] = gl
+        if google_domain:
+            params["google_domain"] = google_domain
         response = None
         for attempt in range(1, self.max_retries + 2):
             try:
@@ -449,25 +703,70 @@ class SearchJobsSerpApiTool(Tool):
     @staticmethod
     def _validate_arguments(
         arguments: dict[str, Any],
-    ) -> tuple[str, str, int] | ToolResult:
+    ) -> _SearchArguments | ToolResult:
         query = arguments.get("query")
         location = arguments.get("location", "")
+        location_alias = arguments.get("location_alias")
         limit = arguments.get("limit", 5)
+        query_variants = arguments.get("query_variants", ())
+        hl = arguments.get("hl")
+        gl = arguments.get("gl")
+        google_domain = arguments.get("google_domain", "google.com")
+        expand_location_aliases = arguments.get("expand_location_aliases", False)
         if (
             not isinstance(query, str)
             or not 2 <= len(query.strip()) <= 300
             or not isinstance(location, str)
             or len(location) > 100
+            or (
+                location_alias is not None
+                and (
+                    not isinstance(location_alias, str)
+                    or re.fullmatch(
+                        r"[A-Za-z][A-Za-z0-9 .,'()&/\-]*",
+                        location_alias,
+                    )
+                    is None
+                    or not 1 <= len(location_alias.strip()) <= 100
+                )
+            )
             or isinstance(limit, bool)
             or not isinstance(limit, int)
             or not 1 <= limit <= 10
+            or not isinstance(query_variants, (list, tuple))
+            or (
+                "query_variants" in arguments
+                and not 1 <= len(query_variants) <= 12
+            )
+            or any(
+                not isinstance(item, str) or not 2 <= len(item.strip()) <= 300
+                for item in query_variants
+            )
+            or (hl is not None and (not isinstance(hl, str) or re.fullmatch(r"[a-zA-Z]{2}(?:-[a-zA-Z]{2})?", hl) is None))
+            or (gl is not None and (not isinstance(gl, str) or re.fullmatch(r"[a-zA-Z]{2}", gl) is None))
+            or google_domain != "google.com"
+            or not isinstance(expand_location_aliases, bool)
         ):
             return ToolResult(
                 ok=False,
                 display="岗位搜索参数不正确",
                 error_code="invalid_arguments",
             )
-        return query.strip(), location.strip(), limit
+        return _SearchArguments(
+            query=query.strip(),
+            location=location.strip(),
+            location_alias=(
+                location_alias.strip()
+                if isinstance(location_alias, str)
+                else None
+            ),
+            limit=limit,
+            query_variants=tuple(item.strip() for item in query_variants),
+            hl=hl.casefold() if isinstance(hl, str) else None,
+            gl=gl.casefold() if isinstance(gl, str) else None,
+            google_domain=google_domain,
+            expand_location_aliases=expand_location_aliases,
+        )
 
     @staticmethod
     def _payload_error(

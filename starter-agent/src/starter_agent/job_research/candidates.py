@@ -23,7 +23,8 @@ _KIND_PRIORITY: dict[str, tuple[int, float]] = {
     "organic": (2, 0.4),
 }
 _COLLECTION_TITLE = re.compile(
-    r"(?:^\s*[\d,]+\+?\s+.*\bjobs?\b|\bjobs?\s+in\b)",
+    r"(?:^\s*[\d,]+\+?\s+.*\bjobs?\b|\bjobs?\s+in\b|"
+    r"招聘(?:信息|[^\s，。|]{0,12}人才)|职位列表)",
     re.IGNORECASE,
 )
 _COLLECTION_PATH = re.compile(
@@ -47,6 +48,19 @@ _UNAVAILABLE_SIGNAL = re.compile(
     r"\b(?:404|not found|expired|unavailable|access denied|forbidden|error)\b",
     re.IGNORECASE,
 )
+_CHINESE_TEXT = re.compile(r"[\u3400-\u9fff]")
+_ROLE_RELEVANCE = re.compile(
+    r"(?:智能体|大模型|生成式\s*AI|AI\s*应用|算法工程师|AI\s*Agent|LLM\s*Application)",
+    re.IGNORECASE,
+)
+_RESPONSIBILITY_SIGNAL = re.compile(
+    r"(?:岗位职责|工作职责|职位描述|responsibilit|what you will do)", re.IGNORECASE
+)
+_REQUIREMENT_SIGNAL = re.compile(
+    r"(?:任职要求|岗位要求|职位要求|requirements?|qualifications?)", re.IGNORECASE
+)
+_AGGREGATOR_HOST = re.compile(r"(?:^|\.)(?:builtin\.com|indeed\.com|glassdoor\.com)$")
+_DETAIL_PATH = re.compile(r"/(?:jobs?|careers?|positions?|openings?|roles?)/", re.IGNORECASE)
 
 
 class CandidateAssessment(BaseModel):
@@ -73,13 +87,17 @@ class JobCandidate(BaseModel):
     page_kind: CandidatePageKind = "unknown_candidate"
     score: float = 0.0
     reason_codes: tuple[str, ...] = ()
+    matched_queries: tuple[str, ...] = ()
+    search_engines: tuple[str, ...] = ()
 
 
 def rank_job_candidates(
     results: Sequence[Mapping[str, Any]],
     *,
     limit: int,
+    location_aliases: Sequence[str] = (),
 ) -> tuple[JobCandidate, ...]:
+    results = _merge_url_provenance(results)
     ordered = sorted(
         results,
         key=lambda item: (
@@ -89,23 +107,26 @@ def rank_job_candidates(
         ),
     )
     ranked: list[JobCandidate] = []
-    seen: set[str] = set()
     for item in ordered:
         kind = str(item.get("url_kind"))
         if kind not in _KIND_PRIORITY:
             continue
         url = _canonical_http_url(str(item.get("url") or ""))
         title = " ".join(str(item.get("title") or "").split())
-        if not url or not title or url in seen:
+        if not url or not title:
             continue
-        assessment = assess_job_candidate(item, url=url, title=title)
+        assessment = assess_job_candidate(
+            item,
+            url=url,
+            title=title,
+            location_aliases=location_aliases,
+        )
         if assessment.page_kind in {
             "collection_page",
             "social_or_content_page",
             "invalid_or_unsafe_url",
         }:
             continue
-        seen.add(url)
         ranked.append(
             JobCandidate(
                 url=url,
@@ -121,13 +142,19 @@ def rank_job_candidates(
                 page_kind=assessment.page_kind,
                 score=assessment.score,
                 reason_codes=assessment.reason_codes,
+                matched_queries=tuple(
+                    str(value) for value in item.get("matched_queries", [])[:12]
+                ),
+                search_engines=tuple(
+                    str(value) for value in item.get("search_engines", [])[:2]
+                ),
             )
         )
     ranked.sort(
         key=lambda item: (
             0 if item.page_kind == "job_detail_candidate" else 1,
-            _KIND_PRIORITY[item.url_kind][0],
             -item.score,
+            _KIND_PRIORITY[item.url_kind][0],
             item.provider_position,
         )
     )
@@ -161,6 +188,7 @@ def assess_job_candidate(
     *,
     url: str,
     title: str,
+    location_aliases: Sequence[str] = (),
 ) -> CandidateAssessment:
     parsed = urlsplit(url)
     path = parsed.path.casefold()
@@ -223,6 +251,34 @@ def assess_job_candidate(
         reasons.append("needs_browser_classification")
         page_kind = "unknown_candidate"
     haystack = f"{title} {item.get('snippet') or ''}"
+    location = str(item.get("location") or "")
+    location_haystack = f"{title} {location} {item.get('snippet') or ''}".casefold()
+    aliases = tuple(
+        alias.casefold() for alias in location_aliases if isinstance(alias, str) and alias.strip()
+    )
+    if aliases and any(alias in location_haystack for alias in aliases):
+        score += 0.25
+        reasons.append("target_location_match")
+    elif aliases and location and not any(alias in location.casefold() for alias in aliases):
+        score -= 0.4
+        reasons.append("non_target_location")
+    if _CHINESE_TEXT.search(title):
+        score += 0.15
+        reasons.append("chinese_title")
+    if _ROLE_RELEVANCE.search(haystack):
+        score += 0.15
+        reasons.append("agent_ai_relevance")
+    snippet = str(item.get("snippet") or "")
+    if _RESPONSIBILITY_SIGNAL.search(snippet) and _REQUIREMENT_SIGNAL.search(snippet):
+        score += 0.2
+        reasons.append("job_section_signals")
+    hostname = parsed.hostname.casefold()
+    if _AGGREGATOR_HOST.search(hostname):
+        score -= 0.35
+        reasons.append("aggregator_signal")
+    elif _DETAIL_PATH.search(path):
+        score += 0.15
+        reasons.append("employer_detail_signal")
     if _GENERIC_CAREERS.match(title):
         score -= 0.3
         reasons.append("generic_careers_signal")
@@ -235,11 +291,51 @@ def assess_job_candidate(
         score += 0.03
     if item.get("snippet"):
         score += 0.02
+        if len(snippet.strip()) < 40 and not (
+            _RESPONSIBILITY_SIGNAL.search(snippet)
+            or _REQUIREMENT_SIGNAL.search(snippet)
+        ):
+            score -= 0.1
+            reasons.append("thin_snippet_signal")
     return CandidateAssessment(
         page_kind=page_kind,
         score=max(0.0, min(1.0, score)),
         reason_codes=tuple(reasons),
     )
+
+
+def _merge_url_provenance(
+    results: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for item in results:
+        url = _canonical_http_url(str(item.get("url") or ""))
+        if not url:
+            continue
+        current = merged.get(url)
+        incoming = dict(item)
+        incoming["url"] = url
+        if current is None:
+            incoming["matched_queries"] = list(dict.fromkeys(incoming.get("matched_queries", [])))
+            incoming["search_engines"] = list(dict.fromkeys(incoming.get("search_engines", [])))
+            merged[url] = incoming
+            continue
+        queries = list(dict.fromkeys([
+            *current.get("matched_queries", []), *incoming.get("matched_queries", [])
+        ]))
+        engines = list(dict.fromkeys([
+            *current.get("search_engines", []), *incoming.get("search_engines", [])
+        ]))
+        current_kind = _KIND_PRIORITY.get(str(current.get("url_kind")), (99, 0.0))[0]
+        incoming_kind = _KIND_PRIORITY.get(str(incoming.get("url_kind")), (99, 0.0))[0]
+        if incoming_kind < current_kind:
+            incoming["matched_queries"] = queries
+            incoming["search_engines"] = engines
+            merged[url] = incoming
+        else:
+            current["matched_queries"] = queries
+            current["search_engines"] = engines
+    return list(merged.values())
 
 
 def _job_identity(candidate: JobCandidate) -> tuple[str, ...]:

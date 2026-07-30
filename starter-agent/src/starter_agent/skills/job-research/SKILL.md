@@ -39,12 +39,12 @@ metadata:
 - 用户要求“根据我的简历找岗位”但未给出岗位关键词时，先检索简历证据，再由模型生成最小公开搜索画像（短岗位/技术关键词和用户明确提供的地点）。画像必须引用检索到的 Chunk；RAG 无证据或画像校验失败时先说明缺口，不猜测搜索条件。
 - 简历知识库必须处于可用作用域。若不可用，可继续核验 JD，但不得生成个人匹配结论。
 - 从当前运行时能力快照读取 Tool 状态与 Schema。关闭的 Tool 只有轻量名称可见；说明能力未启用，并请求用户在能力管理页面启用或选择降级方案。
-- 当前真实依赖契约：`search_jobs_serpapi` 接收必填 `query`，可选 `location`、`limit`；Playwright `browser_navigate` 接收必填 `url`，`browser_snapshot` 使用运行时发现的可选 `target`、`filename`、`depth`、`boxes`；`retrieve_resume_evidence` 接收必填 `query` 和可选 `top_k`。每次调用仍以最新 Schema 为准。
+- 当前真实依赖契约：`search_jobs_serpapi` 接收必填 `query`，可选 `location`、经 Locations API 二次验证的 `location_alias`、`limit`；Playwright `browser_navigate` 接收必填 `url`，`browser_snapshot` 使用运行时发现的可选 `target`、`filename`、`depth`、`boxes`；`retrieve_resume_evidence` 接收必填 `query` 和可选 `top_k`。每次调用仍以最新 Schema 为准。
 
 ## Workflow
 
 1. 确定搜索画像：显式岗位条件直接使用；简历驱动请求先调用 `retrieve_resume_evidence`，只把经隐私校验的短关键词和用户明确地点传给搜索 Tool，不向搜索 Tool 发送简历正文、姓名、联系方式、公司经历原文或秘密。
-2. 使用 SerpAPI Tool `search_jobs_serpapi` 搜索公开岗位线索，保留标题、公司、地点、摘要、公开 URL 与检索时间；搜索摘要不等于完整 JD。地点通过 SerpAPI Locations API 动态规范化；无法规范化时把原地点保留在查询文本中并省略 provider `location` 参数，不维护城市静态映射。
+2. 使用 SerpAPI Tool `search_jobs_serpapi` 搜索公开岗位线索，保留标题、公司、地点、摘要、公开 URL 与检索时间；搜索摘要不等于完整 JD。地点先以用户原始写法查询 SerpAPI Locations API；非拉丁地点未命中时，模型只接收地点字符串并生成候选拉丁别名，别名必须再次经 Locations API 命中才可使用。无法规范化时把原地点保留在查询文本中并省略 provider `location` 参数，不维护城市静态映射。
 3. 规范化并排序候选岗位 URL：优先 SerpAPI 结构化结果中的雇主或直接申请链接，分享链接其次，普通 organic result 最后；不按固定招聘网站或城市写死排序。
 4. 对排序后的公开 URL 分别提出 allowlist 内 `mcp__playwright__browser_navigate` 调用，再用 `mcp__playwright__browser_snapshot` 读取页面；默认读取配置数量内的候选，不等待用户先提供或选择 URL。每个候选保留请求 URL、最终来源 URL、裁剪状态与独立 Tool Trace；列表页、登录墙、超时或字段不足时继续下一个候选。
 5. 从页面提取职责、必备要求、加分项、地点与关键限制。缺失字段标记为未验证，不从搜索摘要补齐。
