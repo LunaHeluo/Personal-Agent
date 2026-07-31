@@ -1,8 +1,8 @@
-# Session-Aware Official JD Results Design
+# Session-Aware Precise JD Results Design
 
 ## Goal
 
-Improve public job research so that a follow-up such as “选择第一个岗位做匹配分析” resolves the candidate from the current session, readable employer-hosted job descriptions are preferred, and verified jobs are rendered in the Candidate format requested by the user.
+Improve public job research so that a follow-up such as “选择第一个岗位做匹配分析” resolves the candidate from the current session, SerpAPI returns more precise job-detail evidence, readable complete job descriptions are preferred, and verified jobs are rendered in the Candidate format requested by the user.
 
 The implementation must be location-agnostic. Shanghai, Beijing, Chengdu, or any other location follows the same alias expansion, candidate ranking, selection, and rendering rules.
 
@@ -43,39 +43,41 @@ Before generic chat classification, deterministic selection parsing recognizes a
 
 Only a Candidate from the same session and an unexpired snapshot can be selected. Complete candidates may be selected normally. If a user selects a partial candidate, the response must say that the JD is incomplete and offer to retry retrieval; it must not silently substitute a knowledge-base JD.
 
-## Official Employer Discovery
+## SerpAPI Query Strategy
 
-Search uses two complementary lanes within a bounded request budget:
+Search uses a bounded portfolio of complementary queries rather than a company allowlist or company-specific weighting.
 
-### General lane
+### Localized role queries
 
-Continue localized bilingual role/location queries against both Google Jobs and organic Google results. Location aliases remain dynamically resolved rather than hard-coded by city.
+Continue localized Chinese and English role/location queries against both Google Jobs and organic Google results. Location aliases remain dynamically resolved rather than hard-coded by city. The query portfolio preserves the user-visible target role and adds only bounded, non-sensitive role-family synonyms; it never sends resume prose to SerpAPI.
 
-### Official-employer lane
+### Job-detail evidence queries
 
-Add bounded queries aimed at employer career sites. An application configuration list provides known official career hosts for large employers, initially including Tencent, ByteDance, Baidu, Alibaba, Meituan, and Huawei. The list is configuration, not ranking logic, so deployments can add or remove employers without changing code.
+Reserve part of the query budget for result shapes that are more likely to contain a complete JD. Chinese variants combine the resolved location and role with signals such as `招聘`, `岗位职责`, `任职要求`, and `职位描述`. English variants combine the location and role with signals such as `careers`, `responsibilities`, `requirements`, and `job description`.
 
-Generic employer-host detection remains available for companies outside that list. It uses job-detail URL shape, company metadata, same-company mirror grouping, and the absence of known job-board or aggregator signals. A configured host is strong evidence of an official source; a generic heuristic is weaker evidence and must not assert ownership when ambiguous.
+Organic queries may exclude known collection-only or low-value result shapes when doing so does not remove all coverage. They must not restrict discovery to a single recruitment platform or a fixed employer list. Google Jobs structured apply/share links and ordinary organic results remain enabled for every location.
 
-The query plan reserves a bounded subset of variants for official-employer discovery without removing localized Chinese and English coverage. Each result retains its matched query and search engine for diagnostics.
+Each result retains its matched query, engine, provider position, and source URL. Diagnostics report which query families produced complete, partial, filtered, and failed candidates so query precision can be measured rather than inferred.
 
 ## Candidate Ranking and Retrieval
 
-Candidate scoring adds these source signals:
+Candidate scoring adds these general source and readability signals:
 
-- strong boost for a configured official career host with a job-detail URL;
-- moderate boost for a probable employer-hosted job-detail URL;
-- penalty for aggregators, collection pages, and job-board mirrors when a readable employer detail exists;
+- strong boost for a structured direct-apply link or a URL classified as a concrete job-detail page;
+- boost for title, company, location, and snippet evidence that indicates responsibilities and requirements;
+- boost for pages whose host/path has previously yielded a complete JD during the current search, without persisting company-specific preference;
+- penalty for aggregators, collection pages, generic careers pages, expired pages, login pages, and thin snippets;
+- penalty for hosts or result shapes that repeatedly fail preflight readability during the current search;
 - existing role, location, language, section, and completeness signals remain in force.
 
 Mirror groups prefer:
 
-1. readable official employer detail;
+1. readable direct employer or structured-apply detail;
 2. readable recruiting-platform job detail;
 3. readable aggregator mirror;
 4. partial search evidence.
 
-The first retrieval window reserves room for official-employer candidates that pass role and location checks. This reservation does not admit irrelevant official jobs. Failed attempts do not consume the complete-JD target. Retrieval continues until the configured complete-JD target is reached, the candidate limit is exhausted, or the existing time budget expires.
+Before expensive browser retrieval, candidates receive a bounded readability preflight using URL shape, response status when available, JSON-LD presence, content type, login/expired signals, and snippet completeness. This is a prioritization hint rather than proof of completeness. Failed attempts do not consume the complete-JD target. Retrieval continues until the configured complete-JD target is reached, the candidate limit is exhausted, or the existing time budget expires.
 
 ## User-Facing Output
 
@@ -143,10 +145,11 @@ Use TDD for every behavior change. Required coverage includes:
 - cross-session and expired selections are rejected without knowledge fallback;
 - a new search expires the prior pending snapshot;
 - location aliases remain generic for arbitrary locations;
-- configured Tencent and ByteDance job-detail hosts receive official-source reason codes and outrank job-board or aggregator mirrors;
-- official-employer query variants coexist with localized Chinese and English variants;
-- irrelevant or wrong-location official jobs do not bypass relevance checks;
-- readable official jobs are represented in the first retrieval window;
+- precise job-detail query variants coexist with localized Chinese and English role variants;
+- arbitrary company-hosted detail pages can outrank job-board or aggregator mirrors without a company allowlist;
+- irrelevant or wrong-location company pages do not bypass relevance checks;
+- structured apply links, concrete detail paths, JSON-LD signals, and section-rich snippets improve retrieval priority;
+- repeated unreadable result shapes are deprioritized within the current search without hiding diagnostics;
 - the Candidate template contains overview, complete responsibility and requirement sections, match summary, Candidate ID, and pending status;
 - partial evidence is rendered only when the complete target is unmet;
 - inaccessible URLs and their failure codes remain in diagnostics but not in the user answer;
@@ -157,5 +160,6 @@ Use TDD for every behavior change. Required coverage includes:
 
 - Automatically submitting job applications.
 - Automatically ingesting a retrieved JD into the knowledge base before user confirmation.
+- Maintaining a Tencent, ByteDance, or other employer allowlist or applying company-specific ranking weight.
 - Claiming that a generic employer-like domain is official without adequate evidence.
 - Hard-coding behavior to a specific city.
