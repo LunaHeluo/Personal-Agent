@@ -616,10 +616,10 @@ def test_chat_required_falls_back_to_direct_public_job_tools_without_forcing_mod
     assert body["provider"] == "zhipu"
     assert body["model"] == "glm-4.7"
     assert body["tool_calls"] == 4
-    assert "完整 JD（1 个）" in body["content"]
+    assert "# Candidate 1：AI Agent Engineer" in body["content"]
     assert "AI Agent Engineer" in body["content"]
     assert "https://jobs.example.com/agent" in body["content"]
-    assert "岗位要求：" in body["content"]
+    assert "## 任职要求" in body["content"]
     assert "- Python" in body["content"]
     assert app_service.chat_called is False
     assert len(app_service.prepare_calls) == 1
@@ -657,7 +657,7 @@ def test_job_research_reports_browser_dependency_without_claiming_jd_attempts(
     content = response.json()["content"]
     assert "dependency_unavailable" in content
     assert "job_description_unverified" not in content
-    assert "尝试候选 0/10" in content
+    assert "已检查候选 0" in content
 
 
 def test_chat_distinguishes_invalid_profile_json_from_missing_resume_evidence(

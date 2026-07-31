@@ -930,7 +930,7 @@ _JOB_RETRIEVAL_METHOD_LABELS = {
 }
 
 
-def _public_job_search_answer(
+def _legacy_public_job_search_answer(
     *,
     search_result: ToolResult,
     jd_result: ToolResult | None,
@@ -1098,6 +1098,228 @@ def _public_job_search_answer(
     )
     lines.append("请选择一个岗位后，我再继续做最终匹配分析或确认入库。")
     return "\n".join(lines)
+
+
+_SUBSTANTIVE_JOB_SNIPPET = re.compile(
+    r"(?:岗位职责|工作职责|职位描述|任职要求|岗位要求|职位要求|"
+    r"responsibilit|requirements?|job description|qualifications?)",
+    re.IGNORECASE,
+)
+_PARTIAL_RESPONSIBILITY_SIGNAL = re.compile(
+    r"(?:岗位职责|工作职责|职位描述|responsibilit|job description)",
+    re.IGNORECASE,
+)
+_PARTIAL_REQUIREMENT_SIGNAL = re.compile(
+    r"(?:任职要求|岗位要求|职位要求|requirements?|qualifications?)",
+    re.IGNORECASE,
+)
+_CANDIDATE_DISPLAY_CHAR_LIMIT = 12_000
+
+
+def _public_job_search_answer(
+    *,
+    search_result: ToolResult,
+    jd_result: ToolResult | None,
+) -> str:
+    lines = ["已查询公开岗位。"]
+    if not search_result.ok:
+        lines.append(search_result.display or "岗位搜索失败。")
+        if search_result.error_code:
+            lines.append(f"错误码：{search_result.error_code}")
+        return "\n".join(lines)
+
+    search_data = (
+        search_result.data if isinstance(search_result.data, dict) else {}
+    )
+    if jd_result is None:
+        statistics = _job_search_statistics_line(search_data)
+        if statistics:
+            lines.append(statistics)
+        lines.append("没有读取到可验证的完整 JD。")
+        return "\n".join(lines)
+
+    data = jd_result.data if isinstance(jd_result.data, dict) else {}
+    raw_jobs = data.get("jobs")
+    raw_partials = data.get("partial_jobs")
+    jobs = _unique_job_rows(raw_jobs if isinstance(raw_jobs, list) else [])
+    verified_urls = {
+        _job_source_url(job) for job in jobs if _job_source_url(job)
+    }
+    target_count = int(
+        data.get("target_count")
+        or get_settings().job_research.target_valid_jds
+    )
+    partial_jobs = (
+        [
+            job
+            for job in _unique_job_rows(
+                raw_partials if isinstance(raw_partials, list) else []
+            )
+            if _job_source_url(job) not in verified_urls
+            and _is_substantive_partial_job(job)
+        ]
+        if len(jobs) < target_count
+        else []
+    )
+
+    for index, job in enumerate(jobs, start=1):
+        lines.extend(_candidate_answer_lines(job, index=index))
+
+    if not jobs and partial_jobs:
+        lines.append("未取得完整 JD；以下仅为可用的部分岗位证据。")
+    if partial_jobs:
+        displayed = partial_jobs[:3]
+        lines.append(f"部分证据（{len(displayed)} 个）：")
+        for job in displayed:
+            title = job.get("title") or job.get("job_title") or "未命名岗位"
+            company = job.get("company") or "未知公司"
+            location = job.get("location") or "未知地点"
+            lines.append(f"- {title} · {company} · {location}")
+            snippet = str(job.get("snippet") or job.get("raw_text") or "").strip()
+            lines.append(f"  搜索摘要：{snippet[:500]}")
+            url = _job_source_url(job)
+            if url:
+                lines.append(f"  来源：{url}")
+
+    if not jobs and not partial_jobs:
+        lines.append(jd_result.display or "未读取到可用岗位内容。")
+        if (
+            jd_result.error_code
+            and jd_result.error_code != "job_description_unverified"
+        ):
+            lines.append(f"错误码：{jd_result.error_code}")
+
+    statistics = _job_search_statistics_line(search_data)
+    if statistics:
+        lines.append(statistics)
+    attempts = data.get("candidate_attempts")
+    attempt_count = len(attempts) if isinstance(attempts, list) else 0
+    lines.append(
+        f"结果：完整 JD {len(jobs)} · 部分证据 {len(partial_jobs)} · "
+        f"已检查候选 {attempt_count}"
+    )
+    if jobs:
+        lines.append(
+            "请选择 Candidate 编号或 Candidate ID，"
+            "我再继续做最终匹配分析或确认入库。"
+        )
+    return "\n".join(lines)
+
+
+def _candidate_answer_lines(job: dict, *, index: int) -> list[str]:
+    title = str(job.get("title") or job.get("job_title") or "未命名 JD")
+    company = str(job.get("company") or "未知公司")
+    location = str(job.get("location") or "未知地点")
+    source_url = _job_source_url(job)
+    candidate_id = str(job.get("candidate_id") or "未分配")
+    status = str(job.get("selection_status") or "PENDING_CONFIRMATION")
+    block = [
+        "",
+        f"# Candidate {index}：{title}",
+        "",
+        "## 岗位概览",
+        "",
+        f"- 公司：{company}",
+        f"- 岗位：{title}",
+        f"- 地点：{location}",
+        "- 来源：招聘详情页",
+    ]
+    if source_url:
+        block.append(f"  {source_url}")
+    block.extend(
+        (
+            "- 读取状态：已读取完整 JD 核心字段",
+            f"- Candidate ID：`{candidate_id}`",
+            f"- 状态：`{status}`",
+            "",
+            "## 职责摘录",
+            "",
+        )
+    )
+    responsibilities = job.get("responsibilities")
+    responsibility_items = (
+        [
+            item.strip()
+            for item in responsibilities
+            if isinstance(item, str) and item.strip()
+        ]
+        if isinstance(responsibilities, list)
+        else []
+    )
+    block.extend(f"- {item}" for item in responsibility_items)
+    block.extend(("", "## 任职要求", ""))
+    requirements = job.get("requirements")
+    requirement_items = (
+        [
+            item.strip()
+            for item in requirements
+            if isinstance(item, str) and item.strip()
+        ]
+        if isinstance(requirements, list)
+        else []
+    )
+    block.extend(f"- {item}" for item in requirement_items)
+    analysis = job.get("analysis")
+    matched = gaps = 0
+    if isinstance(analysis, list):
+        matched = sum(
+            1
+            for item in analysis
+            if isinstance(item, dict) and item.get("status") == "matched"
+        )
+        gaps = sum(
+            1
+            for item in analysis
+            if isinstance(item, dict) and item.get("status") == "gap"
+        )
+    block.extend(
+        (
+            "",
+            "## 简历匹配概览",
+            "",
+            f"- 匹配项：{matched}",
+            f"- 证据缺口：{gaps}",
+        )
+    )
+    rendered: list[str] = []
+    length = 0
+    for line in block:
+        additional = len(line) + 1
+        if length + additional > _CANDIDATE_DISPLAY_CHAR_LIMIT:
+            rendered.append("- 展示内容已截断；完整规范化 JD 已保留。")
+            break
+        rendered.append(line)
+        length += additional
+    return rendered
+
+
+def _is_substantive_partial_job(job: dict) -> bool:
+    snippet = str(job.get("snippet") or job.get("raw_text") or "").strip()
+    if len(snippet) < 20:
+        return False
+    has_both_sections = bool(
+        _PARTIAL_RESPONSIBILITY_SIGNAL.search(snippet)
+        and _PARTIAL_REQUIREMENT_SIGNAL.search(snippet)
+    )
+    return has_both_sections or (
+        len(snippet) >= 80 and bool(_SUBSTANTIVE_JOB_SNIPPET.search(snippet))
+    )
+
+
+def _job_search_statistics_line(search_data: dict) -> str:
+    planned = search_data.get("planned_queries")
+    executed = search_data.get("executed_queries")
+    if not isinstance(planned, list):
+        return ""
+    query_count = len(executed) if isinstance(executed, list) else len(planned)
+    return (
+        f"搜索：{query_count} 个查询变体 · "
+        f"{int(search_data.get('request_count') or 0)} 次 SerpAPI 请求 · "
+        f"{int(search_data.get('raw_result_count') or 0)} 条原始结果 · "
+        f"{int(search_data.get('deduplicated_count') or 0)} 条去重结果 · "
+        f"过滤集合页 {int(search_data.get('filtered_collection_count') or 0)} · "
+        f"{int(search_data.get('chinese_title_count') or 0)} 个中文标题"
+    )
 
 
 def _append_job_search_statistics(

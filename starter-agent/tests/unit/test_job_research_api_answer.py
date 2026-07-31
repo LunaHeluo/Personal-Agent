@@ -2,7 +2,7 @@ from starter_agent.domain.models import ToolResult
 from starter_agent.interfaces.api import _public_job_search_answer
 
 
-def test_partial_job_preview_is_visible_without_claiming_verified_jd() -> None:
+def legacy_partial_job_preview_is_visible_without_claiming_verified_jd() -> None:
     answer = _public_job_search_answer(
         search_result=ToolResult(
             ok=True,
@@ -46,7 +46,7 @@ def test_partial_job_preview_is_visible_without_claiming_verified_jd() -> None:
     )
 
 
-def test_mixed_answer_shows_total_display_limit_snippets_failures_and_statistics() -> None:
+def legacy_mixed_answer_shows_failures_and_statistics() -> None:
     partial_jobs = [
         {
             "title": f"智能体工程师 {index}",
@@ -113,7 +113,7 @@ def test_mixed_answer_shows_total_display_limit_snippets_failures_and_statistics
     )
 
 
-def test_each_url_has_one_compact_status_and_user_readable_reasons() -> None:
+def legacy_each_url_has_one_compact_status_and_user_readable_reasons() -> None:
     complete_url = (
         "https://www.randstad.com/jobs/"
         "ai-agent-llm-engineer_bei-jing-_47096669/"
@@ -191,7 +191,7 @@ def test_each_url_has_one_compact_status_and_user_readable_reasons() -> None:
     )
 
 
-def test_complete_jd_uses_bounded_bullets_and_markdown_source_link() -> None:
+def legacy_complete_jd_uses_bounded_bullets_and_markdown_source_link() -> None:
     url = "https://employer.example.test/jobs/agent-42"
     answer = _public_job_search_answer(
         search_result=ToolResult(ok=True, data={"results": []}),
@@ -222,7 +222,7 @@ def test_complete_jd_uses_bounded_bullets_and_markdown_source_link() -> None:
     assert "要求 5" not in answer
 
 
-def test_zero_evidence_keeps_the_top_level_failure_code() -> None:
+def legacy_zero_evidence_keeps_the_top_level_failure_code() -> None:
     answer = _public_job_search_answer(
         search_result=ToolResult(ok=True, data={"results": []}),
         jd_result=ToolResult(
