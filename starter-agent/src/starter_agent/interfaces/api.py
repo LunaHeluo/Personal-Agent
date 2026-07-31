@@ -40,6 +40,10 @@ from starter_agent.job_research.knowledge_match import (
     KnowledgeJobMatcher,
     requests_knowledge_only,
 )
+from starter_agent.job_research.selection import (
+    PendingJobCandidate,
+    parse_job_selection_reference,
+)
 from starter_agent.knowledge.routing import KnowledgeRequestRoute
 from starter_agent.tools.email.approval import EmailApprovalService
 from starter_agent.tools.email.errors import EmailError, EmailErrorCode
@@ -99,6 +103,160 @@ def _append_chat_turn(
         session_id,
         turn_id,
         Message(role="assistant", content=assistant_content),
+    )
+
+
+def _selected_job_content(candidate: PendingJobCandidate) -> str:
+    payload = candidate.payload
+    lines = [
+        f"已选择 Candidate {candidate.ordinal}：{candidate.title}",
+        f"- 公司：{candidate.company or '未知公司'}",
+        f"- 地点：{candidate.location or '未知地点'}",
+        f"- 来源：{candidate.source_url}",
+    ]
+    responsibilities = payload.get("responsibilities")
+    if isinstance(responsibilities, list) and responsibilities:
+        lines.append("岗位职责：")
+        lines.extend(
+            f"- {item}"
+            for item in responsibilities
+            if isinstance(item, str) and item.strip()
+        )
+    requirements = payload.get("requirements")
+    if isinstance(requirements, list) and requirements:
+        lines.append("岗位要求：")
+        lines.extend(
+            f"- {item}"
+            for item in requirements
+            if isinstance(item, str) and item.strip()
+        )
+    analysis = payload.get("analysis")
+    if isinstance(analysis, list):
+        matched = sum(
+            1
+            for item in analysis
+            if isinstance(item, dict) and item.get("status") == "matched"
+        )
+        gaps = sum(
+            1
+            for item in analysis
+            if isinstance(item, dict) and item.get("status") == "gap"
+        )
+        lines.append(f"简历匹配：{matched} 项；证据缺口：{gaps} 项")
+    return "\n".join(lines)
+
+
+def _try_pending_job_selection(
+    request: ChatRequest,
+    *,
+    application,
+) -> ChatResult | None:
+    reference = parse_job_selection_reference(request.message)
+    if reference is None or not hasattr(application, "store"):
+        return None
+    session_id = application.store.ensure_session(request.session_id)
+    turn_id = uuid4()
+    resolver = getattr(application.store, "resolve_pending_job_candidate", None)
+    candidate = (
+        resolver(
+            session_id,
+            ordinal=reference.ordinal,
+            candidate_id=reference.candidate_id,
+        )
+        if callable(resolver)
+        else None
+    )
+    if candidate is None:
+        content = "候选已失效或不属于当前会话，请重新搜索岗位或提供岗位 URL。"
+    elif candidate.evidence_level == "partial":
+        content = (
+            f"Candidate {candidate.ordinal} 只有部分岗位证据，尚不能进行完整匹配分析。"
+            "请重新抓取该岗位或提供完整 JD。"
+        )
+    else:
+        content = _selected_job_content(candidate)
+    _append_chat_turn(
+        application,
+        session_id=session_id,
+        turn_id=turn_id,
+        user_content=request.message,
+        assistant_content=content,
+    )
+    return ChatResult(
+        session_id=session_id,
+        turn_id=turn_id,
+        content=content,
+        provider=request.provider or get_settings().model.default_provider,
+        model=request.model or get_settings().model.default_model,
+        knowledge_mode="off",
+    )
+
+
+def _persist_visible_job_candidates(
+    application,
+    *,
+    session_id: UUID,
+    turn_id: UUID,
+    jd_result: ToolResult | None,
+) -> ToolResult | None:
+    if jd_result is None or not hasattr(application, "store"):
+        return jd_result
+    replace_candidates = getattr(
+        application.store, "replace_pending_job_candidates", None
+    )
+    if not callable(replace_candidates):
+        return jd_result
+    result_data = jd_result.data if isinstance(jd_result.data, dict) else {}
+    complete = [
+        {**item, "evidence_level": "complete"}
+        for item in result_data.get("jobs", [])
+        if isinstance(item, dict)
+    ]
+    target_count = get_settings().job_research.target_valid_jds
+    partial = (
+        [
+            {**item, "evidence_level": "partial"}
+            for item in result_data.get("partial_jobs", [])
+            if isinstance(item, dict)
+        ]
+        if len(complete) < target_count
+        else []
+    )
+    visible = [*complete, *partial]
+    if not visible:
+        return jd_result
+    stored = replace_candidates(
+        session_id=session_id,
+        turn_id=turn_id,
+        candidates=visible,
+        expires_at=datetime.now(UTC) + timedelta(minutes=60),
+    )
+
+    def enrich(item: dict, stored_index: int) -> dict:
+        if stored_index >= len(stored):
+            return item
+        return {
+            **item,
+            "candidate_id": str(stored[stored_index].candidate_id),
+            "selection_status": "PENDING_CONFIRMATION",
+        }
+
+    enriched_complete = [
+        enrich(item, index) for index, item in enumerate(complete)
+    ]
+    enriched_partial = [
+        enrich(item, len(complete) + index)
+        for index, item in enumerate(partial)
+    ]
+    return jd_result.model_copy(
+        update={
+            "data": {
+                **result_data,
+                "jobs": enriched_complete,
+                "partial_jobs": enriched_partial,
+                "target_count": target_count,
+            }
+        }
     )
 
 
@@ -438,6 +596,12 @@ async def _chat_with_public_job_search_fallback(
             ),
         )
 
+    jd_result = _persist_visible_job_candidates(
+        application,
+        session_id=session_id,
+        turn_id=turn_id,
+        jd_result=jd_result,
+    )
     content = _public_job_search_answer(
         search_result=search_result,
         jd_result=jd_result,
@@ -1845,6 +2009,12 @@ def create_api() -> FastAPI:
     async def chat(request: ChatRequest) -> ChatResult:
         try:
             application = create_application()
+            selected = _try_pending_job_selection(
+                request,
+                application=application,
+            )
+            if selected is not None:
+                return selected
             route = await _classify_chat_request(request, application)
             return await _dispatch_classified_chat(
                 request,
@@ -1863,6 +2033,37 @@ def create_api() -> FastAPI:
     async def chat_stream(request: ChatRequest) -> StreamingResponse:
         try:
             application = create_application()
+            selected = _try_pending_job_selection(
+                request,
+                application=application,
+            )
+            if selected is not None:
+                async def selection_events():
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {"type": "delta", "content": selected.content},
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "done",
+                                "result": selected.model_dump(mode="json"),
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+
+                return StreamingResponse(
+                    selection_events(),
+                    media_type="text/event-stream",
+                    headers={"Cache-Control": "no-cache"},
+                )
             route = await _classify_chat_request(request, application)
         except KnowledgeError as exc:
             raise _knowledge_http_error(exc) from exc

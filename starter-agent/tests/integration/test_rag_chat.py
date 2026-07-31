@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -12,6 +13,7 @@ from starter_agent.knowledge.routing import (
     KnowledgeRequestDecision,
     KnowledgeRequestRoute,
 )
+from starter_agent.infrastructure.session_store import SQLiteSessionStore
 from starter_agent.skills.models import SkillRunResult, SkillToolTrace
 
 
@@ -430,6 +432,163 @@ class FakeConversationApplication(FakeApplication):
             provider=kwargs.get("provider_name") or "mock",
             model=kwargs.get("model") or "starter-mock",
         )
+
+
+def _pending_complete_job(title: str, source_url: str) -> dict[str, object]:
+    return {
+        "title": title,
+        "company": "北京汽车研究总院",
+        "location": "北京-大兴区, 北京, CN",
+        "responsibilities": ["负责 AI Agent 核心算法研发"],
+        "requirements": ["熟悉 Python 和 LangGraph"],
+        "analysis": [
+            {"status": "matched", "requirement": "Python"},
+            {"status": "gap", "requirement": "LangGraph"},
+        ],
+        "source_url": source_url,
+        "evidence_level": "complete",
+    }
+
+
+def test_pending_job_selection_precedes_classifier_and_knowledge(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    app_service = FakeApplication(route=KnowledgeRequestRoute.KNOWLEDGE_QUERY)
+    app_service.store = SQLiteSessionStore("sqlite:///sessions.db", tmp_path)
+    session_id = app_service.store.create_session()
+    app_service.store.replace_pending_job_candidates(
+        session_id=session_id,
+        turn_id=uuid4(),
+        candidates=[
+            _pending_complete_job(
+                "AI智能体开发工程师",
+                "https://careers.example.test/jobs/agent-1",
+            ),
+            _pending_complete_job(
+                "Senior AI Engineer",
+                "https://careers.example.test/jobs/agent-2",
+            ),
+        ],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    knowledge = FakeAnsweredKnowledge()
+    monkeypatch.setattr(api_module, "create_application", lambda: app_service)
+    monkeypatch.setattr(api_module, "create_knowledge_service", lambda: knowledge)
+
+    with TestClient(api_module.create_api()) as client:
+        response = client.post(
+            "/v1/chat",
+            json={
+                "message": "选择第一个岗位做匹配分析",
+                "session_id": str(session_id),
+                "knowledge_mode": "auto",
+                "knowledge_base_id": str(uuid4()),
+            },
+        )
+
+    assert response.status_code == 200
+    content = response.json()["content"]
+    assert "AI智能体开发工程师" in content
+    assert "https://careers.example.test/jobs/agent-1" in content
+    assert "Senior AI Engineer" not in content
+    assert app_service.route_calls == []
+    assert app_service.prepare_calls == []
+    assert knowledge.calls == []
+
+
+def test_missing_pending_selection_does_not_fall_back_to_knowledge(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    app_service = FakeApplication(route=KnowledgeRequestRoute.KNOWLEDGE_QUERY)
+    app_service.store = SQLiteSessionStore("sqlite:///sessions.db", tmp_path)
+    session_id = app_service.store.create_session()
+    knowledge = FakeAnsweredKnowledge()
+    monkeypatch.setattr(api_module, "create_application", lambda: app_service)
+    monkeypatch.setattr(api_module, "create_knowledge_service", lambda: knowledge)
+
+    with TestClient(api_module.create_api()) as client:
+        response = client.post(
+            "/v1/chat",
+            json={
+                "message": "选择第一个岗位做匹配分析",
+                "session_id": str(session_id),
+                "knowledge_mode": "auto",
+                "knowledge_base_id": str(uuid4()),
+            },
+        )
+
+    assert response.status_code == 200
+    assert "候选已失效" in response.json()["content"]
+    assert knowledge.calls == []
+    assert app_service.route_calls == []
+
+
+def test_stream_pending_job_selection_precedes_classifier(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    app_service = FakeApplication(route=KnowledgeRequestRoute.KNOWLEDGE_QUERY)
+    app_service.store = SQLiteSessionStore("sqlite:///sessions.db", tmp_path)
+    session_id = app_service.store.create_session()
+    app_service.store.replace_pending_job_candidates(
+        session_id=session_id,
+        turn_id=uuid4(),
+        candidates=[
+            _pending_complete_job(
+                "AI智能体开发工程师",
+                "https://careers.example.test/jobs/agent-1",
+            )
+        ],
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    monkeypatch.setattr(api_module, "create_application", lambda: app_service)
+
+    with TestClient(api_module.create_api()) as client:
+        with client.stream(
+            "POST",
+            "/v1/chat/stream",
+            json={
+                "message": "选择第一个岗位做匹配分析",
+                "session_id": str(session_id),
+            },
+        ) as response:
+            body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "AI智能体开发工程师" in body
+    assert "https://careers.example.test/jobs/agent-1" in body
+    assert app_service.route_calls == []
+
+
+def test_public_search_persists_visible_candidate_for_follow_up(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    app_service = FakeApplication()
+    app_service.store = SQLiteSessionStore("sqlite:///sessions.db", tmp_path)
+    monkeypatch.setattr(api_module, "create_application", lambda: app_service)
+
+    with TestClient(api_module.create_api()) as client:
+        search = client.post(
+            "/v1/chat",
+            json={"message": "根据我的简历搜索北京的岗位"},
+        )
+        session_id = search.json()["session_id"]
+        selection = client.post(
+            "/v1/chat",
+            json={
+                "message": "选择第一个岗位做匹配分析",
+                "session_id": session_id,
+            },
+        )
+
+    assert search.status_code == 200
+    assert selection.status_code == 200
+    assert "AI Agent Engineer" in selection.json()["content"]
+    assert "https://jobs.example.com/agent" in selection.json()["content"]
+    assert len(app_service.prepare_calls) == 1
 
 
 def test_chat_required_falls_back_to_direct_public_job_tools_without_forcing_model(
