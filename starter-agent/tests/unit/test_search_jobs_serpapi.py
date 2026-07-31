@@ -705,6 +705,56 @@ async def test_ranking_diagnostics_keep_top_ten_independent_of_result_limit() ->
     assert len(result.data["ranking_diagnostics"]) == 6
 
 
+async def test_multi_query_diagnostics_report_general_query_families() -> None:
+    tool = SearchJobsSerpApiTool(
+        key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
+        client=FakeClient(
+            [
+                FakeResponse({"jobs_results": []}),
+                FakeResponse({
+                    "organic_results": [{
+                        "title": "AI Agent Engineer",
+                        "link": "https://careers.example.test/job/41",
+                        "snippet": "AI Agent engineering role in Hangzhou.",
+                    }]
+                }),
+                FakeResponse({"jobs_results": []}),
+                FakeResponse({
+                    "organic_results": [{
+                        "title": "AI智能体工程师",
+                        "link": "https://talent.example.test/job/42",
+                        "snippet": "岗位职责：开发智能体。任职要求：熟悉 Python。",
+                    }]
+                }),
+            ]
+        ),
+    )
+
+    result = await tool.execute(
+        {
+            "query": "AI Agent",
+            "query_variants": [
+                "Hangzhou AI Agent Engineer jobs",
+                "杭州 AI Agent 岗位职责 任职要求",
+            ],
+            "limit": 5,
+        },
+        context(),
+    )
+
+    assert result.ok
+    assert result.data["query_family_counts"] == {
+        "detail_evidence": 1,
+        "role_recall": 1,
+    }
+    families = {
+        family
+        for item in result.data["ranking_diagnostics"]
+        for family in item["matched_query_families"]
+    }
+    assert families == {"detail_evidence", "role_recall"}
+
+
 async def test_search_reports_collection_rows_filtered_before_ranking() -> None:
     tool = SearchJobsSerpApiTool(
         key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),

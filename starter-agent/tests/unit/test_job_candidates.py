@@ -493,3 +493,72 @@ def test_employer_detail_ranks_before_aggregator_mirror() -> None:
 
     assert ranked[0].url == "https://jobs.example.com/careers/agent-engineer-7"
     assert "employer_detail_signal" in ranked[0].reason_codes
+
+
+def test_arbitrary_concrete_detail_uses_general_readability_signals() -> None:
+    ranked = rank_job_candidates(
+        [
+            {
+                "title": "AI智能体开发工程师",
+                "company": "任意科技",
+                "location": "杭州",
+                "url": "https://talent.arbitrary-example.test/job/87231",
+                "url_kind": "organic",
+                "provider_position": 6,
+                "snippet": (
+                    "岗位职责：负责智能体应用研发。"
+                    "任职要求：熟悉 Python、RAG 和大模型。"
+                ),
+            },
+            {
+                "title": "AI智能体开发工程师",
+                "company": "任意科技",
+                "location": "杭州",
+                "url": "https://builtin.com/job/ai-agent-engineer/87231",
+                "url_kind": "structured_apply",
+                "provider_position": 0,
+                "snippet": "AI engineering opportunity.",
+            },
+        ],
+        limit=2,
+        location_aliases=("杭州", "Hangzhou"),
+    )
+
+    assert ranked[0].url == "https://talent.arbitrary-example.test/job/87231"
+    assert "concrete_job_detail" in ranked[0].reason_codes
+    assert "section_rich_snippet" in ranked[0].reason_codes
+    assert all(
+        "tencent" not in code and "bytedance" not in code
+        for candidate in ranked
+        for code in candidate.reason_codes
+    )
+
+
+def test_wrong_location_detail_does_not_bypass_location_penalty() -> None:
+    ranked = rank_job_candidates(
+        [
+            {
+                "title": "AI Agent Engineer",
+                "company": "Arbitrary",
+                "location": "London",
+                "url": "https://careers.arbitrary.test/job/42",
+                "url_kind": "structured_apply",
+                "provider_position": 0,
+                "snippet": "Responsibilities and requirements for this role.",
+            },
+            {
+                "title": "AI Agent Engineer 杭州",
+                "company": "Local Example",
+                "location": "杭州",
+                "url": "https://jobs.local-example.test/job/77",
+                "url_kind": "organic",
+                "provider_position": 4,
+                "snippet": "岗位职责：开发智能体。任职要求：熟悉 Python。",
+            },
+        ],
+        limit=2,
+        location_aliases=("杭州", "Hangzhou"),
+    )
+
+    assert ranked[0].company == "Local Example"
+    assert "non_target_location" in ranked[1].reason_codes

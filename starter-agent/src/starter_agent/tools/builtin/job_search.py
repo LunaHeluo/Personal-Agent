@@ -34,6 +34,15 @@ SENSITIVE_QUERY_KEYS = {
 DETAIL_DISCOVERY_TERMS = (
     '"responsibilities" "requirements" current opening apply'
 )
+_DETAIL_QUERY_SIGNAL = re.compile(
+    r"(?:岗位职责|工作职责|职位描述|任职要求|岗位要求|职位要求|"
+    r"responsibilit|requirements?|job description|qualifications?)",
+    re.IGNORECASE,
+)
+
+
+def _query_family(query: str) -> str:
+    return "detail_evidence" if _DETAIL_QUERY_SIGNAL.search(query) else "role_recall"
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,6 +423,14 @@ class SearchJobsSerpApiTool(Tool):
                 row["search_engines"] = [engine]
                 raw_results.append(row)
 
+        query_family_counts: dict[str, int] = {}
+        for row in raw_results:
+            matched = row.get("matched_queries", [])
+            if not isinstance(matched, list) or not matched:
+                continue
+            family = _query_family(str(matched[0]))
+            query_family_counts[family] = query_family_counts.get(family, 0) + 1
+
         merged: dict[str, dict[str, Any]] = {}
         for row in raw_results:
             url = str(row.get("url") or "")
@@ -474,6 +491,7 @@ class SearchJobsSerpApiTool(Tool):
             "request_failures": failures,
             "location_aliases": list(location_aliases),
             "plan_reason_codes": list(plan_reason_codes),
+            "query_family_counts": dict(sorted(query_family_counts.items())),
             "results": results,
             "ranking_diagnostics": [
                 {
@@ -483,6 +501,10 @@ class SearchJobsSerpApiTool(Tool):
                     "page_kind": item.get("page_kind"),
                     "reason_codes": item.get("reason_codes", []),
                     "matched_queries": item.get("matched_queries", []),
+                    "matched_query_families": list(dict.fromkeys(
+                        _query_family(str(query))
+                        for query in item.get("matched_queries", [])
+                    )),
                     "search_engines": item.get("search_engines", []),
                 }
                 for item in diagnostic_results

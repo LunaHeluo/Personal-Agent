@@ -65,6 +65,16 @@ _REQUIREMENT_SIGNAL = re.compile(
 )
 _AGGREGATOR_HOST = re.compile(r"(?:^|\.)(?:builtin\.com|indeed\.com|glassdoor\.com)$")
 _DETAIL_PATH = re.compile(r"/(?:jobs?|careers?|positions?|openings?|roles?)/", re.IGNORECASE)
+_CONCRETE_DETAIL_PATH = re.compile(
+    r"/(?:jobs?|jobdesc|positions?|openings?|roles?)/(?:[^/?#]+/)?(?:[^/?#]*\d{2,}[^/?#]*|[^/?#-]+(?:-[^/?#-]+){2,})/?$",
+    re.IGNORECASE,
+)
+_CHINESE_RESPONSIBILITY_SIGNAL = re.compile(
+    r"(?:岗位职责|工作职责|职位描述|工作内容)"
+)
+_CHINESE_REQUIREMENT_SIGNAL = re.compile(
+    r"(?:任职要求|岗位要求|职位要求|任职资格)"
+)
 
 
 class CandidateAssessment(BaseModel):
@@ -274,13 +284,26 @@ def assess_job_candidate(
         score += 0.15
         reasons.append("agent_ai_relevance")
     snippet = str(item.get("snippet") or "")
-    if _RESPONSIBILITY_SIGNAL.search(snippet) and _REQUIREMENT_SIGNAL.search(snippet):
+    has_responsibilities = bool(
+        _RESPONSIBILITY_SIGNAL.search(snippet)
+        or _CHINESE_RESPONSIBILITY_SIGNAL.search(snippet)
+    )
+    has_requirements = bool(
+        _REQUIREMENT_SIGNAL.search(snippet)
+        or _CHINESE_REQUIREMENT_SIGNAL.search(snippet)
+    )
+    if has_responsibilities and has_requirements:
         score += 0.2
         reasons.append("job_section_signals")
+        reasons.append("section_rich_snippet")
     hostname = parsed.hostname.casefold()
     if _AGGREGATOR_HOST.search(hostname):
         score -= 0.35
         reasons.append("aggregator_signal")
+    elif _CONCRETE_DETAIL_PATH.search(path):
+        score += 0.25
+        reasons.append("concrete_job_detail")
+        reasons.append("employer_detail_signal")
     elif _DETAIL_PATH.search(path):
         score += 0.15
         reasons.append("employer_detail_signal")
@@ -297,14 +320,13 @@ def assess_job_candidate(
     if item.get("snippet"):
         score += 0.02
         if len(snippet.strip()) < 40 and not (
-            _RESPONSIBILITY_SIGNAL.search(snippet)
-            or _REQUIREMENT_SIGNAL.search(snippet)
+            has_responsibilities or has_requirements
         ):
             score -= 0.1
             reasons.append("thin_snippet_signal")
     return CandidateAssessment(
         page_kind=page_kind,
-        score=max(0.0, min(1.0, score)),
+        score=max(0.0, score),
         reason_codes=tuple(reasons),
     )
 
