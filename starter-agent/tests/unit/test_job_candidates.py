@@ -1,4 +1,7 @@
-from starter_agent.job_research.candidates import rank_job_candidates
+from starter_agent.job_research.candidates import (
+    assess_job_candidate,
+    rank_job_candidates,
+)
 
 
 def test_direct_apply_link_ranks_before_share_and_organic() -> None:
@@ -145,6 +148,81 @@ def test_probable_job_detail_ranks_before_search_collection_at_same_priority() -
     )
 
     assert ranked[0].title == "Senior Python Infrastructure Engineer"
+
+
+def test_linkedin_collection_without_space_before_jobs_is_rejected() -> None:
+    ranked = rank_job_candidates(
+        [
+            {
+                "title": "1000+ 北京智能果技术有限公司jobs in Worldwide",
+                "url": (
+                    "https://www.linkedin.com/jobs/"
+                    "%E5%8C%97%E4%BA%AC%E6%99%BA%E8%83%BD%E6%9E%9C"
+                    "%E6%8A%80%E6%9C%AF%E6%9C%89%E9%99%90%E5%85%AC"
+                    "%E5%8F%B8-jobs-worldwide"
+                ),
+                "url_kind": "organic",
+                "provider_position": 0,
+            }
+        ],
+        limit=10,
+        location_aliases=("北京", "Beijing"),
+    )
+
+    assert ranked == ()
+
+
+def test_jobs_worldwide_path_is_a_collection_even_with_job_like_title() -> None:
+    assessment = assess_job_candidate(
+        {
+            "url_kind": "organic",
+            "snippet": "Beijing AI Agent Engineer",
+        },
+        url="https://www.linkedin.com/jobs/example-company-jobs-worldwide",
+        title="AI Agent Engineer",
+        location_aliases=("北京", "Beijing"),
+    )
+
+    assert assessment.page_kind == "collection_page"
+    assert assessment.reason_codes == ("collection_page_shape",)
+
+
+def test_collection_pages_do_not_consume_the_candidate_limit() -> None:
+    rows = [
+        {
+            "title": "1000+ 北京示例科技有限公司jobs in Worldwide",
+            "url": "https://www.linkedin.com/jobs/example-jobs-worldwide",
+            "url_kind": "organic",
+            "provider_position": 0,
+        },
+        {
+            "title": "AI jobs in Beijing",
+            "url": "https://board.example.test/jobs/search",
+            "url_kind": "organic",
+            "provider_position": 1,
+        },
+        *[
+            {
+                "title": f"AI Agent Engineer {index}",
+                "company": f"Employer {index}",
+                "location": "Beijing",
+                "url": f"https://employer-{index}.example.test/jobs/{index}",
+                "url_kind": "organic",
+                "provider_position": index + 2,
+            }
+            for index in range(11)
+        ],
+    ]
+
+    ranked = rank_job_candidates(
+        rows,
+        limit=10,
+        location_aliases=("北京", "Beijing"),
+    )
+
+    assert len(ranked) == 10
+    assert all("linkedin.com" not in item.url for item in ranked)
+    assert all("/jobs/search" not in item.url for item in ranked)
 
 
 def test_candidate_ranking_rejects_observed_collection_search_and_spam_urls() -> None:

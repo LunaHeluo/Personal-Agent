@@ -371,6 +371,10 @@ async def _chat_with_public_job_search_fallback(
             session_id=session_id,
             turn_id=turn_id,
             target_count=get_settings().job_research.target_valid_jds,
+            max_candidates=get_settings().job_research.max_candidate_urls,
+            retrieval_budget_seconds=(
+                get_settings().job_research.retrieval_budget_seconds
+            ),
             knowledge_base_id=request.knowledge_base_id,
             resume_evidence=search_run.data.get("resume_evidence", []),
             on_tool_event=on_tool_event,
@@ -725,10 +729,41 @@ def _public_job_candidates(result: ToolResult) -> tuple[JobCandidate, ...]:
                 "provider_position": row.get("provider_position", position),
             }
         )
+    aliases = result.data.get("location_aliases")
+    location_aliases = (
+        tuple(
+            value
+            for value in aliases[:12]
+            if isinstance(value, str) and value.strip()
+        )
+        if isinstance(aliases, list)
+        else ()
+    )
     return rank_job_candidates(
         normalized,
         limit=get_settings().job_research.max_candidate_urls,
+        location_aliases=location_aliases,
     )
+
+
+_JOB_RETRIEVAL_REASON_LABELS = {
+    "page_not_stable": "浏览器页面持续变化",
+    "browser_network_target_required": "浏览器访问受安全策略限制",
+    "playwright_timeout": "浏览器加载超时",
+    "browser_crashed": "浏览器进程异常退出",
+    "robots_blocked": "网站禁止自动读取",
+    "access_blocked_403": "网站拒绝访问",
+    "access_blocked_challenge": "网站要求安全验证",
+    "selector_unmatched": "HTTP 仅提取到部分章节",
+    "incomplete_job_description": "岗位职责或任职要求不完整",
+}
+
+_JOB_RETRIEVAL_METHOD_LABELS = {
+    "search_snippet": "摘要降级",
+    "http_json_ld": "JSON-LD 提取",
+    "http_html": "HTML 提取",
+    "playwright": "浏览器提取",
+}
 
 
 def _public_job_search_answer(
@@ -743,88 +778,92 @@ def _public_job_search_answer(
             lines.append(f"错误码：{search_result.error_code}")
         return "\n".join(lines)
 
-    rows = []
-    search_data = search_result.data if isinstance(search_result.data, dict) else {}
-    if isinstance(search_result.data, dict):
-        raw_rows = search_result.data.get("results")
-        if isinstance(raw_rows, list):
-            rows = [row for row in raw_rows if isinstance(row, dict)]
-    if rows:
-        lines.append("搜索结果：")
-        for index, row in enumerate(rows[:3], start=1):
-            title = row.get("title") or row.get("job_title") or "未命名岗位"
-            company = row.get("company") or row.get("company_name") or "未知公司"
-            url = row.get("url") or row.get("source_url") or "无 URL"
-            lines.append(f"{index}. {title} · {company} · {url}")
-    planned = search_data.get("planned_queries")
-    executed = search_data.get("executed_queries")
-    if isinstance(planned, list) and isinstance(executed, list):
-        lines.append(f"搜索统计：查询变体：{len(executed)}/{len(planned)}")
-        lines.append(f"SerpAPI 请求：{int(search_data.get('request_count') or 0)}")
-        lines.append(
-            f"原始结果：{int(search_data.get('raw_result_count') or 0)}；"
-            f"去重后：{int(search_data.get('deduplicated_count') or 0)}；"
-            f"中文标题：{int(search_data.get('chinese_title_count') or 0)}"
-        )
+    search_data = (
+        search_result.data if isinstance(search_result.data, dict) else {}
+    )
+    rows = search_data.get("results")
+    search_rows = [
+        row for row in rows or [] if isinstance(row, dict)
+    ] if isinstance(rows, list) else []
 
     if jd_result is None:
+        if search_rows:
+            lines.append("搜索结果：")
+            for index, row in enumerate(search_rows[:3], start=1):
+                title = row.get("title") or row.get("job_title") or "未命名岗位"
+                company = (
+                    row.get("company")
+                    or row.get("company_name")
+                    or "未知公司"
+                )
+                url = str(row.get("url") or row.get("source_url") or "")
+                source = f" · [来源](<{url}>)" if url else ""
+                lines.append(f"{index}. {title} · {company}{source}")
+        _append_job_search_statistics(lines, search_data)
         lines.append("搜索结果中没有可自动读取的公开 JD URL。")
         return "\n".join(lines)
-    if not jd_result.ok:
-        data = jd_result.data if isinstance(jd_result.data, dict) else {}
-        partial_jobs = data.get("partial_jobs")
-        if isinstance(partial_jobs, list) and partial_jobs:
-            lines.append(
-                "\u4ec5\u8bfb\u53d6\u5230\u90e8\u5206\u9a8c\u8bc1\u7684\u5c97\u4f4d\u9875\u9762\uff0c"
-                "\u4e0d\u4f5c\u4e3a\u5b8c\u6574 JD \u63a8\u8350\uff1a"
-            )
-            for index, job in enumerate(partial_jobs[:3], start=1):
-                if not isinstance(job, dict):
-                    continue
-                title = job.get("title") or "Unverified job"
-                company = job.get("company") or "\u5f85\u786e\u8ba4"
-                location = job.get("location") or "\u5f85\u786e\u8ba4"
-                source_url = job.get("source_url") or ""
-                reasons = job.get("validation_reason_codes")
-                reason_text = (
-                    ", ".join(str(item) for item in reasons)
-                    if isinstance(reasons, list)
-                    else "incomplete_job_description"
-                )
-                lines.append(f"{index}. {title} \u00b7 {company} \u00b7 {location}")
-                lines.append(f"   \u5f85\u786e\u8ba4\uff1a{reason_text}")
-                snippet = job.get("snippet") or job.get("raw_text") or ""
-                if isinstance(snippet, str) and snippet.strip():
-                    lines.append(f"   搜索摘要：{snippet.strip()[:500]}")
-                lines.append(f"   \u6765\u6e90\uff1a{source_url}")
-        lines.append(jd_result.display or "自动读取 JD 失败。")
-        if jd_result.error_code:
-            lines.append(f"JD 错误码：{jd_result.error_code}")
-        return "\n".join(lines)
 
-    lines.append("已自动读取公开 JD 预览：")
-    data = jd_result.data
-    jobs = data.get("jobs") if isinstance(data, dict) else None
-    if isinstance(jobs, list):
+    data = jd_result.data if isinstance(jd_result.data, dict) else {}
+    raw_jobs = data.get("jobs")
+    raw_partials = data.get("partial_jobs")
+    raw_attempts = data.get("candidate_attempts")
+    jobs = _unique_job_rows(raw_jobs if isinstance(raw_jobs, list) else [])
+    verified_urls = {
+        _job_source_url(job) for job in jobs if _job_source_url(job)
+    }
+    partial_jobs = [
+        job
+        for job in _unique_job_rows(
+            raw_partials if isinstance(raw_partials, list) else []
+        )
+        if _job_source_url(job) not in verified_urls
+    ]
+    partial_urls = {
+        _job_source_url(job)
+        for job in partial_jobs
+        if _job_source_url(job)
+    }
+    attempts = [
+        item
+        for item in raw_attempts or []
+        if isinstance(item, dict)
+    ] if isinstance(raw_attempts, list) else []
+    attempt_by_url = {
+        str(item.get("source_url") or ""): item
+        for item in attempts
+        if item.get("source_url")
+    }
+    failed = [
+        item
+        for url, item in attempt_by_url.items()
+        if url not in verified_urls
+        and url not in partial_urls
+        and item.get("status")
+        not in {"succeeded", "fallback_succeeded", "partial_verified"}
+    ]
+
+    if jobs:
+        lines.append(f"完整 JD（{len(jobs)} 个）：")
         for index, job in enumerate(jobs[:3], start=1):
-            if not isinstance(job, dict):
-                continue
             title = job.get("title") or job.get("job_title") or "未命名 JD"
             company = job.get("company") or "未知公司"
             location = job.get("location") or "未知地点"
-            source_url = job.get("source_url") or job.get("final_url") or ""
             lines.append(f"{index}. {title} · {company} · {location}")
             responsibilities = job.get("responsibilities")
             if isinstance(responsibilities, list) and responsibilities:
-                lines.append(
-                    "   岗位职责："
-                    + "；".join(str(item) for item in responsibilities[:3])
+                lines.append("   岗位职责：")
+                lines.extend(
+                    f"   - {item}"
+                    for item in responsibilities[:3]
+                    if isinstance(item, str) and item.strip()
                 )
             requirements = job.get("requirements")
             if isinstance(requirements, list) and requirements:
-                lines.append(
-                    "   岗位要求："
-                    + "；".join(str(item) for item in requirements[:5])
+                lines.append("   岗位要求：")
+                lines.extend(
+                    f"   - {item}"
+                    for item in requirements[:5]
+                    if isinstance(item, str) and item.strip()
                 )
             analysis = job.get("analysis")
             if isinstance(analysis, list) and analysis:
@@ -839,52 +878,133 @@ def _public_job_search_answer(
                     if isinstance(item, dict) and item.get("status") == "gap"
                 )
                 lines.append(f"   简历匹配：{matched} 项；证据缺口：{gaps} 项")
-            lines.append(f"   来源：{source_url}")
-    else:
-        lines.append(jd_result.display or "JD 已读取。")
-    lines.append("请选择一个岗位后，我再继续做最终匹配分析或确认入库。")
-    partial_jobs = data.get("partial_jobs") if isinstance(data, dict) else None
-    if isinstance(partial_jobs, list) and partial_jobs:
+            lines.append(f"   {_job_source_link(job)}")
+
+    if partial_jobs:
         if len(partial_jobs) > 3:
-            lines.append(f"部分岗位证据共 {len(partial_jobs)} 个，以下展示前 3 个：")
+            lines.append(
+                f"部分证据共 {len(partial_jobs)} 个，以下展示前 3 个："
+            )
         else:
-            lines.append(f"部分岗位证据（{len(partial_jobs)} 个，非完整 JD）：")
+            lines.append(f"部分证据（{len(partial_jobs)} 个）：")
         for job in partial_jobs[:3]:
-            if isinstance(job, dict):
-                lines.append(
-                    f"- {job.get('title') or '未命名岗位'} · "
-                    f"{job.get('company') or '未知公司'} · "
-                    f"{job.get('location') or '未知地点'} · "
-                    f"{job.get('retrieval_method') or 'search_snippet'} · "
-                    f"{job.get('source_url') or ''}"
-                )
-                snippet = job.get("snippet") or job.get("raw_text") or ""
-                if isinstance(snippet, str) and snippet.strip():
-                    lines.append(f"  搜索摘要：{snippet.strip()[:500]}")
-    attempts = data.get("candidate_attempts") if isinstance(data, dict) else None
-    failed = [
-        item for item in attempts or []
-        if isinstance(item, dict)
-        and item.get("status") not in {
-            "succeeded", "fallback_succeeded", "partial_verified"
-        }
-    ]
+            url = _job_source_url(job)
+            attempt = attempt_by_url.get(url, {})
+            title = job.get("title") or "未命名岗位"
+            company = job.get("company") or "未知公司"
+            location = job.get("location") or "未知地点"
+            lines.append(f"- {title} · {company} · {location} · {_job_source_link(job)}")
+            reason_labels = _partial_reason_labels(job, attempt)
+            if reason_labels:
+                lines.append("  " + " · ".join(reason_labels))
+            snippet = job.get("snippet") or job.get("raw_text") or ""
+            if isinstance(snippet, str) and snippet.strip():
+                lines.append(f"  搜索摘要：{snippet.strip()[:500]}")
+
     if failed:
-        lines.append(f"抓取失败链接（{len(failed)} 个）：")
+        lines.append(f"无法访问（{len(failed)} 个）：")
         for item in failed:
+            url = str(item.get("source_url") or "")
             code = (
                 item.get("final_error_code")
                 or item.get("error_code")
+                or item.get("browser_error_code")
                 or "mcp_unknown_error"
             )
-            lines.append(f"- {item.get('source_url') or ''} · {code}")
-    verified_count = len(jobs) if isinstance(jobs, list) else 0
-    partial_count = len(partial_jobs) if isinstance(partial_jobs, list) else 0
+            label = _JOB_RETRIEVAL_REASON_LABELS.get(
+                str(code),
+                "未能读取有效岗位内容",
+            )
+            source = f"[来源](<{url}>)" if url else "来源不可用"
+            lines.append(f"- {source} · {label}")
+
+    if not jobs and not partial_jobs and not failed:
+        lines.append(jd_result.display or "未读取到可用岗位内容。")
+        if (
+            jd_result.error_code
+            and jd_result.error_code != "job_description_unverified"
+        ):
+            lines.append(f"错误码：{jd_result.error_code}")
+
+    _append_job_search_statistics(lines, search_data)
+    candidate_limit = int(data.get("candidate_limit") or 10)
     lines.append(
-        f"结果统计：完整 JD：{verified_count}；"
-        f"部分证据：{partial_count}；失败链接：{len(failed)}"
+        f"结果：完整 JD {len(jobs)} · 部分证据 {len(partial_jobs)} · "
+        f"无法访问 {len(failed)} · 尝试候选 {len(attempts)}/{candidate_limit}"
     )
+    lines.append("请选择一个岗位后，我再继续做最终匹配分析或确认入库。")
     return "\n".join(lines)
+
+
+def _append_job_search_statistics(
+    lines: list[str],
+    search_data: dict,
+) -> None:
+    planned = search_data.get("planned_queries")
+    executed = search_data.get("executed_queries")
+    if not isinstance(planned, list) or not isinstance(executed, list):
+        return
+    lines.append(
+        f"搜索：{len(executed)} 个查询变体 · "
+        f"{int(search_data.get('request_count') or 0)} 次 SerpAPI 请求 · "
+        f"{int(search_data.get('raw_result_count') or 0)} 条原始结果 · "
+        f"{int(search_data.get('deduplicated_count') or 0)} 条去重结果 · "
+        f"过滤集合页 {int(search_data.get('filtered_collection_count') or 0)} · "
+        f"{int(search_data.get('chinese_title_count') or 0)} 个中文标题"
+    )
+
+
+def _job_source_url(job: dict) -> str:
+    return str(job.get("source_url") or job.get("final_url") or "")
+
+
+def _job_source_link(job: dict) -> str:
+    url = _job_source_url(job)
+    return f"[来源](<{url}>)" if url else "来源不可用"
+
+
+def _unique_job_rows(rows: list) -> list[dict]:
+    unique: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        url = _job_source_url(row)
+        key = url or f"missing-url:{len(unique)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    return unique
+
+
+def _partial_reason_labels(job: dict, attempt: dict) -> list[str]:
+    method = str(
+        attempt.get("fallback_method")
+        or job.get("retrieval_method")
+        or "search_snippet"
+    )
+    labels = [
+        _JOB_RETRIEVAL_METHOD_LABELS.get(method, "部分内容提取")
+    ]
+    browser_code = attempt.get("browser_error_code")
+    if browser_code:
+        labels.append(
+            _JOB_RETRIEVAL_REASON_LABELS.get(
+                str(browser_code),
+                "浏览器未能稳定读取",
+            )
+        )
+    for failure in attempt.get("fallback_failures") or []:
+        if not isinstance(failure, dict) or not failure.get("error_code"):
+            continue
+        labels.append(
+            _JOB_RETRIEVAL_REASON_LABELS.get(
+                str(failure["error_code"]),
+                "HTTP 未读取到完整岗位内容",
+            )
+        )
+    return list(dict.fromkeys(labels))
 
 
 class ProviderInfo(BaseModel):

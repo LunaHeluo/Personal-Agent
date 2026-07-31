@@ -151,6 +151,21 @@ def test_candidate_attempt_audit_persists_only_safe_bounded_summary() -> None:
             "duration_ms": 12,
             "validation_state": "rejected",
             "reason_codes": ["missing_requirements"],
+            "browser_error_code": "playwright_timeout",
+            "fallback_method": "search_snippet",
+            "fallback_failures": [
+                {
+                    "error_code": "access_blocked_challenge",
+                    "safe_reason": f"must not persist {fake_secret}",
+                }
+            ],
+            "final_error_code": None,
+            "candidate_score": 0.93,
+            "candidate_page_kind": "job_detail_candidate",
+            "candidate_reason_codes": ["target_location_match"],
+            "matched_queries": ["北京 AI Agent 工程师 招聘"],
+            "search_engines": ["google"],
+            "started_before_deadline": True,
         },
         context=context,
         call_id="snapshot-call-1",
@@ -162,6 +177,21 @@ def test_candidate_attempt_audit_persists_only_safe_bounded_summary() -> None:
     assert event.call_id == "snapshot-call-1"
     assert len(event.payload["source_url_hash"]) == 64
     assert event.payload["reason_codes"] == ("missing_requirements",)
+    assert event.payload["browser_error_code"] == "playwright_timeout"
+    assert event.payload["fallback_method"] == "search_snippet"
+    assert event.payload["fallback_failure_codes"] == (
+        "access_blocked_challenge",
+    )
+    assert event.payload["candidate_score"] == 0.93
+    assert event.payload["candidate_page_kind"] == "job_detail_candidate"
+    assert event.payload["candidate_reason_codes"] == (
+        "target_location_match",
+    )
+    assert event.payload["matched_queries"] == (
+        "北京 AI Agent 工程师 招聘",
+    )
+    assert event.payload["search_engines"] == ("google",)
+    assert event.payload["started_before_deadline"] is True
     assert fake_secret not in persisted
     assert "https://example.test" not in persisted
 
@@ -357,6 +387,167 @@ async def test_candidate_failure_continues_and_resume_evidence_is_read_once():
     ]
 
 
+class _FallbackGate:
+    def request_for_tool(self, *, tool_name, arguments, **_kwargs):
+        return SimpleNamespace(tool_name=tool_name, arguments=arguments)
+
+    async def evaluate(self, _request):
+        return SimpleNamespace(
+            outcome="allow",
+            permit=SimpleNamespace(id="permit-1"),
+        )
+
+
+class _FallbackExecutor:
+    gate = _FallbackGate()
+
+    async def execute(self, request, **_kwargs):
+        if request.tool_name.endswith("browser_snapshot"):
+            raise RuntimeError("browser_network_target_required")
+        return ToolResult(
+            ok=True,
+            data={"source_url": request.arguments.get("url", "")},
+        )
+
+
+class _FallbackOrchestrator(JobResearchOrchestrator):
+    def _missing(self, _dependencies):
+        return ()
+
+    def _audit_candidate_attempt(self, *_args, **_kwargs):
+        return None
+
+
+class _ScriptedClock:
+    def __init__(self, values: list[float]) -> None:
+        self.values = iter(values)
+
+    def __call__(self) -> float:
+        return next(self.values)
+
+
+class _ScriptedFallback:
+    def __init__(self, outcomes: list[str]) -> None:
+        self.outcomes = iter(outcomes)
+
+    async def retrieve(self, candidate):
+        outcome = next(self.outcomes)
+        payload = {
+            "title": candidate.title,
+            "company": "Example",
+            "location": "Beijing",
+            "responsibilities": ["Build agent workflows"],
+            "requirements": ["Python"],
+            "source_url": candidate.url,
+            "retrieval_method": (
+                "http_json_ld" if outcome == "verified" else "search_snippet"
+            ),
+            "validation_state": (
+                "verified" if outcome == "verified" else "partial_verified"
+            ),
+        }
+        return SimpleNamespace(
+            jobs=(payload,) if outcome == "verified" else (),
+            partial_jobs=(payload,) if outcome == "partial" else (),
+            method=payload["retrieval_method"],
+            failures=(),
+        )
+
+
+def _candidate_batch(count: int) -> tuple[JobCandidate, ...]:
+    return tuple(
+        JobCandidate(
+            url=f"https://jobs.example.test/{index}",
+            title=f"Agent Engineer {index}",
+            url_kind="structured_apply",
+            confidence=1.0,
+            provider_position=index,
+            score=1.0,
+            reason_codes=("employer_detail_signal",),
+            matched_queries=("Beijing AI Agent Engineer jobs",),
+            search_engines=("google",),
+        )
+        for index in range(count)
+    )
+
+
+async def _no_sleep(_seconds: float) -> None:
+    return None
+
+
+@pytest.mark.asyncio
+async def test_partial_results_do_not_consume_complete_jd_target() -> None:
+    orchestrator = _FallbackOrchestrator(
+        None,  # type: ignore[arg-type]
+        _FallbackExecutor(),  # type: ignore[arg-type]
+        page_fallback=_ScriptedFallback(
+            ["partial", "verified", "partial", "verified", "verified"]
+        ),
+        browser_sleeper=_no_sleep,
+        clock=_ScriptedClock([0, 0, 1, 2, 3, 4]),
+    )
+
+    result = await orchestrator.analyze_candidates(
+        query="Beijing AI Agent",
+        candidates=_candidate_batch(5),
+        context=ToolContext(session_id=uuid4(), turn_id=uuid4()),
+        target_count=3,
+        max_candidates=10,
+        retrieval_budget_seconds=180,
+        resume_evidence=[],
+    )
+
+    assert len(result.data["jobs"]) == 3
+    assert len(result.data["partial_jobs"]) == 2
+    assert len(result.data["candidate_attempts"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_soft_deadline_prevents_starting_the_next_candidate() -> None:
+    orchestrator = _FallbackOrchestrator(
+        None,  # type: ignore[arg-type]
+        _FallbackExecutor(),  # type: ignore[arg-type]
+        page_fallback=_ScriptedFallback(["partial"]),
+        browser_sleeper=_no_sleep,
+        clock=_ScriptedClock([0, 0, 181]),
+    )
+
+    result = await orchestrator.analyze_candidates(
+        query="Beijing AI Agent",
+        candidates=_candidate_batch(3),
+        context=ToolContext(session_id=uuid4(), turn_id=uuid4()),
+        max_candidates=10,
+        retrieval_budget_seconds=180,
+        resume_evidence=[],
+    )
+
+    assert len(result.data["candidate_attempts"]) == 1
+    assert result.data["budget_exhausted"] is True
+
+
+@pytest.mark.asyncio
+async def test_candidate_limit_prevents_an_eleventh_start() -> None:
+    orchestrator = _FallbackOrchestrator(
+        None,  # type: ignore[arg-type]
+        _FallbackExecutor(),  # type: ignore[arg-type]
+        page_fallback=_ScriptedFallback(["partial"] * 10),
+        browser_sleeper=_no_sleep,
+        clock=_ScriptedClock(list(range(11))),
+    )
+
+    result = await orchestrator.analyze_candidates(
+        query="Beijing AI Agent",
+        candidates=_candidate_batch(11),
+        context=ToolContext(session_id=uuid4(), turn_id=uuid4()),
+        max_candidates=10,
+        retrieval_budget_seconds=180,
+        resume_evidence=[],
+    )
+
+    assert len(result.data["candidate_attempts"]) == 10
+    assert result.data["candidate_limit"] == 10
+
+
 @pytest.mark.asyncio
 async def test_network_guard_snapshot_rejection_uses_fallback_instead_of_crashing():
     class Gate:
@@ -452,10 +643,16 @@ async def test_search_prepared_requests_generic_location_alias_expansion() -> No
 
         async def _call(self, tool_name, arguments, context):
             self.arguments = dict(arguments)
-            result = ToolResult(ok=True, data={"results": [{
-                "title": "智能体研发工程师",
-                "url": "https://example.test/jobs/42",
-            }]})
+            result = ToolResult(
+                ok=True,
+                data={
+                    "results": [{
+                        "title": "智能体研发工程师",
+                        "url": "https://example.test/jobs/42",
+                    }],
+                    "filtered_collection_count": 2,
+                },
+            )
             return result, SkillToolTrace(
                 tool_name=tool_name,
                 call_id="search-call",
@@ -475,7 +672,7 @@ async def test_search_prepared_requests_generic_location_alias_expansion() -> No
         }},
     )
 
-    await orchestrator.search_prepared(
+    result = await orchestrator.search_prepared(
         prepared=prepared,
         context=ToolContext(session_id=uuid4(), turn_id=uuid4()),
         limit=5,
@@ -488,6 +685,7 @@ async def test_search_prepared_requests_generic_location_alias_expansion() -> No
         "limit": 5,
         "expand_location_aliases": True,
     }
+    assert result.data["search_statistics"]["filtered_collection_count"] == 2
 
 
 @pytest.mark.asyncio

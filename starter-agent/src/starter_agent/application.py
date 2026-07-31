@@ -244,6 +244,8 @@ class ApplicationService:
         session_id: UUID,
         turn_id: UUID | None = None,
         target_count: int = 3,
+        max_candidates: int = 10,
+        retrieval_budget_seconds: float = 180,
         top_k: int = 6,
         knowledge_base_id: UUID | None = None,
         resume_evidence: list[dict] | None = None,
@@ -255,6 +257,8 @@ class ApplicationService:
             query=query,
             candidates=candidates,
             target_count=target_count,
+            max_candidates=max_candidates,
+            retrieval_budget_seconds=retrieval_budget_seconds,
             top_k=top_k,
             resume_evidence=resume_evidence,
             context=self._job_research_context(

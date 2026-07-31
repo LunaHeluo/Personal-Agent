@@ -71,6 +71,7 @@ class JobResearchOrchestrator:
         browser_sleeper: Callable[[float], Any] = asyncio.sleep,
         turn_coordinator: TurnCoordinator | None = None,
         location_alias_builder: LocationAliasBuilder | None = None,
+        clock: Callable[[], float] = perf_counter,
     ) -> None:
         self.registry = registry
         self.executor = executor
@@ -80,6 +81,7 @@ class JobResearchOrchestrator:
         self.browser_sleeper = browser_sleeper
         self.turn_coordinator = turn_coordinator
         self.location_alias_builder = location_alias_builder or LocationAliasBuilder()
+        self.clock = clock
 
     async def prepare_request(
         self,
@@ -254,6 +256,7 @@ class JobResearchOrchestrator:
                         "request_count",
                         "raw_result_count",
                         "deduplicated_count",
+                        "filtered_collection_count",
                         "chinese_title_count",
                         "request_failures",
                         "location_aliases",
@@ -431,6 +434,8 @@ class JobResearchOrchestrator:
         candidates: Sequence[JobCandidate],
         context: ToolContext,
         target_count: int = 3,
+        max_candidates: int = 10,
+        retrieval_budget_seconds: float = 180,
         top_k: int = 6,
         resume_evidence: list[dict[str, Any]] | None = None,
     ) -> SkillRunResult:
@@ -450,8 +455,19 @@ class JobResearchOrchestrator:
         partial_jobs: list[dict[str, Any]] = []
 
         def record_attempt(
-            attempt: dict[str, Any], *, call_id: str
+            attempt: dict[str, Any],
+            *,
+            candidate: JobCandidate,
+            call_id: str,
         ) -> None:
+            attempt.update(
+                candidate_score=candidate.score,
+                candidate_page_kind=candidate.page_kind,
+                candidate_reason_codes=list(candidate.reason_codes),
+                matched_queries=list(candidate.matched_queries),
+                search_engines=list(candidate.search_engines),
+                started_before_deadline=True,
+            )
             attempts.append(attempt)
             self._audit_candidate_attempt(
                 attempt,
@@ -459,7 +475,12 @@ class JobResearchOrchestrator:
                 call_id=call_id,
             )
 
-        for index, candidate in enumerate(candidates):
+        deadline = self.clock() + retrieval_budget_seconds
+        budget_exhausted = False
+        for index, candidate in enumerate(candidates[:max_candidates]):
+            if self.clock() >= deadline:
+                budget_exhausted = True
+                break
             started_at = perf_counter()
             reader = PlaywrightJobPageReader(
                 self._call,
@@ -518,6 +539,7 @@ class JobResearchOrchestrator:
                 )
                 record_attempt(
                     attempt,
+                    candidate=candidate,
                     call_id=call_id,
                 )
                 if len(jobs) >= target_count:
@@ -557,7 +579,11 @@ class JobResearchOrchestrator:
                         ],
                         final_error_code=None,
                     )
-                    record_attempt(attempt, call_id=snapshot_trace.call_id)
+                    record_attempt(
+                        attempt,
+                        candidate=candidate,
+                        call_id=snapshot_trace.call_id,
+                    )
                     if len(jobs) >= target_count:
                         break
                     continue
@@ -589,7 +615,11 @@ class JobResearchOrchestrator:
                     validation.reason_codes
                 )
                 attempt["browser_attempts"] = browser_attempts
-                record_attempt(attempt, call_id=snapshot_trace.call_id)
+                record_attempt(
+                    attempt,
+                    candidate=candidate,
+                    call_id=snapshot_trace.call_id,
+                )
                 continue
             if validation.state == "partial_verified":
                 partial_jobs.append(
@@ -615,6 +645,7 @@ class JobResearchOrchestrator:
                         validation_state=validation.state,
                         reason_codes=validation.reason_codes,
                     ), "browser_attempts": browser_attempts},
+                    candidate=candidate,
                     call_id=snapshot_trace.call_id,
                 )
                 continue
@@ -637,7 +668,11 @@ class JobResearchOrchestrator:
             attempt["browser_attempts"] = browser_attempts
             attempt["retrieval_method"] = "playwright"
             attempt["final_error_code"] = None
-            record_attempt(attempt, call_id=snapshot_trace.call_id)
+            record_attempt(
+                attempt,
+                candidate=candidate,
+                call_id=snapshot_trace.call_id,
+            )
             if len(jobs) >= target_count:
                 break
 
@@ -645,6 +680,9 @@ class JobResearchOrchestrator:
             "jobs": jobs,
             "partial_jobs": partial_jobs,
             "candidate_attempts": attempts,
+            "budget_exhausted": budget_exhausted,
+            "candidate_limit": max_candidates,
+            "retrieval_budget_seconds": retrieval_budget_seconds,
         }
         if not jobs:
             return SkillRunResult(
@@ -865,6 +903,48 @@ class JobResearchOrchestrator:
                         str(item)[:160]
                         for item in attempt.get("reason_codes", [])[:20]
                     ],
+                    "browser_error_code": (
+                        str(attempt.get("browser_error_code"))[:160]
+                        if attempt.get("browser_error_code")
+                        else None
+                    ),
+                    "fallback_method": str(
+                        attempt.get("fallback_method") or "none"
+                    )[:80],
+                    "fallback_failure_codes": [
+                        str(item.get("error_code"))[:160]
+                        for item in attempt.get("fallback_failures", [])[:10]
+                        if isinstance(item, dict) and item.get("error_code")
+                    ],
+                    "final_error_code": (
+                        str(attempt.get("final_error_code"))[:160]
+                        if attempt.get("final_error_code")
+                        else None
+                    ),
+                    "candidate_score": float(
+                        attempt.get("candidate_score", 0.0)
+                    ),
+                    "candidate_page_kind": str(
+                        attempt.get("candidate_page_kind")
+                        or "unknown_candidate"
+                    )[:80],
+                    "candidate_reason_codes": [
+                        str(item)[:160]
+                        for item in attempt.get(
+                            "candidate_reason_codes", []
+                        )[:20]
+                    ],
+                    "matched_queries": [
+                        str(item)[:500]
+                        for item in attempt.get("matched_queries", [])[:20]
+                    ],
+                    "search_engines": [
+                        str(item)[:80]
+                        for item in attempt.get("search_engines", [])[:10]
+                    ],
+                    "started_before_deadline": bool(
+                        attempt.get("started_before_deadline")
+                    ),
                     "truncated": bool(attempt.get("truncated")),
                     "duration_ms": max(
                         0, int(attempt.get("duration_ms", 0))

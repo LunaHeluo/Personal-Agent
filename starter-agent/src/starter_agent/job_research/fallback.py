@@ -52,7 +52,17 @@ class JobPageFallback:
                 if validation_state == "verified":
                     return FallbackResult(jobs=(payload,), method=method)
                 return FallbackResult(partial_jobs=(payload,), method=method)
-            failures = (FallbackFailure("selector_unmatched", "HTTP page did not contain a verifiable job description"),)
+            failures = (
+                FallbackFailure(
+                    "access_blocked_challenge",
+                    "HTTP page returned an access challenge",
+                ),
+            ) if extracted.page_type == "error" else (
+                FallbackFailure(
+                    "selector_unmatched",
+                    "HTTP page did not contain a verifiable job description",
+                ),
+            )
         except FetchFailure as exc:
             failures = (FallbackFailure(exc.code, exc.display),)
 

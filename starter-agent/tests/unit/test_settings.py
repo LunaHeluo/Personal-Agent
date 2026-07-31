@@ -47,5 +47,6 @@ def test_job_research_settings_have_bounded_defaults() -> None:
     settings = load_settings(config_path)
 
     assert settings.job_research.jd_freshness_days == 30
-    assert settings.job_research.max_candidate_urls == 5
+    assert settings.job_research.max_candidate_urls == 10
     assert settings.job_research.target_valid_jds == 3
+    assert settings.job_research.retrieval_budget_seconds == 180

@@ -203,9 +203,72 @@ class PlaywrightJobPageReader:
             or self._snapshot_chars(second) <= self._minimum_snapshot_chars
         ):
             return "selector_unmatched"
+        first_signature = self._job_evidence_signature(first)
+        second_signature = self._job_evidence_signature(second)
+        if first_signature and second_signature:
+            if first_signature != second_signature:
+                return "page_not_stable"
+            first_chars = self._snapshot_chars(first)
+            second_chars = self._snapshot_chars(second)
+            larger = max(first_chars, second_chars)
+            if larger and abs(first_chars - second_chars) / larger > 0.2:
+                return "page_not_stable"
+            return None
         if self._snapshot_hash(first) != self._snapshot_hash(second):
             return "page_not_stable"
         return None
+
+    @classmethod
+    def _job_evidence_signature(
+        cls,
+        result: ToolResult,
+    ) -> tuple[str, ...]:
+        data = result.data if isinstance(result.data, dict) else {}
+        structured = data.get("structured_content")
+        values: list[str] = []
+        if isinstance(structured, dict):
+            responsibilities = cls._string_items(
+                structured.get("responsibilities")
+            )
+            requirements = cls._string_items(structured.get("requirements"))
+            if responsibilities or requirements:
+                values.extend(
+                    cls._string_items(
+                        [structured.get("title"), structured.get("location")]
+                    )
+                )
+                values.extend(responsibilities)
+                values.extend(requirements)
+        else:
+            headings = (
+                result.metadata.get("snapshot_headings")
+                or data.get("snapshot_headings")
+                or []
+            )
+            samples = (
+                result.metadata.get("snapshot_signal_samples")
+                or data.get("snapshot_signal_samples")
+                or []
+            )
+            sample_values = cls._string_items(samples)
+            if sample_values:
+                values.extend(cls._string_items(headings))
+                values.extend(sample_values)
+        return tuple(
+            " ".join(value.split()).casefold()
+            for value in values
+            if value.strip()
+        )
+
+    @staticmethod
+    def _string_items(value: object) -> list[str]:
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [
+            item
+            for item in value
+            if isinstance(item, str) and item.strip()
+        ]
 
     @staticmethod
     def _source_url(result: ToolResult) -> str:

@@ -43,6 +43,30 @@ def _snapshot(content_hash: str, *, chars: int = 900) -> ToolResult:
     )
 
 
+def _metadata_snapshot(
+    content_hash: str,
+    *,
+    chars: int,
+    samples: list[str] | None = None,
+) -> ToolResult:
+    return ToolResult(
+        ok=True,
+        data={"title": "Agent Engineer"},
+        metadata={
+            "source_url": URL,
+            "final_url": URL,
+            "source_content_sha256": content_hash,
+            "snapshot_chars": chars,
+            "snapshot_headings": ["Responsibilities", "Requirements"],
+            "snapshot_signal_samples": (
+                samples
+                if samples is not None
+                else ["Build agent workflows", "Production Python experience"]
+            ),
+        },
+    )
+
+
 def _context() -> ToolContext:
     return ToolContext(session_id=uuid4(), turn_id=uuid4())
 
@@ -180,3 +204,111 @@ async def test_reader_does_not_retry_more_than_once() -> None:
     assert result.error_code == "playwright_timeout"
     assert navigate_count == 2
     assert len(result.attempts) == 2
+
+
+async def test_dynamic_hashes_are_stable_when_job_evidence_matches() -> None:
+    snapshots = iter(
+        [
+            _snapshot("a" * 64),
+            _snapshot("b" * 64),
+            _snapshot("c" * 64),
+            _snapshot("d" * 64),
+        ]
+    )
+
+    async def call(tool_name, arguments, _context):
+        if tool_name.endswith("browser_navigate"):
+            result = ToolResult(
+                ok=True,
+                data={"source_url": URL},
+                metadata={"source_url": URL, "final_url": URL},
+            )
+        elif tool_name.endswith("browser_wait_for"):
+            result = ToolResult(ok=True)
+        else:
+            result = next(snapshots)
+        return result, _trace(tool_name, arguments)
+
+    result = await PlaywrightJobPageReader(call, sleeper=_no_sleep).read(
+        URL,
+        _context(),
+    )
+
+    assert result.ok
+    assert len(result.attempts) == 1
+
+
+async def test_materially_changed_job_evidence_remains_unstable() -> None:
+    first = _snapshot("a" * 64)
+    changed = ToolResult(
+        ok=True,
+        data={
+            "structured_content": {
+                **first.data["structured_content"],
+                "requirements": ["Ten years of Rust experience"],
+            }
+        },
+        metadata={
+            **first.metadata,
+            "source_content_sha256": "b" * 64,
+        },
+    )
+    snapshots = iter([first, changed, first, changed])
+
+    async def call(tool_name, arguments, _context):
+        if tool_name.endswith("browser_navigate"):
+            result = ToolResult(
+                ok=True,
+                data={"source_url": URL},
+                metadata={"source_url": URL, "final_url": URL},
+            )
+        elif tool_name.endswith("browser_wait_for"):
+            result = ToolResult(ok=True)
+        else:
+            result = next(snapshots)
+        return result, _trace(tool_name, arguments)
+
+    result = await PlaywrightJobPageReader(call, sleeper=_no_sleep).read(
+        URL,
+        _context(),
+    )
+
+    assert not result.ok
+    assert result.error_code == "page_not_stable"
+    assert len(result.attempts) == 2
+
+
+def test_metadata_evidence_accepts_bounded_content_size_drift() -> None:
+    reader = PlaywrightJobPageReader(lambda *_args: None)
+
+    error = reader._validate_snapshots(
+        _metadata_snapshot("a" * 64, chars=900),
+        _metadata_snapshot("b" * 64, chars=1050),
+        URL,
+    )
+
+    assert error is None
+
+
+def test_metadata_evidence_rejects_material_content_size_drift() -> None:
+    reader = PlaywrightJobPageReader(lambda *_args: None)
+
+    error = reader._validate_snapshots(
+        _metadata_snapshot("a" * 64, chars=900),
+        _metadata_snapshot("b" * 64, chars=1300),
+        URL,
+    )
+
+    assert error == "page_not_stable"
+
+
+def test_title_only_metadata_uses_conservative_hash_fallback() -> None:
+    reader = PlaywrightJobPageReader(lambda *_args: None)
+
+    error = reader._validate_snapshots(
+        _metadata_snapshot("a" * 64, chars=900, samples=[]),
+        _metadata_snapshot("b" * 64, chars=900, samples=[]),
+        URL,
+    )
+
+    assert error == "page_not_stable"

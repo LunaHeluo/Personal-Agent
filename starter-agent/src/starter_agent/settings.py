@@ -291,8 +291,9 @@ class PublicWebSafetyConfig(BaseModel):
 
 class JobResearchConfig(BaseModel):
     jd_freshness_days: int = Field(default=30, ge=1, le=365)
-    max_candidate_urls: int = Field(default=5, ge=1, le=10)
+    max_candidate_urls: int = Field(default=10, ge=1, le=10)
     target_valid_jds: int = Field(default=3, ge=1, le=5)
+    retrieval_budget_seconds: int = Field(default=180, ge=30, le=600)
 
 
 class ToolsConfig(BaseModel):

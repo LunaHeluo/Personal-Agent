@@ -380,6 +380,165 @@ def test_malformed_json_ld_falls_back_to_html() -> None:
     assert "Ignore previous instructions." in result.requirements
 
 
+def test_json_ld_with_literal_newlines_keeps_the_job_posting() -> None:
+    html = """
+    <script type="application/ld+json">{
+      "@type": "JobPosting",
+      "title": "AI 应用开发工程师",
+      "description": "<h2>工作职责</h2><p>开发企业智能体平台。
+持续优化模型效果。</p><h2>岗位要求</h2><p>熟悉 Python 和大模型应用。</p>"
+    }</script>
+    """
+
+    result = JobDescriptionExtractor().extract(html, "text/html")
+
+    assert result.extraction_method == "json_ld"
+    assert result.title == "AI 应用开发工程师"
+    assert result.responsibilities == ["开发企业智能体平台。 持续优化模型效果。"]
+    assert result.requirements == ["熟悉 Python 和大模型应用。"]
+
+
+def test_json_ld_extracts_inline_chinese_description_sections() -> None:
+    payload = {
+        "@type": "JobPosting",
+        "title": "AI 应用开发工程师",
+        "description": (
+            "岗位描述：参与企业 AI 产品交付。"
+            "工作职责：开发智能体工作流并持续优化。"
+            "岗位要求：熟悉 Python，具备大模型应用经验。"
+        ),
+    }
+    result = JobDescriptionExtractor().extract(
+        '<script type="application/ld+json">'
+        + json.dumps(payload, ensure_ascii=False)
+        + "</script>",
+        "text/html",
+    )
+
+    assert result.responsibilities == [
+        "参与企业 AI 产品交付。",
+        "开发智能体工作流并持续优化。",
+    ]
+    assert result.requirements == ["熟悉 Python，具备大模型应用经验。"]
+    assert result.completeness == "complete"
+
+
+def test_json_ld_splits_inline_english_job_and_required_skills() -> None:
+    posting = {
+        "@type": "JobPosting",
+        "title": "AI Agent & LLM Engineer",
+        "description": (
+            "about the company. A financial technology lab. "
+            "about the job. 1. Build and optimize AI Agent frameworks. "
+            "2. Deploy vertical LLM services. "
+            "skills and experience required. "
+            "1. Three years of LLM engineering experience. "
+            "2. Strong Python and PyTorch skills."
+        ),
+    }
+
+    result = JobDescriptionExtractor().extract(
+        '<script type="application/ld+json">'
+        + json.dumps(posting)
+        + "</script>",
+        "text/html",
+    )
+
+    assert result.responsibilities == [
+        "Build and optimize AI Agent frameworks. "
+        "2. Deploy vertical LLM services."
+    ]
+    assert result.requirements == [
+        "Three years of LLM engineering experience. "
+        "2. Strong Python and PyTorch skills."
+    ]
+    assert result.completeness == "complete"
+
+
+def test_json_ld_recognizes_core_responsibilities() -> None:
+    posting = {
+        "@type": "JobPosting",
+        "title": "高级 AI 工程师",
+        "description": (
+            "<h2>核心职责</h2><ul><li>开发企业 AI Agent 平台。</li></ul>"
+            "<h2>任职要求</h2><ul><li>熟悉 Python 和 RAG。</li></ul>"
+        ),
+    }
+
+    result = JobDescriptionExtractor().extract(
+        '<script type="application/ld+json">'
+        + json.dumps(posting, ensure_ascii=False)
+        + "</script>",
+        "text/html",
+    )
+
+    assert result.responsibilities == ["开发企业 AI Agent 平台。"]
+    assert result.requirements == ["熟悉 Python 和 RAG。"]
+    assert result.completeness == "complete"
+
+
+def test_json_ld_recognizes_we_hope_you_polite_form_as_requirements() -> None:
+    payload = {
+        "@type": "JobPosting",
+        "title": "AI 应用开发工程师",
+        "description": (
+            "岗位描述：负责把大模型技术转化为业务价值。"
+            "我们希望您：计算机相关专业背景，熟悉 Python。"
+            "工作职责：设计并交付智能体应用。"
+        ),
+    }
+    result = JobDescriptionExtractor().extract(
+        '<script type="application/ld+json">'
+        + json.dumps(payload, ensure_ascii=False)
+        + "</script>",
+        "text/html",
+    )
+
+    assert result.requirements == [
+        "计算机相关专业背景，熟悉 Python。",
+    ]
+    assert result.completeness == "complete"
+
+
+def test_extracts_inline_chinese_sections_without_heading_tags_or_h1() -> None:
+    html = """
+    <html>
+      <head><title>【成都 AI应用开发工程师招聘】-示例科技-猎聘</title></head>
+      <body>
+        <dl><dd>
+          岗位描述：参与企业 AI 产品交付。
+          工作职责：开发智能体工作流并持续优化。
+          岗位要求：熟悉 Python，具备大模型应用经验。
+        </dd></dl>
+      </body>
+    </html>
+    """
+
+    result = JobDescriptionExtractor().extract(html, "text/html")
+
+    assert result.title == "成都 AI应用开发工程师"
+    assert result.responsibilities == [
+        "参与企业 AI 产品交付。",
+        "开发智能体工作流并持续优化。",
+    ]
+    assert result.requirements == ["熟悉 Python，具备大模型应用经验。"]
+    assert result.completeness == "complete"
+
+
+def test_security_verification_page_is_classified_as_an_error_page() -> None:
+    result = JobDescriptionExtractor().extract(
+        """
+        <html><head><title>Security Verification</title></head>
+        <body>请完成验证码后继续访问</body></html>
+        """,
+        "text/html",
+    )
+
+    assert result.page_type == "error"
+    assert result.validation_state == "rejected"
+    assert result.title == ""
+
+
 def test_empty_script_shell_is_unverified() -> None:
     result = JobDescriptionExtractor().extract(
         "<html><body><div id='app'></div><script>render()</script></body></html>",

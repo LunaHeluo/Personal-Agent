@@ -705,6 +705,64 @@ async def test_ranking_diagnostics_keep_top_ten_independent_of_result_limit() ->
     assert len(result.data["ranking_diagnostics"]) == 6
 
 
+async def test_search_reports_collection_rows_filtered_before_ranking() -> None:
+    tool = SearchJobsSerpApiTool(
+        key_resolver=lambda: ("primary", "secret", "SERPAPI_API_KEY"),
+        client=FakeClient(
+            [
+                FakeResponse(
+                    {
+                        "jobs_results": [
+                            {
+                                "title": "1000+ 北京示例科技有限公司jobs in Worldwide",
+                                "share_link": (
+                                    "https://www.linkedin.com/jobs/"
+                                    "example-jobs-worldwide"
+                                ),
+                            }
+                        ]
+                    }
+                ),
+                FakeResponse(
+                    {
+                        "organic_results": [
+                            {
+                                "title": "AI jobs in Beijing",
+                                "link": "https://board.example.test/jobs/search",
+                            },
+                            {
+                                "title": "AI Agent Engineer",
+                                "link": (
+                                    "https://employer.example.test/jobs/agent-1"
+                                ),
+                                "snippet": (
+                                    "Responsibilities: build agents. "
+                                    "Requirements: Python."
+                                ),
+                            },
+                        ]
+                    }
+                ),
+            ]
+        ),
+    )
+
+    result = await tool.execute(
+        {
+            "query": "AI Agent",
+            "query_variants": ["Beijing AI Agent Engineer jobs"],
+            "limit": 10,
+        },
+        context(),
+    )
+
+    assert result.ok
+    assert result.data["filtered_collection_count"] == 2
+    assert [item["url"] for item in result.data["results"]] == [
+        "https://employer.example.test/jobs/agent-1"
+    ]
+
+
 @pytest.mark.parametrize(
     "arguments",
     [

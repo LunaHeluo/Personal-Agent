@@ -12,7 +12,10 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import httpx
 
 from starter_agent.domain.models import ToolResult
-from starter_agent.job_research.candidates import rank_job_candidates
+from starter_agent.job_research.candidates import (
+    assess_job_candidate,
+    rank_job_candidates,
+)
 from starter_agent.job_research.query_planner import build_job_query_plan
 from starter_agent.tools.base import Tool, ToolContext
 from starter_agent.tools.adapters.serpapi_location import (
@@ -427,6 +430,17 @@ class SearchJobsSerpApiTool(Tool):
                 *current.get("search_engines", []), *row.get("search_engines", [])
             ]))
 
+        filtered_collection_count = sum(
+            1
+            for row in merged.values()
+            if assess_job_candidate(
+                row,
+                url=str(row.get("url") or ""),
+                title=str(row.get("title") or ""),
+                location_aliases=location_aliases,
+            ).page_kind
+            == "collection_page"
+        )
         diagnostic_ranked = rank_job_candidates(
             list(merged.values()),
             limit=10,
@@ -452,6 +466,7 @@ class SearchJobsSerpApiTool(Tool):
             "request_count": len(outcomes),
             "raw_result_count": len(raw_results),
             "deduplicated_count": len(merged),
+            "filtered_collection_count": filtered_collection_count,
             "chinese_title_count": sum(
                 1 for item in merged.values()
                 if re.search(r"[\u3400-\u9fff]", str(item.get("title") or ""))

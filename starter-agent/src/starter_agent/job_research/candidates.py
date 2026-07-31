@@ -23,12 +23,16 @@ _KIND_PRIORITY: dict[str, tuple[int, float]] = {
     "organic": (2, 0.4),
 }
 _COLLECTION_TITLE = re.compile(
-    r"(?:^\s*[\d,]+\+?\s+.*\bjobs?\b|\bjobs?\s+in\b|"
+    r"(?:^\s*[\d,]+\+?\s+.*?jobs?(?:\s+in\b|$)|\bjobs?\s+in\b|"
     r"招聘(?:信息|[^\s，。|]{0,12}人才)|职位列表)",
     re.IGNORECASE,
 )
 _COLLECTION_PATH = re.compile(
     r"/(?:search|zhaopin|topics?|job-search|jobs/search|q-[^/]+)(?:/|$|\.html)",
+    re.IGNORECASE,
+)
+_COLLECTION_SUFFIX = re.compile(
+    r"(?:^|/)jobs/[^/?#]*-jobs-(?:worldwide|in-[^/?#]+)/*$",
     re.IGNORECASE,
 )
 _SPAM_TITLE = re.compile(
@@ -218,6 +222,7 @@ def assess_job_candidate(
     if (
         _is_probable_collection(item)
         or _COLLECTION_PATH.search(path)
+        or _COLLECTION_SUFFIX.search(path)
         or any(
             segment.endswith(("topic", "topics"))
             for segment in path.rstrip("/").rsplit("/", 2)

@@ -80,8 +80,9 @@ memory:
 
 job_research:
   jd_freshness_days: 30
-  max_candidate_urls: 5
+  max_candidate_urls: 10
   target_valid_jds: 3
+  retrieval_budget_seconds: 180
 
 tools:
   enabled:

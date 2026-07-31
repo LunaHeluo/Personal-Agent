@@ -48,9 +48,14 @@ class JobDescriptionExtractor:
             "what you'll do",
             "what you will do",
             "about the job",
+            "job description",
             "岗位职责",
             "工作职责",
             "职位描述",
+            "岗位描述",
+            "核心职责",
+            "主要职责",
+            "工作内容",
         ),
         "requirements": (
             "requirements",
@@ -61,6 +66,14 @@ class JobDescriptionExtractor:
             "任职要求",
             "岗位要求",
             "职位要求",
+            "我们希望你",
+            "我们希望你有",
+            "我们希望你具备",
+            "我们希望你拥有",
+            "我们希望您",
+            "我们希望您有",
+            "我们希望您具备",
+            "我们希望您拥有",
         ),
         "preferred_qualifications": (
             "preferred qualifications",
@@ -77,6 +90,26 @@ class JobDescriptionExtractor:
     _CONTENT_BLOCK_NAMES = {"div", "section", "article", "dd", "td"}
     _MAX_JSON_LD_NODES = 10_000
     _MAX_JSON_LD_DEPTH = 64
+    _INLINE_SECTION = re.compile(
+        r"(?P<label>"
+        r"about the job|responsibilities|what you will do|job description|"
+        r"skills and experience required|requirements|qualifications|"
+        r"what we(?:'|’)?re looking for|"
+        r"岗位职责|工作职责|职位描述|岗位描述|核心职责|主要职责|工作内容|"
+        r"任职要求|岗位要求|职位要求|"
+        r"我们希望[你您](?:有|具备|拥有)?)\s*[:：.。]?\s*",
+        re.IGNORECASE,
+    )
+    _CHALLENGE_TITLE_SIGNALS = (
+        "security verification",
+        "access verification",
+        "captcha",
+        "安全验证",
+        "安全中心",
+        "访问验证",
+        "人机验证",
+        "验证码",
+    )
     _SNAPSHOT_NOISE_HEADINGS = frozenset(
         {"privacy notice", "cookie notice", "cookie settings"}
     )
@@ -120,6 +153,13 @@ class JobDescriptionExtractor:
             return self._from_plain_text(content)
 
         soup = BeautifulSoup(content, "html.parser")
+        if self._is_access_challenge(soup):
+            return ExtractedJobDescription(
+                raw_text=self._normalise_text(soup.get_text(" ", strip=True)),
+                extraction_method="html",
+                page_type="error",
+                validation_state="rejected",
+            )
         structured = self._job_posting_json_ld(soup)
         if structured is not None:
             return self._from_json_ld(structured)
@@ -308,6 +348,11 @@ class JobDescriptionExtractor:
                 continue
             try:
                 payload = json.loads(raw_json)
+            except json.JSONDecodeError:
+                try:
+                    payload = json.loads(raw_json, strict=False)
+                except (RecursionError, TypeError, ValueError):
+                    continue
             except (RecursionError, TypeError, ValueError):
                 continue
             for item in self._json_ld_items(payload):
@@ -361,6 +406,10 @@ class JobDescriptionExtractor:
         description_soup = BeautifulSoup(description, "html.parser")
         sections = self._split_sections_from_html(description_soup)
         raw_text = self._normalise_text(description_soup.get_text(" ", strip=True))
+        inline_sections = self._split_inline_sections(raw_text)
+        for name, values in inline_sections.items():
+            if not sections[name]:
+                sections[name] = values
         salary = self._salary_value(posting.get("baseSalary"))
         return ExtractedJobDescription(
             title=self._string_value(posting.get("title")),
@@ -385,12 +434,16 @@ class JobDescriptionExtractor:
         content_root = soup.find("main") or soup.find("article") or soup.body or soup
         sections = self._split_sections_from_html(content_root)
         raw_text = self._normalise_text(content_root.get_text(" ", strip=True))
+        inline_sections = self._split_inline_sections(raw_text)
+        for name, values in inline_sections.items():
+            if not sections[name]:
+                sections[name] = values
         title_tag = content_root.find("h1")
         company_tag = content_root.find(
             class_=re.compile(r"company|employer|organization", re.I)
         )
         return ExtractedJobDescription(
-            title=self._text_from_tag(title_tag),
+            title=self._text_from_tag(title_tag) or self._document_title(soup),
             company=self._text_from_tag(company_tag),
             raw_text=raw_text,
             completeness=self._completeness(
@@ -492,6 +545,22 @@ class JobDescriptionExtractor:
                 sections[current].append(line)
         return {name: self._clean_items(values) for name, values in sections.items()}
 
+    def _split_inline_sections(self, text: str) -> dict[str, list[str]]:
+        sections = self._empty_sections()
+        matches = list(self._INLINE_SECTION.finditer(text))
+        for index, match in enumerate(matches):
+            section_name = self._section_name(match.group("label"))
+            if section_name is None:
+                continue
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+            value = self._normalise_text(text[match.end():end])
+            if value:
+                sections[section_name].append(value)
+        return {
+            name: self._clean_items(values)
+            for name, values in sections.items()
+        }
+
     def _terminal_content_blocks(
         self, soup: Tag | BeautifulSoup
     ) -> set[int]:
@@ -530,6 +599,25 @@ class JobDescriptionExtractor:
             if normalized in aliases:
                 return section_name
         return None
+
+    def _is_access_challenge(self, soup: BeautifulSoup) -> bool:
+        title = self._normalise_text(
+            soup.title.get_text(" ", strip=True) if soup.title else ""
+        ).casefold()
+        return bool(title) and any(
+            signal in title for signal in self._CHALLENGE_TITLE_SIGNALS
+        )
+
+    def _document_title(self, soup: BeautifulSoup) -> str:
+        title = self._normalise_text(
+            soup.title.get_text(" ", strip=True) if soup.title else ""
+        )
+        bracketed = re.match(r"^[【\[](?P<title>.+?)[】\]]", title)
+        if bracketed:
+            title = bracketed.group("title")
+        else:
+            title = re.split(r"\s+(?:[-|])\s+", title, maxsplit=1)[0]
+        return re.sub(r"招聘$", "", title).strip()
 
     @staticmethod
     def _empty_sections() -> dict[str, list[str]]:
