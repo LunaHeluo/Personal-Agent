@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, create_engine, delete, func, inspect, select, text, update
@@ -18,6 +20,7 @@ from starter_agent.domain.models import (
     StoredSessionSummary,
     TokenUsage,
 )
+from starter_agent.job_research.selection import PendingJobCandidate
 
 
 class Base(DeclarativeBase):
@@ -157,6 +160,24 @@ class JobDescriptionApprovalRow(Base):
     )
 
 
+class JobResearchCandidateRow(Base):
+    __tablename__ = "job_research_candidates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), index=True)
+    turn_id: Mapped[str] = mapped_column(String(36), index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(Text)
+    company: Mapped[str] = mapped_column(Text, default="")
+    location: Mapped[str] = mapped_column(Text, default="")
+    source_url: Mapped[str] = mapped_column(Text, default="")
+    evidence_level: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class SQLiteSessionStore:
     def __init__(self, database_url: str, project_root: Path):
         if database_url.startswith("sqlite:///"):
@@ -214,6 +235,121 @@ class SQLiteSessionStore:
             db.add(SessionRow(id=str(session_id), created_at=now, updated_at=now))
             db.commit()
         return session_id
+
+    def replace_pending_job_candidates(
+        self,
+        *,
+        session_id: UUID,
+        turn_id: UUID,
+        candidates: Sequence[Mapping[str, Any]],
+        expires_at: datetime,
+    ) -> tuple[PendingJobCandidate, ...]:
+        now = datetime.now(UTC)
+        rows: list[JobResearchCandidateRow] = []
+        with Session(self.engine) as db:
+            db.execute(
+                update(JobResearchCandidateRow)
+                .where(
+                    JobResearchCandidateRow.session_id == str(session_id),
+                    JobResearchCandidateRow.status == "PENDING_CONFIRMATION",
+                )
+                .values(status="EXPIRED")
+            )
+            for ordinal, candidate in enumerate(candidates, start=1):
+                candidate_id = uuid4()
+                payload = dict(candidate)
+                evidence_level = str(payload.get("evidence_level") or "complete")
+                if evidence_level not in {"complete", "partial"}:
+                    evidence_level = "partial"
+                row = JobResearchCandidateRow(
+                    id=str(candidate_id),
+                    session_id=str(session_id),
+                    turn_id=str(turn_id),
+                    ordinal=ordinal,
+                    title=str(payload.get("title") or payload.get("job_title") or ""),
+                    company=str(payload.get("company") or ""),
+                    location=str(payload.get("location") or ""),
+                    source_url=str(payload.get("source_url") or payload.get("url") or ""),
+                    evidence_level=evidence_level,
+                    status="PENDING_CONFIRMATION",
+                    payload_json=json.dumps(payload, ensure_ascii=False),
+                    created_at=now,
+                    expires_at=expires_at,
+                )
+                db.add(row)
+                rows.append(row)
+            session = db.get(SessionRow, str(session_id))
+            if session is not None:
+                session.updated_at = now
+            db.flush()
+            stored = tuple(self._pending_job_candidate(row) for row in rows)
+            db.commit()
+        return stored
+
+    def resolve_pending_job_candidate(
+        self,
+        session_id: UUID,
+        *,
+        ordinal: int | None = None,
+        candidate_id: UUID | None = None,
+        now: datetime | None = None,
+    ) -> PendingJobCandidate | None:
+        if ordinal is None and candidate_id is None:
+            return None
+        current = now or datetime.now(UTC)
+        with Session(self.engine) as db:
+            statement = select(JobResearchCandidateRow).where(
+                JobResearchCandidateRow.session_id == str(session_id),
+                JobResearchCandidateRow.status == "PENDING_CONFIRMATION",
+                JobResearchCandidateRow.expires_at > current,
+            )
+            if candidate_id is not None:
+                statement = statement.where(
+                    JobResearchCandidateRow.id == str(candidate_id)
+                )
+            else:
+                statement = statement.where(JobResearchCandidateRow.ordinal == ordinal)
+            row = db.scalar(statement.order_by(JobResearchCandidateRow.created_at.desc()))
+        return None if row is None else self._pending_job_candidate(row)
+
+    def list_pending_job_candidates(
+        self,
+        session_id: UUID,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[PendingJobCandidate, ...]:
+        current = now or datetime.now(UTC)
+        with Session(self.engine) as db:
+            rows = tuple(
+                db.scalars(
+                    select(JobResearchCandidateRow)
+                    .where(
+                        JobResearchCandidateRow.session_id == str(session_id),
+                        JobResearchCandidateRow.status == "PENDING_CONFIRMATION",
+                        JobResearchCandidateRow.expires_at > current,
+                    )
+                    .order_by(JobResearchCandidateRow.ordinal)
+                )
+            )
+        return tuple(self._pending_job_candidate(row) for row in rows)
+
+    @staticmethod
+    def _pending_job_candidate(row: JobResearchCandidateRow) -> PendingJobCandidate:
+        return PendingJobCandidate(
+            candidate_id=UUID(row.id),
+            session_id=UUID(row.session_id),
+            turn_id=UUID(row.turn_id),
+            ordinal=row.ordinal,
+            title=row.title,
+            company=row.company,
+            location=row.location,
+            source_url=row.source_url,
+            evidence_level=row.evidence_level,  # type: ignore[arg-type]
+            status=row.status,  # type: ignore[arg-type]
+            payload=json.loads(row.payload_json),
+            created_at=row.created_at,
+            expires_at=row.expires_at,
+        )
 
     @staticmethod
     def _memory_item(row: MemoryItemRow, now: datetime | None = None) -> MemoryItem:
