@@ -1,5 +1,12 @@
 from starter_agent.domain.models import ToolResult
-from starter_agent.interfaces.api import _public_job_search_answer
+from types import SimpleNamespace
+from uuid import uuid4
+
+from starter_agent.infrastructure.session_store import SQLiteSessionStore
+from starter_agent.interfaces.api import (
+    _persist_visible_job_candidates,
+    _public_job_search_answer,
+)
 
 
 def _search_result() -> ToolResult:
@@ -174,3 +181,42 @@ def test_zero_visible_evidence_keeps_message_without_failed_urls() -> None:
     assert "https://blocked.example.test/job/1" not in answer
     assert "robots_blocked" not in answer
     assert "搜索：2 个查询变体 · 4 次 SerpAPI 请求" in answer
+
+
+def test_only_visible_partial_evidence_is_persisted_as_selectable(tmp_path) -> None:
+    store = SQLiteSessionStore("sqlite:///sessions.db", tmp_path)
+    session_id = store.create_session()
+    application = SimpleNamespace(store=store)
+
+    enriched = _persist_visible_job_candidates(
+        application,
+        session_id=session_id,
+        turn_id=uuid4(),
+        jd_result=ToolResult(
+            ok=True,
+            data={
+                "jobs": [],
+                "partial_jobs": [
+                    {
+                        "title": "Useful AI Agent Job",
+                        "source_url": "https://example.test/job/useful",
+                        "snippet": (
+                            "岗位职责：开发智能体应用。"
+                            "任职要求：熟悉 Python 和大模型。"
+                        ),
+                    },
+                    {
+                        "title": "Thin result",
+                        "source_url": "https://example.test/job/thin",
+                        "snippet": "招聘",
+                    },
+                ],
+            },
+        ),
+    )
+
+    assert enriched is not None
+    assert len(enriched.data["partial_jobs"]) == 1
+    stored = store.list_pending_job_candidates(session_id)
+    assert [item.title for item in stored] == ["Useful AI Agent Job"]
+    assert stored[0].ordinal == 1

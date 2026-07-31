@@ -217,7 +217,7 @@ def _persist_visible_job_candidates(
         [
             {**item, "evidence_level": "partial"}
             for item in result_data.get("partial_jobs", [])
-            if isinstance(item, dict)
+            if isinstance(item, dict) and _is_substantive_partial_job(item)
         ]
         if len(complete) < target_count
         else []
