@@ -3,6 +3,8 @@
 ## 文档信息
 
 - 文档阶段：需求定义
+- 文档版本：v0.2（仓库融合修订）
+- 仓库核查基线：2026-08-15 当前工作区（包含未提交的 Delegation/Orchestration 实现）
 - 产品名称：CV 工作台
 - 目标仓库：Starter Agent
 - 当前交互基准图：`docs/assets/cv-workbench-interaction-flow-v2.png`
@@ -13,11 +15,48 @@
 
 ## 1. 需求背景
 
-Starter Agent 已具备求职 Chat、简历文件读取与版本保存、简历与 JD 对比、岗位调研、授权简历 RAG、Parent/Child Run、预算、取消、Trace、Artifact、Eval 和 Safety Gate 等基础能力，但当前产品形态仍以聊天页面和管理页面为主。
+Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型版本保存、确定性简历与 JD 对比、岗位调研、授权简历 RAG、Parent/Child Run、预算、取消、Trace、Artifact、Eval 和 Safety Gate 等基础能力，但当前产品形态仍以聊天页面和管理页面为主。这些能力的成熟度并不相同：部分已是稳定 API，部分受配置或 Release Gate 控制，部分仅完成了底层实现和测试，均不能直接等同于工作台业务功能已经存在。
 
 目标是将 Starter Agent 收敛为面向个人求职者的 CV 工作台，让用户围绕“目标岗位—岗位资料—简历版本—匹配证据—修改确认—投递记录—面试复盘”完成连续工作，而不是依赖多轮 Chat 记住业务状态。
 
 工作台不是第二套 Agent 系统。它应复用现有 Runtime、Tool、RAG、任务委派、预算、Gate、Trace 和 Artifact 基础设施，在其上新增稳定的求职业务对象、专用 API 和可视化交互。
+
+### 1.1 当前仓库能力核查
+
+下表是产品规划和验收的基线。“可复用”表示工作台应调用现有能力，不表示已有完整工作台页面或业务模型。
+
+| 能力域 | 当前仓库事实 | 成熟度 | 工作台融合方式 | 仍需建设 |
+|---|---|---|---|---|
+| Chat、Session、Memory | 已有普通/流式 Chat、会话消息、Token 使用、摘要和长期记忆 API；前端已有真实会话列表 | 已实现 | 保留完整会话；紧凑 Agent 面板携带显式工作台上下文 | 业务指令解析后写入业务对象，不能只回填聊天正文 |
+| 简历文件与版本 | `read_resume`、`list_resume_versions`、`save_resume`、`compare_resume*`、`draft_resume_patch`、`save_resume_version` 已支持 MD/TXT、Hash 冲突检查、Diff 和确认后保存 | 已实现但为文件/JSON Manifest 形态 | 作为迁移来源和底层兼容工具 | 新增 Resume/ResumeVersion/Draft 业务模型、编辑 API、归档/引用保护；DOCX/PDF 导入尚不存在 |
+| 知识库与证据 | 已有 SQLite Knowledge Base、Document/Version/Chunk、Markdown 入库、检索、问答、Citation、更新/删除和作用域隔离 | 已实现 | 作为简历/JD 正文与证据平面；业务库只保存版本引用、Hash 和必要投影 | 增加业务对象与 Knowledge Document Version 的绑定、引用完整性检查和迁移状态 |
+| 岗位搜索与 JD | 已有 SerpAPI 搜索、安全网页读取、Playwright MCP 路径、候选规范化、JD 入库确认和来源冲突处理 | 有条件可用 | 搜索结果先进入候选区；用户“评估并留存”后才创建岗位和不可变快照 | 新增 Job/JobSnapshot 业务模型、去重/留存 API；真实网页能力继续受环境和 Gate 限制 |
+| 简历匹配 | 已有确定性 JD 对比和基于授权 RAG 证据的岗位分析，可输出 matched/partial/gap 等结构 | 底层已实现 | 作为首版规则型分析器和 Agent 分析输入 | 新增版本化评分规则、MatchAnalysis 持久化、标准结果 Schema、过期判定和 UI |
+| Parent/Child 与编排 | 已有 Parent/Child Store、Worker、预算、事件、Artifact 元数据、结果校验/合并、Run/Task API、SSE、取消与恢复；前端已有任务卡和高级详情 | 已实现，委派路径受 Release Decision 控制 | 所有长任务复用现有 Run ID、状态、事件游标和取消语义 | 增加业务 Operation 与 Run 的绑定、提交状态和面向工作台的投影；首版不得依赖 Multi-Agent 才能完成 |
+| Capability、MCP、Approval | 已有 Tool/Skill/MCP Registry、启停、Policy、Confirmation、Permit、审计和管理 API/UI | 已实现 | 保留为设置与运行详情；工作台动作继续经过统一 Gate | 增加面向普通用户的功能级可用性投影，不复制权限系统 |
+| Trust | 已有 Eval Suite/Case/Run、Trace、Safety、Release Gate、Delegation Release Decision 和前端页面 | 已实现 | 业务对象保存 Trace/Run/Artifact 引用，普通用户只看脱敏摘要 | 增加按业务对象查询的信任摘要和不可追溯结果的 fail-closed 规则 |
+| 邮件 | 已有搜索、读取、草稿、挑战确认、授权、撤销与发送路径；真实发送依配置关闭或启用 | 有条件可用 | 首版仅保留入口和审批能力，不作为核心闭环依赖 | 后续再做投递记录与邮件线程绑定；不得自动发送 |
+| 当前前端 | `src/web/index.html` 是单文件应用，已有 Chat、知识库、Capability、Trust、Run 详情和邮件确认交互 | 已实现但不具备工作台结构 | 复用 API 客户端行为和状态处理，不复用现有信息架构 | 新增工作台路由、业务页面和可维护的模块边界 |
+| PDF/DOCX、投递、面试 | 没有对应生成依赖、业务 Store 或专用 API | 未实现 | 不得用临时前端状态或普通 Artifact 冒充 | 按交付阶段新增导出、Application 时间线和 Interview Review 业务能力 |
+
+### 1.2 融合后的系统边界
+
+工作台由三个职责明确、通过稳定引用连接的层组成：
+
+| 层 | 权威数据 | 允许写入 | 禁止事项 |
+|---|---|---|---|
+| 求职业务层 | Workspace、Resume、ResumeVersion、Job、JobSnapshot、MatchAnalysis、Suggestion/Patch、Application、InterviewReview、ExportRecord | 用户命令、经校验的 Agent 结果提交 | 不保存 Child 原始对话、隐藏推理、原始 HTML 或重复的知识库全文 |
+| Agent 执行层 | Session、Parent/Child Run、Task、Budget、Event、Approval、Trace | Runtime、Coordinator、统一 Tool Executor | 不直接把模型输出当成正式简历版本、岗位、投递状态或成功分析 |
+| 证据与文件层 | Knowledge Document/Version/Chunk/Citation、Tool Artifact、Export Artifact | 现有授权服务和受控 Artifact 写入器 | 不根据业务 UI 绕过作用域、内容读取授权、保留期或脱敏规则 |
+
+融合必须遵循以下提交协议：
+
+1. 用户动作先创建或复用一个带幂等键的业务 Operation，并记录输入对象版本与 Hash。
+2. 同步规则任务可直接返回标准结果；长任务创建真实 `parent_run_id`，Operation 保存该引用。
+3. Agent/Tool 结果先进入候选或待确认状态，经现有 Result Validator、证据校验和安全校验后才允许提交。
+4. 业务提交使用幂等键和乐观并发控制，在一个业务事务中写入对象、引用和业务事件；SSE 只通知状态变化，不承担提交。
+5. 提交成功后业务对象成为页面事实来源；Run 成功但业务提交失败时必须显示“结果待恢复/提交失败”，不得显示业务成功。
+6. 用户取消、预算耗尽、超时、校验失败或 Release Gate 拒绝时，禁止创建正式业务结果；已获得的合规证据可按保留策略继续审计。
 
 ## 2. 产品目标
 
@@ -61,27 +100,41 @@ Starter Agent 已具备求职 Chat、简历文件读取与版本保存、简历�
 
 ## 4. 功能范围
 
-### 4.1 首版范围
+### 4.1 首版范围与交付切片
 
-- 求职目标与工作台首页。
-- 简历库、简历版本和结构化简历编辑。
-- 岗位库、JD 导入和岗位快照。
-- 简历与岗位的匹配分析。
-- 有证据的 AI 修改建议及人工审批。
-- 版本差异、撤销和保存新版本。
-- Parent/Child Agent 任务卡、状态、取消、恢复和安全详情。
-- 简历 PDF/Word 预览与导出。
-- 基础投递看板。
-- 与现有 Chat、知识库、Run API、Trace 和 Artifact 的兼容。
+首版产品范围保持完整，但必须按以下可独立验收的切片交付。后一个切片不得以伪造数据代替前一个切片的权威后端；切片 A 完成后，即使 Multi-Agent、PDF/DOCX 或邮件不可用，用户也能完成有证据的核心简历优化流程。
 
-### 4.2 后续范围
+#### 切片 A：可用的融合闭环（MVP）
 
-- 多模板简历排版。
-- 面试复盘与问题库。
-- 求职漏斗统计。
-- 日历和邮箱联动。
-- 招聘网站账号登录后的辅助操作。
-- 团队协作或多人共享工作区。
+- 求职目标、工作台首页及最小业务 Store/API。
+- 导入现有 Markdown/TXT 简历，建立简历族、不可变版本和 Knowledge Document Version 绑定。
+- 粘贴 JD、导入文本或读取单个稳定 URL，经用户确认后建立岗位和不可变 JD 快照。
+- 复用现有确定性比较/RAG，生成并持久化可解释的匹配分析。
+- 生成有证据的修改建议，逐条确认，查看 Diff 并保存新版本。
+- 复用现有 Chat、Run/Task API、SSE、预算、取消、恢复、Trace 和 Artifact；单 Agent/规则路径足以完成闭环。
+- 工作台刷新恢复、幂等、版本冲突、错误和空状态达到验收要求。
+
+#### 切片 B：完整首版
+
+- 结构化/分区简历编辑、撤销/重做和稳定自动保存。
+- Parent/Child Agent 任务卡、安全详情和通过 Release Gate 后的多页面岗位调研。
+- ATS 模板预览及指定版本的 PDF/Word 导出。
+- 基础投递看板、状态事件时间线和导出/投递引用保护。
+- 现有知识库、Capability、Trust、邮件和管理路由完成导航降级且无回归。
+
+#### 切片 C：首版后增强
+
+- 面试复盘、问题库和求职漏斗统计。
+- 多模板排版、日历/邮箱线程联动和提醒自动化。
+- 登录后招聘网站辅助、团队协作或多人共享工作区。
+
+### 4.2 首版发布门槛
+
+1. 切片 A、B 均通过各自自动化契约测试和人工必验场景后，才可宣称“完整首版”。
+2. 切片 A 可以作为 MVP 单独发布，但必须在 UI 中把尚不可用的 PDF/Word、自动调研和投递看板标注为未提供，而不是显示假按钮或静态成功结果。
+3. Multi-Agent 是增强路径，不是切片 A 的硬依赖；没有有效 Release Decision 时继续使用手工 JD、单稳定 URL和单 Agent/确定性分析路径。
+4. DOCX/PDF 导入与 PDF/DOCX 导出是不同能力，分别验收；支持导出不代表支持保真导入。
+5. 每个切片发布前必须执行现有 Chat、RAG、Capability、Trust、邮件和 Run API 回归测试。
 
 ### 4.3 明确不在范围内
 
@@ -195,11 +248,13 @@ Starter Agent 已具备求职 Chat、简历文件读取与版本保存、简历�
 
 ### 8.3 简历库
 
-1. 支持导入 Markdown、文本和受支持的文档格式；首版编辑格式以结构化内容或 Markdown 为权威源。
+1. 切片 A 支持导入 Markdown 和 UTF-8 文本；完整首版可增加 DOCX/PDF 导入，但必须经过结构提取预览和用户校对后才能成为简历版本。
 2. 展示简历名称、目标方向、最新版本、更新时间和使用次数。
 3. 支持创建基础简历、复制简历族、归档简历和查看版本历史。
 4. 删除必须区分归档与永久删除；存在投递引用的版本不得直接永久删除。
 5. 简历正文继续进入授权知识库；工作台数据库只保存必要业务字段和内容引用。
+6. 切片 A 以规范化 Markdown 为唯一可编辑权威内容，结构化区块是带稳定区块 ID 的派生投影；不得同时维护可相互漂移的 JSON 正文和 Markdown 正文。
+7. 导入必须记录原文件 Artifact、解析器版本、规范化内容 Hash 和校对状态；解析失败不创建可分析的正式版本。
 
 ### 8.4 简历版本
 
@@ -214,7 +269,7 @@ Starter Agent 已具备求职 Chat、简历文件读取与版本保存、简历�
 - 修改摘要
 - 创建方式：用户编辑、AI 建议后确认、导入
 - 创建时间
-- 状态：草稿、正式、归档
+- 状态：草稿、待确认、已确认、归档
 
 要求：
 
@@ -222,6 +277,8 @@ Starter Agent 已具备求职 Chat、简历文件读取与版本保存、简历�
 2. 新版本保存必须检查来源版本 Hash 或版本号，防止并发覆盖。
 3. 相同幂等键和相同内容重复提交返回原版本；不同内容返回冲突。
 4. 用户可比较任意两个同简历族版本。
+5. 只有“已确认”版本可用于导出或绑定“已投递”事件；草稿和待确认版本可用于预览分析，但必须醒目标注。
+6. `resume_version_id` 必须绑定一个不可变 Knowledge Document Version 或受控内容 Artifact；引用目标改变时必须创建新简历版本。
 
 ### 8.5 结构化简历编辑器
 
@@ -232,6 +289,8 @@ Starter Agent 已具备求职 Chat、简历文件读取与版本保存、简历�
 5. 自动保存必须展示保存中、已保存、失败和版本冲突状态。
 6. 支持撤销和重做；刷新页面后可恢复最近持久化草稿。
 7. 编辑器不得允许 AI 在没有证据的情况下新增经历事实。
+8. 区块排序、显示配置和模板设置可以是结构化元数据；正文修改最终必须序列化为规范化 Markdown，并在保存时生成确定性内容 Hash。
+9. 自动保存只更新 Draft 及其 revision，不触发知识库正式版本、正式 ResumeVersion、匹配分析或导出。
 
 ### 8.6 AI 修改建议
 
@@ -305,6 +364,9 @@ Starter Agent 已具备求职 Chat、简历文件读取与版本保存、简历�
 5. 用户切换简历版本或岗位快照后，旧分析仍可查看，但标记为已过期。
 6. 重新分析不得覆盖旧分析记录。
 7. 前端只展示已通过 Result Validator 的标准化结果。
+8. 每个岗位要求项必须具有稳定 `requirement_id`、原文引用、分类、重要度和判定；每个正向判定至少关联一个 `evidence_ref`，不得仅返回自由文本总结。
+9. 总分是要求项判定的确定性聚合，评分规则至少包含 `rule_version`、维度、权重、舍入规则和 missing/conflict 处理；模型可以分类和解释，不能自由决定最终分数。
+10. Analysis 的 `status` 至少区分 `queued/running/validated/partial/failed/stale`；只有 `validated` 或明确的 `partial` 可生成建议，`failed/stale` 不得生成可应用 Patch。
 
 ### 8.9 CV Agent 协作面板
 
@@ -318,6 +380,8 @@ Starter Agent 已具备求职 Chat、简历文件读取与版本保存、简历�
 8. Agent 不得自动扩大作用域访问其他简历、岗位、长期记忆或知识库。
 9. Chat 可以继续存在，但业务结果必须写入工作台对象，而不是只保留在消息正文中。
 10. 后台任务在面板内显示真实进度和取消入口，但完整 Parent/Child 详情按需打开，不直接铺满对话框。
+11. Chat 触发“创建岗位、应用建议、确认版本、记录投递”等业务命令时，必须展示目标对象和影响预览，并由用户点击明确动作；自然语言消息本身不构成确认。
+12. 工作台调用 Chat 时必须传递只含引用和版本号的显式上下文信封，包括 `workspace_id`、可选 `job_snapshot_id`、`resume_version_id` 和 `match_analysis_id`；后端重新鉴权并加载正文，前端不得把隐藏正文塞入系统提示词。
 
 ### 8.10 Agent 运行状态
 
@@ -422,6 +486,52 @@ Starter Agent 已具备求职 Chat、简历文件读取与版本保存、简历�
 2. 现有知识库、Capability、Trust、邮件和 Run API 保持兼容；如需版本升级，应提供明确迁移，不得由新前端调用私有内部接口。
 3. 普通 Chat 可通过左下角 Agent 面板继续使用；管理页面仍可通过设置或直接路由访问。
 4. 前端隐藏入口不等于停用能力；后端启停状态必须来自现有 Registry、Policy 和 Release Decision。
+
+### 8.16 工作台业务 API 最小契约
+
+工作台必须使用正式业务 API，不得从 Chat 消息、Run payload 或前端 `localStorage` 拼装权威业务状态。具体路径可在技术设计中调整，但首版至少提供以下资源能力：
+
+| 资源组 | 最小命令 | 最小查询 |
+|---|---|---|
+| Workspaces | 创建、编辑、暂停、归档 | 列表、详情、首页聚合 |
+| Resumes | 导入、创建草稿、保存版本、确认、归档 | 简历族、版本历史、版本内容、Diff、引用情况 |
+| Jobs | 创建候选、确认留存、归档、更新用户状态 | 候选列表、岗位详情、JD 快照、来源冲突 |
+| Match Analyses | 发起、取消、重新分析 | 详情、要求项/证据、评分解释、关联 Run |
+| Suggestions | 接受、拒绝、编辑后接受、批量应用 | 建议列表、状态、证据、Patch 有效性 |
+| Applications | 创建、确认状态变更、归档 | 看板、详情、状态事件时间线 |
+| Exports | 发起、取消 | 预览、任务状态、Artifact 元数据和受控下载 |
+| Operations | 无独立业务修改 | 按 ID 查询提交状态、Run 引用、错误和恢复动作 |
+
+所有写接口必须满足：
+
+1. 从可信认证上下文获取 principal；请求体中的 `user_id`、`principal` 或 `owner_id` 不得作为授权依据。
+2. 接受 `Idempotency-Key` 或等价字段；同键同 payload 返回原结果，同键不同 payload 返回稳定冲突错误。
+3. 修改既有对象时接受 `expected_revision`、ETag 或等价条件；冲突返回当前权威 revision，不得后写覆盖。
+4. 返回业务对象 ID、revision、时间戳和关联 Operation；异步命令还返回真实 `parent_run_id` 或 `task_id`。
+5. 错误采用稳定机器码和可操作提示，至少覆盖 `not_found`、`forbidden`、`revision_conflict`、`idempotency_conflict`、`evidence_missing`、`source_stale`、`approval_required`、`release_gate_closed`、`budget_exhausted` 和 `business_commit_failed`。
+6. 列表接口使用稳定排序和游标或分页，默认每页不超过 50 项；过滤条件属于查询状态，不得改变对象所有权。
+7. 受限正文、原始网页和 Child 结果正文继续通过现有授权内容端点读取；工作台聚合 API 只返回允许展示的摘要和引用。
+
+### 8.17 业务对象与现有能力的引用契约
+
+1. `ResumeVersion` 保存 `knowledge_base_id/document_id/document_version_id/content_hash`；若正文暂存于受控 Artifact，则同时保存 `artifact_id` 和迁移状态。
+2. `JobSnapshot` 保存来源 URL、最终 URL、获取时间、内容 Hash、`document_version_id` 或 `artifact_id`，并且创建后不可原地改写。
+3. `MatchAnalysis` 保存输入的 `resume_version_id/content_hash`、`job_snapshot_id/content_hash`、评分规则版本、`parent_run_id`、可选 Child/Artifact/Trace 引用和 Result Validator 版本。
+4. `Suggestion/Patch` 保存来源 Analysis、目标版本/revision、证据引用和状态；接受 Patch 只改变 Draft，不直接改变已确认版本。
+5. `ExportRecord` 和 `Application` 必须引用不可变的 `resume_version_id` 与 `job_snapshot_id`，不能只引用可变 Resume 或 Job。
+6. 业务引用删除采用 restrict 或归档策略；任何仍被 Analysis、Application、Export、Trace 或审计事件引用的版本不得物理删除。
+7. Run/Artifact/Trace 保留期短于业务记录时，业务层必须保留足以解释结果的脱敏证据投影、内容 Hash 和失效原因；不得留下看似可追溯但实际已断链的链接。
+
+### 8.18 候选、业务对象与正式结果的状态边界
+
+以下边界必须在 API 和 UI 中一致表达：
+
+- 搜索结果是 `JobCandidate`，不是 Job；只有用户确认留存后才创建 Job/JobSnapshot。
+- Agent 输出是 `CandidateResult`，不是 MatchAnalysis；只有校验和业务提交成功后才成为 Analysis。
+- AI 改写是 Suggestion/Patch，不是 ResumeVersion；只有用户应用到 Draft 并确认保存后才成为新版本。
+- 文件渲染任务成功不等于可下载；只有 Artifact 完成、Hash 校验和访问授权成功后才创建可用 ExportRecord。
+- 用户说“我投了”可以生成待确认命令，但只有确认写入成功后才产生 Application 状态事件。
+- Run 的 `succeeded` 表示执行层完成；页面上的业务成功必须同时要求对应 Operation 为 `committed`。
 
 ## 9. 浅色卡片式前端要求
 
@@ -539,6 +649,17 @@ Starter Agent 已具备求职 Chat、简历文件读取与版本保存、简历�
 - 不得为方便而把完整简历、原始 JD、网页 HTML 或 Child 对话复制到多个业务表。
 - 删除或归档业务对象不得破坏仍被投递、导出或 Trace 引用的不可变版本。
 
+### 10.4 现有数据迁移与兼容读取
+
+1. 迁移必须先扫描、后预览、再提交；扫描阶段不得改动 `versions.json`、简历文件、Knowledge Store、Session Store 或 Run Store。
+2. 现有 ResumeManager 文件和 `versions.json` 映射为 Resume/ResumeVersion 时，以路径、内容 Hash 和旧 `version_id` 组成稳定迁移键；重复执行不得创建重复版本。
+3. 已入库且类型为 `resume` 或 `job_description` 的 Knowledge Document 只自动生成“待认领”业务候选，除非存在足够的所有权、类型和内容 Hash 证据；不得猜测其所属工作区。
+4. 现有 `job_research_candidates` 只迁移为 JobCandidate；未经用户确认不升级为 Job 或 MatchAnalysis。
+5. 历史 Chat 消息不自动解析为投递、简历版本或岗位业务记录；允许用户从会话中显式发起“提取候选并预览”。
+6. 已存在的 Parent/Child Run、Trust Run 和 Artifact 不回写工作台对象；可在具有明确业务关联 ID 时建立只读链接。
+7. 迁移记录至少保存 source kind/source ID、目标 ID、内容 Hash、状态、错误和迁移版本；支持 dry-run、断点续跑和按迁移批次回滚新建的业务映射。
+8. 回滚只删除本批次新建且未被后续业务对象引用的映射/对象，不删除原始文件、Knowledge Document、Session、Run、Trace 或 Artifact。
+
 ## 11. 非功能需求
 
 ### 11.1 安全与隐私
@@ -638,6 +759,17 @@ Starter Agent 已具备求职 Chat、简历文件读取与版本保存、简历�
 3. 启用后，符合条件的调研必须走真实 Parent/Child 路径，并展示预算和 Child 状态。
 4. 失败时不得自动回退旧网页 Workflow。
 
+### 12.8 融合与业务提交
+
+1. 同一个业务 Operation 重试时不重复创建岗位、分析、简历版本、投递事件或导出记录。
+2. Run 成功而 Result Validator 失败时，Operation 标记校验失败，页面不出现正式 Analysis 或可应用 Suggestion。
+3. Run 成功而业务事务提交失败时，页面显示可恢复的提交失败；重试提交复用原 Run 结果，不重复调用模型或 Tool。
+4. SSE 重复、乱序或断线只影响显示刷新；后端业务对象和 Operation 状态保持权威且可通过查询恢复。
+5. 工作台所有正向匹配均可从业务对象追溯到 ResumeVersion、JobSnapshot、证据引用和规则版本；有 Agent 参与时还可追溯到 Run/Trace。
+6. 工作台不读取请求体自报 principal，不通过前端隐藏按钮绕过 Capability Policy、Approval 或 Release Gate。
+7. Multi-Agent 关闭时，切片 A 的“手工 JD—匹配—建议—保存版本”仍通过真实后端完成，不显示降级为成功的模拟结果。
+8. 迁移 dry-run 可重复执行且无写入；迁移提交重复执行不产生重复映射，回滚不破坏原始平台数据。
+
 ## 13. 必验场景
 
 | 场景 | 预期结果 |
@@ -660,20 +792,31 @@ Starter Agent 已具备求职 Chat、简历文件读取与版本保存、简历�
 
 ## 14. 风险与待确认事项
 
-1. **简历编辑格式**：首版是结构化 JSON、Markdown 区块还是二者组合，需要在设计阶段冻结权威格式。
-2. **文档导入**：DOCX/PDF 的版式保真和结构提取准确率需要单独验证；首版可限制为 Markdown/文本加人工校对。
+1. **简历编辑格式**：切片 A 已冻结规范化 Markdown 为正文权威源，稳定区块 ID 和模板配置为结构化元数据；仍需在设计阶段冻结 Markdown 规范、区块 ID 保留和往返序列化规则。
+2. **文档导入**：DOCX/PDF 的版式保真和结构提取准确率需要单独验证；切片 A 明确限制为 Markdown/文本，DOCX/PDF 只有在“解析预览—人工校对—确认入库”验收通过后进入完整首版。
 3. **评分模型**：匹配总分的维度、权重和版本管理需要产品定义，不能只依赖模型自由评分。
 4. **PDF/Word 引擎**：需要选择支持中文字体、分页和可复制文本的 PDF 渲染方案，以及结构稳定、可继续编辑的 DOCX 生成方案。
-5. **工作台数据库**：业务表与现有 Session Store、Knowledge Store、Run Store 的事务和引用边界需要技术设计。
+5. **工作台数据库**：业务 Store 与现有 Session Store、Knowledge Store、Run Store 采用引用集成，禁止跨 Store 假事务；仍需设计 Operation、Outbox/恢复和引用一致性检查。
 6. **多目标数据隔离**：同一岗位和简历在多个求职目标中的复用与分析隔离需要冻结规则。
 7. **真实网页调研**：当前真实 Playwright Smoke 仍有环境阻塞记录；未解决前不能把自动调研标记为正式可用。
-8. **Release Gate**：当前没有满足默认启用条件的有效 Multi-Agent 决策，工作台必须保持 fail-closed。
-9. **前端演进方式**：现有单文件 `src/web/index.html` 是否继续扩展，还是迁移到组件化前端，需要在设计阶段决定。
-10. **数据迁移**：现有 Markdown 简历、Knowledge Document、岗位候选和 Chat 消息如何映射到工作台对象，需要提供可重复、可回滚的迁移方案。
+8. **Release Gate**：委派代码、Run API 和测试存在不等于已获发布授权；任何环境没有可验证且未过期的 Delegation Release Decision 时必须 fail-closed。
+9. **前端演进方式**：现有 `src/web/index.html` 已同时承担 Chat、知识库、Capability、Trust、邮件确认和 Run 详情，继续把工作台堆入同一文件的维护风险很高；设计阶段必须先冻结可独立路由、状态和测试的模块边界，是否引入构建工具可另行决定。
+10. **数据迁移**：本需求已冻结映射原则、dry-run、幂等和回滚边界；技术设计仍需定义迁移清单格式、旧 Manifest 异常处理和跨 Store 断点恢复。
+11. **身份模型**：当前本地默认 user/project scope 适合单用户开发，不能自动满足多用户授权要求；发布范围必须明确为可信本地单用户，或先接入真实认证主体。
+12. **Artifact 保留期**：Run/Artifact 默认保留期可能短于简历版本和投递记录生命周期；必须冻结长期业务证据投影、导出文件保留和用户删除策略。
 
-## 15. 首版完成定义
+## 15. 完成定义
 
-首版完成必须同时满足：
+### 15.1 切片 A（MVP）完成定义
+
+1. 用户可以完成“创建目标—导入 Markdown/TXT 简历—确认手工 JD/单稳定 URL—匹配分析—审批修改—保存并确认新版本”的真实持久化闭环。
+2. 核心闭环不依赖 Multi-Agent、PDF/DOCX、邮件、投递网站或面试功能。
+3. 所有业务结果遵守 Operation/Result Validator/幂等提交协议，刷新可恢复，失败不伪装成功。
+4. 现有 Chat、知识库、Capability、Trust、邮件和 Run API 回归测试通过。
+
+### 15.2 完整首版完成定义
+
+完整首版必须同时满足：
 
 1. 用户可以完成“导入简历—选择或确认 JD—匹配分析—审批修改—保存版本—导出 PDF/Word”的闭环。
 2. 所有正向匹配和 AI 修改均可追溯到岗位来源与授权简历证据。
@@ -681,3 +824,23 @@ Starter Agent 已具备求职 Chat、简历文件读取与版本保存、简历�
 4. 浅色卡片式工作台达到桌面端可用标准；左侧档案与紧凑 Agent、右侧分析与候选岗位区域符合当前交互基准图，并满足关键可访问性要求。
 5. Multi-Agent 未通过门槛时保持关闭，不影响首版核心闭环。
 6. 现有 Chat、知识库、Agent 能力、Trust、邮件、Run API 和普通 Agent 路径无回归。
+7. 切片 A 已独立通过验收，且 PDF/DOCX 导出、基础投递看板和模块化工作台 UI 均使用真实后端数据。
+
+## 16. 仓库核查证据索引
+
+本节用于说明 1.1 的判断来源，不替代后续技术设计或发布验收。
+
+| 核查结论 | 主要实现/验证位置 |
+|---|---|
+| 简历文件读取、对比、Patch、Hash 冲突和文件型版本 | `src/starter_agent/tools/builtin/resume.py`、`tests/unit/test_resume_tools.py` |
+| Knowledge Document/Version/Chunk、Citation、作用域与 API | `src/starter_agent/knowledge/`、`src/starter_agent/interfaces/api.py`、`tests/integration/test_knowledge_*.py` |
+| 岗位候选、JD 读取/入库、来源与验证 | `src/starter_agent/job_research/`、`src/starter_agent/tools/builtin/job_search.py`、`tests/unit/test_job_*.py` |
+| Parent/Child、预算、校验/合并、恢复与业务 Run API | `src/starter_agent/delegation/`、`src/starter_agent/interfaces/runs_api.py`、`src/starter_agent/interfaces/tasks_api.py` |
+| 通用执行编排与后台任务投影 | `src/starter_agent/orchestration/`、`tests/unit/orchestration/` |
+| Capability、Policy、Confirmation、MCP 与审计 | `src/starter_agent/capabilities/`、`src/starter_agent/interfaces/capabilities_api.py` |
+| Eval、Trace、Safety 与 Release Decision | `src/starter_agent/trust/`、`src/starter_agent/interfaces/trust_api.py` |
+| 当前 Chat/知识库/Capability/Trust/Run 前端 | `src/web/index.html` |
+| PDF/DOCX 生成依赖不存在 | `pyproject.toml` 当前生产依赖及源代码扫描 |
+| 工作台业务 Store/API 不存在 | `src/starter_agent` 的模型、Store 和 `/v1` 路由扫描 |
+
+仓库在核查时包含未提交改动；后续开始技术设计或实施前，应重新执行上述扫描并更新文档版本。任何仅存在于测试、草案、未启用配置或未获 Release Decision 的能力，均不得自动升级为“生产可用”。
