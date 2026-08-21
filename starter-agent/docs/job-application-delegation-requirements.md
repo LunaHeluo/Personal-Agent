@@ -280,17 +280,17 @@ Coordinator 只能委派已注册、启用、依赖健康且通过当前 Policy 
 
 | 旧入口/位置 | 当前调用方与行为 | 当前输出契约 | 迁移影响 |
 |---|---|---|---|
-| `POST /v1/chat`、`POST /v1/chat/stream` in `src/starter_agent/interfaces/api.py` | 前端 `sendMessage()` 调用；先分类，`JOB_RESEARCH` 分支直接等待固定 Workflow。Stream 分支用进程内 `asyncio.create_task` 和 Queue 推送 Tool Event，仍依赖请求进程 | 最终 `ChatResult`；求职路径没有业务 `run_id`/任务状态 | 改为创建持久化 Parent；返回兼容 `ChatResult` 加任务卡/Run 引用。断线不取消后台 Run |
+| `POST /v1/chat`、`POST /v1/chat/stream` in `backend/src/starter_agent/interfaces/api.py` | 前端 `sendMessage()` 调用；先分类，`JOB_RESEARCH` 分支直接等待固定 Workflow。Stream 分支用进程内 `asyncio.create_task` 和 Queue 推送 Tool Event，仍依赖请求进程 | 最终 `ChatResult`；求职路径没有业务 `run_id`/任务状态 | 改为创建持久化 Parent；返回兼容 `ChatResult` 加任务卡/Run 引用。断线不取消后台 Run |
 | `_dispatch_classified_chat()` | Router 的 `JOB_RESEARCH` 分支调用 `_chat_with_public_job_search_fallback()` | 同步返回完整或降级后的 `ChatResult` | Multi-Agent 达标启用后，符合条件请求只能进入 Coordinator/`delegate_task`；不得再调用旧抓取 Workflow |
 | `_chat_with_public_job_search_fallback()` | API 内固定编排：准备 Profile → 知识库判断 → Search → 候选排序 → 页面分析 → 持久化可见候选 → 文本回答 | 汇总 `SkillRunResult`，再构造成 `ToolResult`/`ChatResult`；会计算 `jobs`、`partial_jobs`、`candidate_attempts` | 拆除其“直接网页抓取主路径”职责。兼容回答格式可由 Coordinator 合并层生成，但不能继续双轨搜索/抓取 |
 | `ApplicationService.prepare/search/analyze_job_research*()` | API、Trust Smoke 和测试直接调用 `JobResearchOrchestrator` | 返回 `SkillRunResult(status, data, trace, error_code, missing_dependencies)` | 业务主路径改经 Run Service；必要兼容适配器须版本化并标记 `legacy_path_used`，不可成为默认/备用路径 |
-| `JobResearchOrchestrator` in `src/starter_agent/skills/job_research.py` | 固定阶段 Workflow 直接调用 Search、Playwright 和 RAG，并在同一对象中完成网页事实与简历分析 | 状态包括 `search_profile_ready`、`waiting_for_url_selection`、`browser_failed`、`incomplete_job_description`、`resume_evidence_unavailable`、`waiting_for_jd_ingestion_confirmation` 等；data 含 `jobs`、`partial_jobs`、`candidate_attempts`、`resume_evidence`、`analysis` | 不得作为多页面默认/回退抓取器继续运行。可复用其中确定性候选排序、解析、校验和回答格式逻辑，但角色工具必须拆分并通过真实 Child Run 执行 |
+| `JobResearchOrchestrator` in `backend/src/starter_agent/skills/job_research.py` | 固定阶段 Workflow 直接调用 Search、Playwright 和 RAG，并在同一对象中完成网页事实与简历分析 | 状态包括 `search_profile_ready`、`waiting_for_url_selection`、`browser_failed`、`incomplete_job_description`、`resume_evidence_unavailable`、`waiting_for_jd_ingestion_confirmation` 等；data 含 `jobs`、`partial_jobs`、`candidate_attempts`、`resume_evidence`、`analysis` | 不得作为多页面默认/回退抓取器继续运行。可复用其中确定性候选排序、解析、校验和回答格式逻辑，但角色工具必须拆分并通过真实 Child Run 执行 |
 | `PlaywrightJobPageReader` | `JobResearchOrchestrator.analyze_candidates()` 对每个候选执行固定 navigate → wait → 两次 snapshot 稳定性检查 | `PageReadResult(result, traces, attempts, error_code)` | 可作为 `job_web_researcher` 内部底层能力复用/演进；不得由 Router 或主 Agent直接调用 |
 | `JobPageFallback` + `SafeWebFetcher` + `JobDescriptionExtractor` | Browser 失败或 JD 校验失败后自动做静态 HTTP/JSON-LD/HTML 抽取，再降级到搜索摘要 | `FallbackResult(jobs, partial_jobs, method, failures)` | 保留为受控单页能力或 Child 内部恢复手段；登录/验证码/禁止访问不得被它绕过。正常多页面路径不得回退旧 Workflow |
 | `create_application()` in `bootstrap.py` | 组装单例 `AgentRuntime`、共享 Registry/Gate，并直接装配 `JobResearchOrchestrator` 和静态 fallback | `ApplicationService` 持有一个 `job_research` 编排器 | 改为组装通用 Run/Registry 服务并复用共享基础设施；每个 Run 创建独立 Context，不能复用可变 Agent 状态 |
 | `run_job_research_real_smoke()` | 直接调用 Application 的 Search/Analyze 方法验证真实 Search/Playwright | 独立 Smoke Run/报告 | 新 Smoke 必须走真实 Parent/Child 路径；旧方法仅可作为明确的基线比较器，报告不能与候选方案混写 |
 | `_FixtureJobResearchOrchestrator` 与现有 Trust Fixture | Fixture Runtime 直接模拟/继承固定 Orchestrator | Eval Case、Trace、Metric、Release Gate | 保留旧路径作为冻结的单 Agent baseline；新增候选路径 Fixture，使用相同 Case 和版本化输入进行比较 |
-| `src/web/index.html` Chat 与 Trust 页面 | Chat 只显示流式工具事件/最终结果；Trust 可列 Eval Run 和 Trace，但取消按钮仍禁用，也没有父子树 | 前端读取 `ChatResult` 与 `/v1/trust/*` | 增加真实任务卡、恢复/取消和父子 Run 详情；不在浏览器维护权威状态 |
+| `frontend/web/index.html` Chat 与 Trust 页面 | Chat 只显示流式工具事件/最终结果；Trust 可列 Eval Run 和 Trace，但取消按钮仍禁用，也没有父子树 | 前端读取 `ChatResult` 与 `/v1/trust/*` | 增加真实任务卡、恢复/取消和父子 Run 详情；不在浏览器维护权威状态 |
 | `_legacy_public_job_search_answer()` | 当前源代码仅发现定义，未发现生产调用方 | 旧文本格式 | 不得重新接回默认或备用入口；若删除或保留，均需用路由测试证明没有调用证据 |
 
 迁移约束：

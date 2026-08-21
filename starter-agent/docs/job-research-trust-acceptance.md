@@ -462,9 +462,9 @@ Trust Center 操作路径：
 - `reports/trust/acceptance-20260727/acceptance-known-failure-20260727.json`
 - `reports/trust/acceptance-20260727/acceptance-known-failure-resolved-20260727.json`
 - `reports/trust/acceptance-20260727/acceptance-real-smoke-20260727.json`
-- `src/starter_agent/trust/`
-- `src/starter_agent/interfaces/trust_api.py`
-- `src/web/index.html`
+- `backend/src/starter_agent/trust/`
+- `backend/src/starter_agent/interfaces/trust_api.py`
+- `frontend/web/index.html`
 - `tests/unit/test_trust_*.py`
 - `tests/integration/test_trust_api.py`
 - `tests/integration/test_tool_confirmation_matrix.py`

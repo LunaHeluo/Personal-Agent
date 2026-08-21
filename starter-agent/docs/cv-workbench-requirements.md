@@ -3,7 +3,7 @@
 ## 文档信息
 
 - 文档阶段：需求定义
-- 文档版本：v0.2（仓库融合修订）
+- 文档版本：v0.3（工作台 + Git 式版本地图修订）
 - 仓库核查基线：2026-08-15 当前工作区（包含未提交的 Delegation/Orchestration 实现）
 - 产品名称：CV 工作台
 - 目标仓库：Starter Agent
@@ -17,7 +17,9 @@
 
 Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型版本保存、确定性简历与 JD 对比、岗位调研、授权简历 RAG、Parent/Child Run、预算、取消、Trace、Artifact、Eval 和 Safety Gate 等基础能力，但当前产品形态仍以聊天页面和管理页面为主。这些能力的成熟度并不相同：部分已是稳定 API，部分受配置或 Release Gate 控制，部分仅完成了底层实现和测试，均不能直接等同于工作台业务功能已经存在。
 
-目标是将 Starter Agent 收敛为面向个人求职者的 CV 工作台，让用户围绕“目标岗位—岗位资料—简历版本—匹配证据—修改确认—投递记录—面试复盘”完成连续工作，而不是依赖多轮 Chat 记住业务状态。
+目标是将 Starter Agent 收敛为面向技术求职者的 CV 工作台，让用户围绕“基础版本—方向分支—公司版本—岗位资料—匹配证据—修改确认—投递记录—面试复盘”完成连续工作，而不是依赖文件名或多轮 Chat 记住业务状态。
+
+产品采用“工作台负责完成任务，版本地图负责组织版本”的双核心结构。工作台是默认入口，负责 JD 分析、证据核对、修改确认和导出；Git 式版本地图是一等视图，用开发者熟悉的主干、分支、Diff 和选择性合并表达简历演化，但不引入真实 Git 仓库，也不允许上游修改自动覆盖子版本。
 
 工作台不是第二套 Agent 系统。它应复用现有 Runtime、Tool、RAG、任务委派、预算、Gate、Trace 和 Artifact 基础设施，在其上新增稳定的求职业务对象、专用 API 和可视化交互。
 
@@ -36,7 +38,7 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 | Capability、MCP、Approval | 已有 Tool/Skill/MCP Registry、启停、Policy、Confirmation、Permit、审计和管理 API/UI | 已实现 | 保留为设置与运行详情；工作台动作继续经过统一 Gate | 增加面向普通用户的功能级可用性投影，不复制权限系统 |
 | Trust | 已有 Eval Suite/Case/Run、Trace、Safety、Release Gate、Delegation Release Decision 和前端页面 | 已实现 | 业务对象保存 Trace/Run/Artifact 引用，普通用户只看脱敏摘要 | 增加按业务对象查询的信任摘要和不可追溯结果的 fail-closed 规则 |
 | 邮件 | 已有搜索、读取、草稿、挑战确认、授权、撤销与发送路径；真实发送依配置关闭或启用 | 有条件可用 | 首版仅保留入口和审批能力，不作为核心闭环依赖 | 后续再做投递记录与邮件线程绑定；不得自动发送 |
-| 当前前端 | `src/web/index.html` 是单文件应用，已有 Chat、知识库、Capability、Trust、Run 详情和邮件确认交互 | 已实现但不具备工作台结构 | 复用 API 客户端行为和状态处理，不复用现有信息架构 | 新增工作台路由、业务页面和可维护的模块边界 |
+| 当前前端 | `frontend/web/index.html` 是单文件应用，已有 Chat、知识库、Capability、Trust、Run 详情和邮件确认交互 | 已实现但不具备工作台结构 | 复用 API 客户端行为和状态处理，不复用现有信息架构 | 新增工作台路由、业务页面和可维护的模块边界 |
 | PDF/DOCX、投递、面试 | 没有对应生成依赖、业务 Store 或专用 API | 未实现 | 不得用临时前端状态或普通 Artifact 冒充 | 按交付阶段新增导出、Application 时间线和 Interview Review 业务能力 |
 
 ### 1.2 融合后的系统边界
@@ -66,6 +68,8 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 4. 后台 Agent 任务能够持久运行；刷新页面后仍可查看真实状态、预算、失败原因和部分结果。
 5. 用户能追溯每个匹配结论和简历修改所使用的 JD 来源、简历证据和 Agent Run。
 6. 工作台保持轻量、聚焦和低干扰，不把 Trust、Capability、MCP 等工程管理信息暴露为普通用户主流程。
+7. 用户能够从基础版本分化方向分支和公司专属版本，查看任意版本的来源、差异、用途和下游引用。
+8. 基础版本变化后，系统只提示下游分支存在上游变更；用户通过三方差异逐条接受或拒绝，合并结果保存为新的不可变版本。
 
 ## 3. 产品原则
 
@@ -108,6 +112,7 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 
 - 求职目标、工作台首页及最小业务 Store/API。
 - 导入现有 Markdown/TXT 简历，建立简历族、不可变版本和 Knowledge Document Version 绑定。
+- 从首次导入开始保存父版本、节点类型和分支归属；MVP 至少提供可追溯的版本历史/谱系列表，为版本地图提供真实数据。
 - 粘贴 JD、导入文本或读取单个稳定 URL，经用户确认后建立岗位和不可变 JD 快照。
 - 复用现有确定性比较/RAG，生成并持久化可解释的匹配分析。
 - 生成有证据的修改建议，逐条确认，查看 Diff 并保存新版本。
@@ -117,6 +122,7 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 #### 切片 B：完整首版
 
 - 结构化/分区简历编辑、撤销/重做和稳定自动保存。
+- Git 式版本地图、Master/方向/公司节点、任意两版本 Diff、上游变更提示和选择性合并。
 - Parent/Child Agent 任务卡、安全详情和通过 Release Gate 后的多页面岗位调研。
 - ATS 模板预览及指定版本的 PDF/Word 导出。
 - 基础投递看板、状态事件时间线和导出/投递引用保护。
@@ -169,6 +175,7 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 工作台顶部主导航至少包含：
 
 - 工作台
+- 版本地图
 - 档案
 - 投递记录
 - 面试复盘
@@ -179,6 +186,13 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 - 岗位与 JD 快照
 - 面试资料
 - 导出文件
+
+“版本地图”是简历版本关系的专用视图，不是第二个编辑器：
+
+- 展示基础主干、方向分支和公司专属节点。
+- 选中节点后可回到工作台查看、分析或修改该版本。
+- 两节点比较、上游变更和选择性合并均在工作台的 Diff/审批界面完成。
+- 版本地图只投影后端版本关系，不把 React Flow 节点位置或前端连线当作业务事实。
 
 工程管理能力继续存在，但应放在设置或高级详情的次级入口：
 
@@ -210,6 +224,10 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 - 作为求职者，我希望看到岗位要求与简历证据的一一对应关系，而不是只看到一个分数。
 - 作为求职者，我希望 AI 修改以建议形式出现，并能逐条确认，而不是直接覆盖简历。
 - 作为求职者，我希望保存新版本时保留来源版本、岗位和修改摘要。
+- 作为技术求职者，我希望把基础简历分化为“后端”“Agent”“安全”等方向分支，再从方向分支生成公司专属版本。
+- 作为技术求职者，我希望在版本地图中一眼看清每个版本从哪里来、为哪个岗位使用、是否有上游变更，而不是依赖文件名猜测。
+- 作为技术求职者，我希望 Master 更新后下游版本只提示待合并，并能逐条接受或拒绝上游变更，而不是被自动覆盖。
+- 作为技术求职者，我希望从任意版本节点进入工作台继续分析和修改，并把新结果保存为该节点的子版本。
 - 作为求职者，我希望刷新页面后后台分析仍继续，并能看到真实进度和费用。
 - 作为求职者，我希望取消任务后不再发生新的模型或网页调用，同时保留取消前证据。
 - 作为求职者，我希望导出的 PDF 固定绑定一个简历版本，之后编辑不会改变已导出文件。
@@ -264,6 +282,9 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 - `resume_id`
 - 版本号
 - 来源版本 ID
+- 分支 ID 与分支名称
+- 节点类型：基础主干、方向版本、公司版本、普通派生版本
+- 分支基线版本 ID；用于计算上游变化
 - 内容引用与内容 Hash
 - 关联岗位 ID，可为空
 - 修改摘要
@@ -279,6 +300,25 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 4. 用户可比较任意两个同简历族版本。
 5. 只有“已确认”版本可用于导出或绑定“已投递”事件；草稿和待确认版本可用于预览分析，但必须醒目标注。
 6. `resume_version_id` 必须绑定一个不可变 Knowledge Document Version 或受控内容 Artifact；引用目标改变时必须创建新简历版本。
+7. 每个非根版本必须具有同简历族内的唯一父版本；首版不允许多父节点直接写入版本图。
+8. 一个简历族只能有一个活动基础主干节点；方向/公司是业务标签和关系语义，不等于真实 Git branch。
+9. 公司版本应绑定对应 `job_snapshot_id`；未绑定岗位的公司节点必须标记待关联。
+10. 删除、归档或移动节点不得改变既有版本的父子审计链；存在下游或业务引用时只能归档。
+
+### 8.4.1 Git 式版本地图
+
+1. 版本地图以 ResumeVersion 父子关系为后端事实源，展示 Master 主干、方向分支、公司节点和普通派生节点。
+2. 默认按分支泳道从左到右或从上到下布局；用户拖拽位置只属于个人视图偏好，不改变父子关系。
+3. 节点至少展示名称、版本号、节点类型、状态、完整度、更新时间、关联岗位/公司和上游变化数量。
+4. 用户可从任意已确认版本执行“创建方向分支”“为岗位创建公司版本”“继续修改”“与另一版本比较”。
+5. 选中节点后显示详情检查器，并可一键在工作台中打开该版本；版本地图本身不承载完整正文编辑。
+6. 任意两节点比较必须显示来源、共同祖先、字段/区块级 Diff 和业务引用差异。
+7. Master 或方向基线变化后，下游节点标记 `upstream_changes_available`；系统不得自动修改下游正文、重新评分、重新导出或改变投递绑定。
+8. 用户发起“同步上游变更”时，系统以共同祖先、上游最新版本和目标分支当前版本执行三方比较，生成 Merge Proposal。
+9. Merge Proposal 逐条展示上游原值、目标当前值、建议结果、冲突和证据；用户可接受、拒绝或手动编辑每一项。
+10. 合并确认后创建目标分支的新 ResumeVersion，旧节点保持不变，并记录 source/target/base、决策和 Operation/Trace 引用。
+11. Agent 可以解释版本差异、推荐复用内容和生成 Merge Proposal，但不能自动创建分支、自动合并、移动节点或改写已确认版本。
+12. 版本数量较大时支持按方向、公司、状态、年份和有无上游变更筛选，并提供“聚焦当前血缘”模式。
 
 ### 8.5 结构化简历编辑器
 
@@ -494,7 +534,8 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 | 资源组 | 最小命令 | 最小查询 |
 |---|---|---|
 | Workspaces | 创建、编辑、暂停、归档 | 列表、详情、首页聚合 |
-| Resumes | 导入、创建草稿、保存版本、确认、归档 | 简历族、版本历史、版本内容、Diff、引用情况 |
+| Resumes | 导入、创建草稿、保存版本、确认、归档、创建方向/公司分支 | 简历族、版本历史、版本内容、Diff、引用情况 |
+| Version Map | 创建视图偏好、发起比较、创建/决策 Merge Proposal | 版本图、节点详情、共同祖先、上游变化、合并状态 |
 | Jobs | 创建候选、确认留存、归档、更新用户状态 | 候选列表、岗位详情、JD 快照、来源冲突 |
 | Match Analyses | 发起、取消、重新分析 | 详情、要求项/证据、评分解释、关联 Run |
 | Suggestions | 接受、拒绝、编辑后接受、批量应用 | 建议列表、状态、证据、Patch 有效性 |
@@ -515,12 +556,14 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 ### 8.17 业务对象与现有能力的引用契约
 
 1. `ResumeVersion` 保存 `knowledge_base_id/document_id/document_version_id/content_hash`；若正文暂存于受控 Artifact，则同时保存 `artifact_id` 和迁移状态。
-2. `JobSnapshot` 保存来源 URL、最终 URL、获取时间、内容 Hash、`document_version_id` 或 `artifact_id`，并且创建后不可原地改写。
-3. `MatchAnalysis` 保存输入的 `resume_version_id/content_hash`、`job_snapshot_id/content_hash`、评分规则版本、`parent_run_id`、可选 Child/Artifact/Trace 引用和 Result Validator 版本。
-4. `Suggestion/Patch` 保存来源 Analysis、目标版本/revision、证据引用和状态；接受 Patch 只改变 Draft，不直接改变已确认版本。
-5. `ExportRecord` 和 `Application` 必须引用不可变的 `resume_version_id` 与 `job_snapshot_id`，不能只引用可变 Resume 或 Job。
-6. 业务引用删除采用 restrict 或归档策略；任何仍被 Analysis、Application、Export、Trace 或审计事件引用的版本不得物理删除。
-7. Run/Artifact/Trace 保留期短于业务记录时，业务层必须保留足以解释结果的脱敏证据投影、内容 Hash 和失效原因；不得留下看似可追溯但实际已断链的链接。
+2. `ResumeVersion` 同时保存 `parent_version_id/branch_id/node_type/branch_base_version_id`；父子关系不可被前端节点移动重写。
+3. `MergeProposal` 保存共同祖先、上游版本、目标版本、逐条决策、冲突、结果 Hash、Operation 和 Trace；确认后只创建目标分支的新版本。
+4. `JobSnapshot` 保存来源 URL、最终 URL、获取时间、内容 Hash、`document_version_id` 或 `artifact_id`，并且创建后不可原地改写。
+5. `MatchAnalysis` 保存输入的 `resume_version_id/content_hash`、`job_snapshot_id/content_hash`、评分规则版本、`parent_run_id`、可选 Child/Artifact/Trace 引用和 Result Validator 版本。
+6. `Suggestion/Patch` 保存来源 Analysis、目标版本/revision、证据引用和状态；接受 Patch 只改变 Draft，不直接改变已确认版本。
+7. `ExportRecord` 和 `Application` 必须引用不可变的 `resume_version_id` 与 `job_snapshot_id`，不能只引用可变 Resume 或 Job。
+8. 业务引用删除采用 restrict 或归档策略；任何仍被下游版本、Analysis、Application、Export、Trace 或审计事件引用的版本不得物理删除。
+9. Run/Artifact/Trace 保留期短于业务记录时，业务层必须保留足以解释结果的脱敏证据投影、内容 Hash 和失效原因；不得留下看似可追溯但实际已断链的链接。
 
 ### 8.18 候选、业务对象与正式结果的状态边界
 
@@ -627,7 +670,9 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 
 - 求职目标
 - 简历和版本元数据
+- 简历分支、父子血缘、节点类型和分支基线
 - 结构化草稿及 Patch 状态
+- Merge Proposal、逐条合并决策和冲突状态
 - 岗位和 JD 快照元数据
 - 匹配分析
 - 投递记录和状态事件
@@ -647,7 +692,8 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 
 - 业务对象优先保存 `parent_run_id`、`child_run_id`、`artifact_id`、`knowledge_base_id`、`document_id`、`chunk_id` 和内容 Hash。
 - 不得为方便而把完整简历、原始 JD、网页 HTML 或 Child 对话复制到多个业务表。
-- 删除或归档业务对象不得破坏仍被投递、导出或 Trace 引用的不可变版本。
+- 删除或归档业务对象不得破坏仍被下游版本、合并提案、投递、导出或 Trace 引用的不可变版本。
+- 版本地图中的缩放、折叠和节点位置属于用户视图偏好，可单独保存，但不得参与版本 Hash、共同祖先计算或审计判断。
 
 ### 10.4 现有数据迁移与兼容读取
 
@@ -673,20 +719,23 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 ### 11.2 可靠性
 
 - 自动保存、Patch 应用、版本保存、投递状态变更和导出均需要幂等键。
+- 创建分支、提交 Merge Proposal 和确认选择性合并均需要幂等键；同一 Proposal 只能成功提交一次。
 - 并发编辑使用版本号、ETag 或内容 Hash 检测冲突。
 - 页面刷新和应用重启后可恢复草稿、任务和待确认状态。
 - 状态变更失败不得出现“前端成功、后端未保存”的假象。
+- 版本父子关系必须保持有向无环；循环、跨简历族挂接和前端伪造父节点必须由后端拒绝。
 
 ### 11.3 性能
 
 - 工作台首屏在本地正常环境下应在 2 秒内显示可交互骨架和已缓存业务数据。
 - 常规列表接口应分页，默认每页不超过 50 项。
+- 版本地图超过 200 个节点时应使用分层加载、视窗裁剪或等价手段，首次打开不加载所有版本正文。
 - 简历编辑输入不应因 AI 请求阻塞。
 - Agent 分析、PDF 导出和大文件处理均作为可观察异步任务运行。
 
 ### 11.4 可观测性
 
-- 关键业务操作记录业务对象 ID、Run ID、版本号、幂等键和安全结果。
+- 关键业务操作记录业务对象 ID、Run ID、版本号、分支 ID、Merge Proposal ID、幂等键和安全结果。
 - 用户可见错误使用稳定错误码和可操作提示。
 - 工程人员可从业务对象追溯到 Parent/Child、Tool、Policy、Approval、Artifact 和 Trace。
 
@@ -717,6 +766,16 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 5. 保存后创建新版本，旧版本内容保持不变。
 6. 来源版本已变化时，旧 Patch 被拒绝或标记失效。
 
+### 12.2.1 版本地图与选择性合并
+
+1. 用户能够从基础版本创建方向分支，并从方向分支创建绑定岗位快照的公司版本。
+2. 版本地图展示由后端权威父子关系生成的节点和连线；拖动节点只改变当前用户布局，不改变版本血缘。
+3. 用户选择任意两个同一简历族版本时，系统能够定位共同祖先并展示可解释 Diff。
+4. 上游版本变化后，下游节点只显示“有上游变化”提示，不自动改变正文、评分、导出或投递记录。
+5. 用户可打开三方对比，逐条接受、拒绝或编辑冲突项；未解决冲突时不能提交。
+6. 确认合并后在目标分支创建新的不可变版本，旧目标版本、上游版本和共同祖先保持不变。
+7. Agent 可以解释差异和生成 Merge Proposal，但不能替用户自动提交合并、移动节点或重写历史。
+
 ### 12.3 Agent 运行流程
 
 1. 发起后台分析后返回真实 `parent_run_id` 并显示任务卡。
@@ -742,6 +801,8 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 3. 不依赖颜色作为唯一状态提示。
 4. 保存、取消、查看差异和审批入口在主要流程中无需超过两次点击。
 5. 键盘可访问主要导航、列表、编辑和审批控件。
+6. 顶部“版本地图”作为一级入口存在；工作台仍是默认任务入口，地图不复制完整编辑器。
+7. 版本节点通过形状、文字或图标区分基础、方向、公司和派生类型，不能只依赖颜色；选中节点后可一键在工作台打开。
 
 ### 12.6 保留能力与入口
 
@@ -777,6 +838,10 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 | 首次进入无数据 | 显示导入简历、添加岗位和创建目标的空状态，不显示虚假统计 |
 | 自动保存失败 | 保留编辑内容，显示失败与重试，不显示“已保存” |
 | 同时编辑冲突 | 后提交者收到版本冲突，可比较并重新应用，不覆盖先提交内容 |
+| 上游版本发生变化 | 下游节点显示待同步提示，但正文、已有评分、导出和投递引用均不自动变化 |
+| 选择性合并存在冲突 | 展示共同祖先、上游和目标三方内容；冲突逐条解决前不允许提交 |
+| 确认选择性合并 | 在目标分支新增一个版本并记录 Proposal/决策，不改写任一历史版本 |
+| 拖动版本地图节点 | 只保存当前用户视图偏好，刷新后布局可恢复，版本父子关系不变 |
 | Patch 来源版本过期 | Patch 标记失效，不应用到新版本 |
 | 无简历证据 | 结果标记 missing，不生成正向经历 |
 | JD 来源冲突 | 并列展示来源与冲突，不静默选择一个值 |
@@ -800,10 +865,13 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 6. **多目标数据隔离**：同一岗位和简历在多个求职目标中的复用与分析隔离需要冻结规则。
 7. **真实网页调研**：当前真实 Playwright Smoke 仍有环境阻塞记录；未解决前不能把自动调研标记为正式可用。
 8. **Release Gate**：委派代码、Run API 和测试存在不等于已获发布授权；任何环境没有可验证且未过期的 Delegation Release Decision 时必须 fail-closed。
-9. **前端演进方式**：现有 `src/web/index.html` 已同时承担 Chat、知识库、Capability、Trust、邮件确认和 Run 详情，继续把工作台堆入同一文件的维护风险很高；设计阶段必须先冻结可独立路由、状态和测试的模块边界，是否引入构建工具可另行决定。
+9. **前端演进方式**：现有 `frontend/web/index.html` 已同时承担 Chat、知识库、Capability、Trust、邮件确认和 Run 详情，继续把工作台堆入同一文件的维护风险很高；设计阶段必须先冻结可独立路由、状态和测试的模块边界，是否引入构建工具可另行决定。
 10. **数据迁移**：本需求已冻结映射原则、dry-run、幂等和回滚边界；技术设计仍需定义迁移清单格式、旧 Manifest 异常处理和跨 Store 断点恢复。
 11. **身份模型**：当前本地默认 user/project scope 适合单用户开发，不能自动满足多用户授权要求；发布范围必须明确为可信本地单用户，或先接入真实认证主体。
 12. **Artifact 保留期**：Run/Artifact 默认保留期可能短于简历版本和投递记录生命周期；必须冻结长期业务证据投影、导出文件保留和用户删除策略。
+13. **“Git 式”语义误解**：首版是单父节点的业务版本图，不提供真实 Git 仓库、任意历史改写或多父提交；界面文案和帮助必须避免让用户误以为具备完整 Git 语义。
+14. **合并粒度**：三方合并依赖稳定区块 ID 和 Markdown 规范；无法可靠映射的内容必须作为显式冲突处理，不能由模型静默猜测。
+15. **大版本图性能**：长期使用可能产生数百节点，需要在设计和实现阶段冻结分层加载、聚焦分支和归档节点策略。
 
 ## 15. 完成定义
 
@@ -813,6 +881,7 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 2. 核心闭环不依赖 Multi-Agent、PDF/DOCX、邮件、投递网站或面试功能。
 3. 所有业务结果遵守 Operation/Result Validator/幂等提交协议，刷新可恢复，失败不伪装成功。
 4. 现有 Chat、知识库、Capability、Trust、邮件和 Run API 回归测试通过。
+5. 用户至少能够看到基础版本、方向分支和公司版本的真实血缘列表或基础地图，并从节点打开对应工作台；MVP 不要求自动上游同步。
 
 ### 15.2 完整首版完成定义
 
@@ -822,9 +891,10 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 2. 所有正向匹配和 AI 修改均可追溯到岗位来源与授权简历证据。
 3. 后台任务状态可恢复、可取消、可追踪，且复用现有 Parent/Child 基础设施。
 4. 浅色卡片式工作台达到桌面端可用标准；左侧档案与紧凑 Agent、右侧分析与候选岗位区域符合当前交互基准图，并满足关键可访问性要求。
-5. Multi-Agent 未通过门槛时保持关闭，不影响首版核心闭环。
-6. 现有 Chat、知识库、Agent 能力、Trust、邮件、Run API 和普通 Agent 路径无回归。
-7. 切片 A 已独立通过验收，且 PDF/DOCX 导出、基础投递看板和模块化工作台 UI 均使用真实后端数据。
+5. 版本地图作为一级入口达到可用标准，支持创建方向/公司分支、任意版本对比、上游变化提示和三方选择性合并；合并只新增版本，不改写历史。
+6. Multi-Agent 未通过门槛时保持关闭，不影响首版核心闭环。
+7. 现有 Chat、知识库、Agent 能力、Trust、邮件、Run API 和普通 Agent 路径无回归。
+8. 切片 A 已独立通过验收，且 PDF/DOCX 导出、基础投递看板和模块化工作台 UI 均使用真实后端数据。
 
 ## 16. 仓库核查证据索引
 
@@ -832,15 +902,15 @@ Starter Agent 已具备求职 Chat、Markdown/TXT 简历文件读取与文件型
 
 | 核查结论 | 主要实现/验证位置 |
 |---|---|
-| 简历文件读取、对比、Patch、Hash 冲突和文件型版本 | `src/starter_agent/tools/builtin/resume.py`、`tests/unit/test_resume_tools.py` |
-| Knowledge Document/Version/Chunk、Citation、作用域与 API | `src/starter_agent/knowledge/`、`src/starter_agent/interfaces/api.py`、`tests/integration/test_knowledge_*.py` |
-| 岗位候选、JD 读取/入库、来源与验证 | `src/starter_agent/job_research/`、`src/starter_agent/tools/builtin/job_search.py`、`tests/unit/test_job_*.py` |
-| Parent/Child、预算、校验/合并、恢复与业务 Run API | `src/starter_agent/delegation/`、`src/starter_agent/interfaces/runs_api.py`、`src/starter_agent/interfaces/tasks_api.py` |
-| 通用执行编排与后台任务投影 | `src/starter_agent/orchestration/`、`tests/unit/orchestration/` |
-| Capability、Policy、Confirmation、MCP 与审计 | `src/starter_agent/capabilities/`、`src/starter_agent/interfaces/capabilities_api.py` |
-| Eval、Trace、Safety 与 Release Decision | `src/starter_agent/trust/`、`src/starter_agent/interfaces/trust_api.py` |
-| 当前 Chat/知识库/Capability/Trust/Run 前端 | `src/web/index.html` |
+| 简历文件读取、对比、Patch、Hash 冲突和文件型版本 | `backend/src/starter_agent/tools/builtin/resume.py`、`tests/unit/test_resume_tools.py` |
+| Knowledge Document/Version/Chunk、Citation、作用域与 API | `backend/src/starter_agent/knowledge/`、`backend/src/starter_agent/interfaces/api.py`、`tests/integration/test_knowledge_*.py` |
+| 岗位候选、JD 读取/入库、来源与验证 | `backend/src/starter_agent/job_research/`、`backend/src/starter_agent/tools/builtin/job_search.py`、`tests/unit/test_job_*.py` |
+| Parent/Child、预算、校验/合并、恢复与业务 Run API | `backend/src/starter_agent/delegation/`、`backend/src/starter_agent/interfaces/runs_api.py`、`backend/src/starter_agent/interfaces/tasks_api.py` |
+| 通用执行编排与后台任务投影 | `backend/src/starter_agent/orchestration/`、`tests/unit/orchestration/` |
+| Capability、Policy、Confirmation、MCP 与审计 | `backend/src/starter_agent/capabilities/`、`backend/src/starter_agent/interfaces/capabilities_api.py` |
+| Eval、Trace、Safety 与 Release Decision | `backend/src/starter_agent/trust/`、`backend/src/starter_agent/interfaces/trust_api.py` |
+| 当前 Chat/知识库/Capability/Trust/Run 前端 | `frontend/web/index.html` |
 | PDF/DOCX 生成依赖不存在 | `pyproject.toml` 当前生产依赖及源代码扫描 |
-| 工作台业务 Store/API 不存在 | `src/starter_agent` 的模型、Store 和 `/v1` 路由扫描 |
+| 工作台业务 Store/API 不存在 | `backend/src/starter_agent` 的模型、Store 和 `/v1` 路由扫描 |
 
 仓库在核查时包含未提交改动；后续开始技术设计或实施前，应重新执行上述扫描并更新文档版本。任何仅存在于测试、草案、未启用配置或未获 Release Decision 的能力，均不得自动升级为“生产可用”。

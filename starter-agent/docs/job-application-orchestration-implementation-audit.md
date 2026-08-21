@@ -15,9 +15,9 @@
 
 | 能力 | 当前权威实现 | 当前契约/测试 | 编排复用方式 | 禁止事项 |
 |---|---|---|---|---|
-| Agent Runtime / Tool Loop | `src/starter_agent/agent/runtime.py::AgentRuntime` | tool-free turn、Tool Loop、取消、重复调用、Token/Tool/时间限制 | 由 Executor Adapter 使用 `RunSpec + RunContext` 调用 | 不新增框架 Agent Loop |
-| 应用入口 | `src/starter_agent/application.py::ApplicationService`、`src/starter_agent/interfaces/api.py` | Chat、求职路由、后台 Worker 生命周期、API 集成测试 | 增加 Orchestration Facade，保持旧入口可由开关回退 | 不在 API 中复制业务状态机 |
-| 固定 Workflow | `src/starter_agent/skills/job_research.py` 及现有确定性应用服务 | 求职调研、RAG、邮件等分层测试 | 作为 `workflow` execution adapter 调用 | 不将 Workflow 改造成第二 Runtime |
+| Agent Runtime / Tool Loop | `backend/src/starter_agent/agent/runtime.py::AgentRuntime` | tool-free turn、Tool Loop、取消、重复调用、Token/Tool/时间限制 | 由 Executor Adapter 使用 `RunSpec + RunContext` 调用 | 不新增框架 Agent Loop |
+| 应用入口 | `backend/src/starter_agent/application.py::ApplicationService`、`backend/src/starter_agent/interfaces/api.py` | Chat、求职路由、后台 Worker 生命周期、API 集成测试 | 增加 Orchestration Facade，保持旧入口可由开关回退 | 不在 API 中复制业务状态机 |
+| 固定 Workflow | `backend/src/starter_agent/skills/job_research.py` 及现有确定性应用服务 | 求职调研、RAG、邮件等分层测试 | 作为 `workflow` execution adapter 调用 | 不将 Workflow 改造成第二 Runtime |
 | Tool/MCP/RAG | `UnifiedToolRegistry`、MCP Manager/Adapter、Knowledge Application Service | Tool 暴露快照、MCP 生命周期、RAG/Evidence 测试 | Router/Validator 只读取能力快照；执行仍走唯一 Tool Executor | Router/Planner 不直接调用 Tool |
 | Plan/Todo | `RunContext.todo_plan`、领域 query plan | Context 隔离与上下文测试 | 新通用 Plan 是 `RunContext` 的版本化编排分区，Todo 只投影操作进度 | 不建立平行 Todo/Plan 真相 |
 | Context | `agent/context.py::ContextBuilder`、`delegation/context.py::RunContext` | Summary/Trim、Memory、Token、Child Context 隔离 | 扩展编排控制字段；Child 继续使用最小 Context Builder | 不把完整 Child 对话回填 Parent |
@@ -30,7 +30,7 @@
 | Eval / Release Gate | `trust/runner.py`、`trust/rules.py`、`trust/release_gate.py`、Fixture baseline | 固定 Fixture、Judge、Release/Safety Gate 测试 | 保持离线版本比较与发布判断；新增编排 Fixture | 不让离线 Eval 驱动当前 Run |
 | Trace | `trust/trace.py::TrustTraceRecorder`、Delegation Event Bridge、Capability Audit Bridge | 脱敏、关联、Delegation Trace 测试 | 新增 Orchestration Trace Bridge 和稳定关联 ID | Trace 不反写业务状态，不记录完整 Child Context |
 | API / SSE | `interfaces/runs_api.py`、`interfaces/api.py` | Run tree、事件游标、取消/恢复、API 测试 | 扩展现有 runs API/ViewModel | 不创建静态生产状态端点 |
-| 前端运行详情 | `src/web/index.html` 中现有 Delegation 卡片、Run Detail、SSE 重连 | UI contract 与 API contract 测试 | 增加编排折叠区，继续显示完整聊天 | 不用 mock 代替真实 Run Store 状态 |
+| 前端运行详情 | `frontend/web/index.html` 中现有 Delegation 卡片、Run Detail、SSE 重连 | UI contract 与 API contract 测试 | 增加编排折叠区，继续显示完整聊天 | 不用 mock 代替真实 Run Store 状态 |
 
 ## 3. 新组件到现有边界的落点
 
@@ -130,12 +130,12 @@
 
 Task2 应先新增独立、无副作用的 orchestration Schema/transition 模块及单元测试，再接入 `RunContext`。预计后续受影响范围：
 
-- `src/starter_agent/orchestration/`：新增 Schema、Controller、策略和 Adapter；
-- `src/starter_agent/delegation/context.py`：增加版本化 orchestration state 所有权；
-- `src/starter_agent/delegation/models.py`、`budget.py`、`store.py`：预算和持久化兼容扩展；
-- `src/starter_agent/application.py`、`bootstrap.py`、`interfaces/api.py`、`interfaces/runs_api.py`：装配和 API 接入；
-- `src/starter_agent/trust/`：Trace/Eval 投影；
-- `src/web/index.html`：真实运行详情；
+- `backend/src/starter_agent/orchestration/`：新增 Schema、Controller、策略和 Adapter；
+- `backend/src/starter_agent/delegation/context.py`：增加版本化 orchestration state 所有权；
+- `backend/src/starter_agent/delegation/models.py`、`budget.py`、`store.py`：预算和持久化兼容扩展；
+- `backend/src/starter_agent/application.py`、`bootstrap.py`、`interfaces/api.py`、`interfaces/runs_api.py`：装配和 API 接入；
+- `backend/src/starter_agent/trust/`：Trace/Eval 投影；
+- `frontend/web/index.html`：真实运行详情；
 - `tests/unit/orchestration/`、`tests/integration/`、`tests/e2e/`、`evals/orchestration/`：分层验证。
 
 任何实现如果需要改变上述权威边界、引入框架 Runtime 或实现通用 Checkpoint，必须停止并重新评审设计，而不能作为普通 Task 内变更继续推进。

@@ -24,15 +24,15 @@
 - [任务计划](job-application-orchestration-task.md)
 - [实现审计](job-application-orchestration-implementation-audit.md)
 - [框架决策](agent-runtime-framework-decision.md)
-- `src/starter_agent/orchestration/`
-- `src/starter_agent/agent/runtime.py`
-- `src/starter_agent/application.py`
-- `src/starter_agent/bootstrap.py`
-- `src/starter_agent/delegation/`
-- `src/starter_agent/interfaces/runs_api.py`
-- `src/starter_agent/interfaces/tasks_api.py`
-- `src/web/index.html`
-- `src/starter_agent/trust/`
+- `backend/src/starter_agent/orchestration/`
+- `backend/src/starter_agent/agent/runtime.py`
+- `backend/src/starter_agent/application.py`
+- `backend/src/starter_agent/bootstrap.py`
+- `backend/src/starter_agent/delegation/`
+- `backend/src/starter_agent/interfaces/runs_api.py`
+- `backend/src/starter_agent/interfaces/tasks_api.py`
+- `frontend/web/index.html`
+- `backend/src/starter_agent/trust/`
 - `evals/job-application-orchestration-cases.yaml`
 - 编排、委派、安全、Context、Trace、API 和 UI 测试
 
@@ -151,7 +151,7 @@ zhipu/glm-4.7，并访问 SerpAPI/Playwright；用户授权了真实 Smoke，
 
 ### F1：生产入口未接执行编排控制面
 
-全仓调用关系显示，核心类只出现在 `src/starter_agent/orchestration/` 定义、单元测试和离线 Fixture Adapter 中。`Application.chat()` 直接执行既有 `AgentRuntime.run()`，没有建立 `Route -> 条件 Edge -> Planner/Executor/Human Review` 的生产状态转移。
+全仓调用关系显示，核心类只出现在 `backend/src/starter_agent/orchestration/` 定义、单元测试和离线 Fixture Adapter 中。`Application.chat()` 直接执行既有 `AgentRuntime.run()`，没有建立 `Route -> 条件 Edge -> Planner/Executor/Human Review` 的生产状态转移。
 
 修复要求：增加现有 Runtime 前的编排服务入口，复用现有 Runtime/Workflow/Gate/Delegation；为每次真实 Run 持久化 Execution State 和 Trace。不得复制第二 Runtime。
 

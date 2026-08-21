@@ -18,7 +18,7 @@
 - `PreToolCallGate`：校验工具可用、Schema hash、参数 Schema、浏览器/SerpAPI 出站限制、policy rule、confirmation、permit 和幂等消费。
 - `SkillRegistry` 与 `job-research` Skill：已有轻量 Skill 目录、选中 Skill 全量注入、依赖检查、`JobResearchOrchestrator` 和 `job-research/SKILL.md`。
 - Observability 基础：`CapabilityStore` 的 audit event/confirmation/permit/policy/snapshot，`SQLiteSessionStore` 的 session/message/turn usage/context summary/tool artifact，`logs/agent.jsonl` 结构化日志脱敏。
-- 前端：`src/web/index.html` 是单页应用，已有 `#/chat`、`#/knowledge`、`#/capabilities/mcp-servers`、`#/capabilities/skills`，有聊天确认卡和能力管理确认流；尚无 Trust Center。
+- 前端：`frontend/web/index.html` 是单页应用，已有 `#/chat`、`#/knowledge`、`#/capabilities/mcp-servers`、`#/capabilities/skills`，有聊天确认卡和能力管理确认流；尚无 Trust Center。
 
 当前缺口是：没有专用 Eval Runner、固定 Fixture 格式、Eval Run/Case 存储、Run/Case 级 Trace 关联、独立 `model_request_id`、独立 `policy_decision_id`、失败聚类、Release Gate、真实模型 Smoke 报告、Trust Center 的 `Evals`/`Traces`/`Safety` 页面。
 
@@ -39,7 +39,7 @@
 - 日志：继续使用 structlog JSONL，复用 `starter_agent.observability.logging` 的脱敏 processor；新增 Trust 事件必须先通过同一脱敏函数或更严格的 trust sanitizer。
 - Runner：新增 Python 模块驱动固定 Fixture Eval；CLI 命令名称待任务阶段确定。Runner 通过现有 `ApplicationService`、`AgentRuntime`、`UnifiedToolRegistry`、`PreToolCallGate` 执行，不绕过 gate。
 - Fixture：新增版本化 YAML/JSON fixture。固定 Fixture 使用脱敏搜索结果、JD 页面、RAG Chunk、MCP 响应和错误；真实 Smoke 不使用 Fixture。
-- 前端：扩展现有 `src/web/index.html` 单页路由，新增 `#/trust/evals`、`#/trust/traces`、`#/trust/safety`；不引入单独前端应用。
+- 前端：扩展现有 `frontend/web/index.html` 单页路由，新增 `#/trust/evals`、`#/trust/traces`、`#/trust/safety`；不引入单独前端应用。
 - LLM Judge：可选，复用现有 ProviderRegistry；必须记录 provider、model、rubric、raw score、usage，不参与权限和安全硬门禁的唯一判断。
 
 ## 总体架构设计
@@ -525,7 +525,7 @@ Release Gate 决策：
 
 ## Trust Center 前端设计
 
-在现有 `src/web/index.html` 单页应用中新增主导航“Trust Center”，路由：
+在现有 `frontend/web/index.html` 单页应用中新增主导航“Trust Center”，路由：
 
 - `#/trust/evals`
 - `#/trust/traces`

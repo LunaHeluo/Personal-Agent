@@ -20,7 +20,7 @@
 - `docs/job-research-design.md`
 - `docs/job-research-task.md`
 - `docs/capability_catalog.md`
-- `src/starter_agent/skills/job-research/SKILL.md`
+- `backend/src/starter_agent/skills/job-research/SKILL.md`
 - `config/mcp.json`
 - `config/config.yaml`
 - `config/prompts/system.md`
@@ -33,14 +33,14 @@
 根因是策略层阻止了自动抓取：
 
 - `config/prompts/system.md` 原规则写着：只有用户明确选择搜索结果或提供岗位 URL 后，才调用 `search_job_description`。
-- `src/starter_agent/skills/job-research/SKILL.md` 原工作流写着：存在多个候选岗位时停止并请求用户选择。
+- `backend/src/starter_agent/skills/job-research/SKILL.md` 原工作流写着：存在多个候选岗位时停止并请求用户选择。
 - 因此当用户问“深圳还有其他网上的岗位吗”时，Agent 合规行为是只搜索/回答候选摘要，而不是继续读取 JD。
 - 同时 `job-research` Skill 设计目标是 Playwright MCP 读取 JD；而普通聊天链路中已有内置 `search_job_description` 抓取器。MCP 工具只有在已连接、已发现、已启用、已审查并通过 Gate 后才会进入模型 callable tools，不能仅靠文档声明。
 
 本次已修改：
 
 - `config/prompts/system.md`：岗位搜索后可自动读取最多 3 个公开 JD，不再等待用户额外粘贴 URL。
-- `src/starter_agent/skills/job-research/SKILL.md`：多个候选时默认抓取前 3 个公开详情页作为预览；最终匹配、入库或深度分析仍需用户选择。
+- `backend/src/starter_agent/skills/job-research/SKILL.md`：多个候选时默认抓取前 3 个公开详情页作为预览；最终匹配、入库或深度分析仍需用户选择。
 - `tests/unit/test_job_research_auto_jd_contract.py`：新增合同测试，防止规则回退到“必须用户先选再抓 JD”。
 
 安全边界保持不变：
@@ -259,15 +259,15 @@ MCP / Skill / Gate 相关回归：
 - `docs/job-research-requirements.md`
 - `docs/job-research-design.md`
 - `docs/job-research-task.md`
-- `src/starter_agent/skills/job-research/SKILL.md`
-- `src/starter_agent/mcp/client.py`
-- `src/starter_agent/mcp/manager.py`
-- `src/starter_agent/mcp/discovery.py`
-- `src/starter_agent/mcp/tool_adapter.py`
-- `src/starter_agent/capabilities/gate.py`
-- `src/starter_agent/capabilities/confirmations.py`
-- `src/starter_agent/agent/runtime.py`
-- `src/web/index.html`
+- `backend/src/starter_agent/skills/job-research/SKILL.md`
+- `backend/src/starter_agent/mcp/client.py`
+- `backend/src/starter_agent/mcp/manager.py`
+- `backend/src/starter_agent/mcp/discovery.py`
+- `backend/src/starter_agent/mcp/tool_adapter.py`
+- `backend/src/starter_agent/capabilities/gate.py`
+- `backend/src/starter_agent/capabilities/confirmations.py`
+- `backend/src/starter_agent/agent/runtime.py`
+- `frontend/web/index.html`
 - `tests/unit/test_job_research_auto_jd_contract.py`
 - `tests/e2e/test_playwright_job_research.py`
 - `tests/integration/test_search_job_description_flow.py`

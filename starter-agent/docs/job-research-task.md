@@ -43,12 +43,12 @@
 ### 子任务
 
 1. 阅读并记录以下真实链路：
-   - `src/starter_agent/settings.py` 的 YAML 加载与环境变量解析。
-   - `src/starter_agent/bootstrap.py` 的应用组装与缓存生命周期。
-   - `src/starter_agent/tools/registry.py`、`tools/base.py`、`tools/policy.py` 和 `agent/runtime.py` 的 Tool 注册、Schema 暴露与执行路径。
-   - `src/starter_agent/interfaces/api.py` 的 `/health`、`/v1/tools`、聊天、知识库接口和 FastAPI lifespan。
-   - `src/starter_agent/observability/logging.py` 的 structlog 与脱敏规则。
-   - `src/web/index.html` 的主视图切换、Tool 列表和流式聊天事件。
+   - `backend/src/starter_agent/settings.py` 的 YAML 加载与环境变量解析。
+   - `backend/src/starter_agent/bootstrap.py` 的应用组装与缓存生命周期。
+   - `backend/src/starter_agent/tools/registry.py`、`tools/base.py`、`tools/policy.py` 和 `agent/runtime.py` 的 Tool 注册、Schema 暴露与执行路径。
+   - `backend/src/starter_agent/interfaces/api.py` 的 `/health`、`/v1/tools`、聊天、知识库接口和 FastAPI lifespan。
+   - `backend/src/starter_agent/observability/logging.py` 的 structlog 与脱敏规则。
+   - `frontend/web/index.html` 的主视图切换、Tool 列表和流式聊天事件。
 2. 将 `search_jobs_serpapi` 的真实 Name、Description、Input Schema、风险、配置与错误码记录到 `docs/job-research-implementation-audit.md`。
 3. 记录知识库现有 `/retrieve` API 和 `KnowledgeApplicationService.retrieve()`；明确模型 callable 的 `retrieve_resume_evidence` 尚不存在。
 4. 扫描项目 Skill 目录、`SKILL.md`、解析器与触发机制；明确当前不存在 Skill Registry。
@@ -80,11 +80,11 @@
 ### 子任务
 
 1. 在 `pyproject.toml` 增加官方 Python MCP SDK 和 JSON Schema 校验运行时依赖，并更新锁文件。
-2. 在 `src/starter_agent/settings.py` 增加 `McpSettings`，包含 `config_path`、初始化/健康/调用/关闭/确认超时；在 `config/config.example.yaml` 和 `config/config.yaml` 增加 `mcp.config_path: config/mcp.json`。
+2. 在 `backend/src/starter_agent/settings.py` 增加 `McpSettings`，包含 `config_path`、初始化/健康/调用/关闭/确认超时；在 `config/config.example.yaml` 和 `config/config.yaml` 增加 `mcp.config_path: config/mcp.json`。
 3. 新增 `config/mcp.json` 与 `config/mcp.example.json`，二者包含要求中的 `playwright` stdio 定义；不得保存 Secret。
-4. 新增 `src/starter_agent/mcp/config.py`，实现独立 JSON 解析、项目根路径解析、command/args/cwd/env-name 校验和规范化配置 hash。
-5. 新增 `src/starter_agent/capabilities/models.py`，定义 Server、Snapshot、Tool、Resource、Prompt、PolicyRule、Confirmation、AuditEvent、ExecutionPermit 和 SkillRecord 的 Pydantic 领域模型。
-6. 新增 `src/starter_agent/capabilities/store.py`，在现有 SQLite 数据库创建 additive 表，并实现 revision 条件更新、快照激活、策略变更、确认幂等更新和审计追加。
+4. 新增 `backend/src/starter_agent/mcp/config.py`，实现独立 JSON 解析、项目根路径解析、command/args/cwd/env-name 校验和规范化配置 hash。
+5. 新增 `backend/src/starter_agent/capabilities/models.py`，定义 Server、Snapshot、Tool、Resource、Prompt、PolicyRule、Confirmation、AuditEvent、ExecutionPermit 和 SkillRecord 的 Pydantic 领域模型。
+6. 新增 `backend/src/starter_agent/capabilities/store.py`，在现有 SQLite 数据库创建 additive 表，并实现 revision 条件更新、快照激活、策略变更、确认幂等更新和审计追加。
 7. 新增 `tests/unit/test_mcp_config.py`、`test_capability_models.py`、`test_capability_store.py`，覆盖路径逃逸、内联 Secret 拒绝、配置 hash 稳定性、revision 冲突和确认重复提交。
 
 ### 依赖关系
@@ -112,13 +112,13 @@
 
 ### 子任务
 
-1. 新增 `src/starter_agent/mcp/client.py`，封装 `StdioServerParameters`、`stdio_client`、`ClientSession` 和 `AsyncExitStack`，禁止手写 JSON-RPC framing。
-2. 新增 `src/starter_agent/mcp/manager.py`，实现 `McpClientManager` 与每 Server `ServerHandle`：独立 Session、connect lock、refresh lock、在途计数、drain event 和超时。
+1. 新增 `backend/src/starter_agent/mcp/client.py`，封装 `StdioServerParameters`、`stdio_client`、`ClientSession` 和 `AsyncExitStack`，禁止手写 JSON-RPC framing。
+2. 新增 `backend/src/starter_agent/mcp/manager.py`，实现 `McpClientManager` 与每 Server `ServerHandle`：独立 Session、connect lock、refresh lock、在途计数、drain event 和超时。
 3. 连接前检查 Node.js 与 npx 是否可解析，并记录非敏感版本摘要；检查失败映射为 `node_not_found` 或 `npx_not_found`。
 4. 使用 `command=npx`、`args=["@playwright/mcp@latest"]` 建立 stdio；stdout 仅供协议，stderr 使用限长环形缓冲并经过日志脱敏。
 5. 在超时内执行 MCP initialize，记录协议版本和 `serverInfo.name/version`；缺少版本时写入 `unknown`，不得以 `@latest` 替代实际版本。
 6. 监听子进程结束并记录退出码、启动时间和安全 stderr 摘要；异常退出后 Client 进入不可用状态。
-7. 将 Manager 接入 `src/starter_agent/bootstrap.py` 与 `interfaces/api.py` 的 FastAPI lifespan：启动时连接启用 Server，关闭时停止接收新调用、drain 并关闭 Session/子进程。
+7. 将 Manager 接入 `backend/src/starter_agent/bootstrap.py` 与 `interfaces/api.py` 的 FastAPI lifespan：启动时连接启用 Server，关闭时停止接收新调用、drain 并关闭 Session/子进程。
 8. 新增 `tests/unit/test_mcp_client_lifecycle.py` 与 `tests/integration/test_mcp_manager_lifecycle.py`，使用受控测试 MCP Server 验证独立连接、初始化超时、退出码和关闭；此测试不替代真实 Playwright 验收。
 
 ### 依赖关系
@@ -146,7 +146,7 @@
 
 ### 子任务
 
-1. 新增 `src/starter_agent/mcp/discovery.py`，分页调用 SDK 的 list tools/resources/resource templates/prompts。
+1. 新增 `backend/src/starter_agent/mcp/discovery.py`，分页调用 SDK 的 list tools/resources/resource templates/prompts。
 2. 规范化 Tool Name、Title、Description、Input Schema、annotations、读写提示和 Schema hash；保留真实 upstream name。
 3. 为模型侧生成稳定别名 `mcp__{server_id}__{upstream_name}`，检测与内置 Tool 或其他 MCP Tool 的冲突。
 4. 将候选发现结果写入 `mcp_capability_snapshots` 及相关能力表，全部校验成功后一次激活。
@@ -214,12 +214,12 @@
 
 ### 子任务
 
-1. 新增 `src/starter_agent/capabilities/registry.py`，实现 `UnifiedToolRegistry`、`LightweightCapabilityCatalog` 和 `ModelToolSnapshot`。
+1. 新增 `backend/src/starter_agent/capabilities/registry.py`，实现 `UnifiedToolRegistry`、`LightweightCapabilityCatalog` 和 `ModelToolSnapshot`。
 2. 内置 Tool 继续由现有 `ToolRegistry` 构建；MCP Tool 通过 Adapter 注册，不复制现有 Tool 实现。
 3. 轻量目录只包含 name、server、type、enabled/review 概要，不包含 Description、Input Schema 或 Output Schema。
 4. callable snapshot 只包含 Server 已连接且启用、Tool 已启用且通过暴露审查的完整模型 Tool 定义。
 5. 每次 Server/Tool 启停、审查、刷新或策略变化递增 `context_revision` 并原子替换快照引用。
-6. 修改 `src/starter_agent/agent/runtime.py`，在每次 `provider.complete()` 前读取一次最新 snapshot，并将 revision 写入 Trace；不得复用启动时 Schema 列表。
+6. 修改 `backend/src/starter_agent/agent/runtime.py`，在每次 `provider.complete()` 前读取一次最新 snapshot，并将 revision 写入 Trace；不得复用启动时 Schema 列表。
 7. 修改 `/v1/tools` 保持现有兼容输出，同时增加来源与可调用概要；完整 Schema 只由管理 API 返回。
 8. 新增 `tests/unit/test_capability_registry.py`、`test_context_tool_exposure.py` 和 `tests/integration/test_model_tool_snapshot.py`。
 
@@ -248,12 +248,12 @@
 
 ### 子任务
 
-1. 新增 `src/starter_agent/capabilities/policy.py`，实现 Server/Tool/action/scheme/domain/参数/数据分类范围的规则匹配。
+1. 新增 `backend/src/starter_agent/capabilities/policy.py`，实现 Server/Tool/action/scheme/domain/参数/数据分类范围的规则匹配。
 2. 定义优先级：`deny/disabled > always_confirm > allowlist_auto > confirm_once > require_confirmation`。
 3. Browser 初始协议范围为 HTTP(S)，域名通配；仍拒绝 URL 凭证、私网/localhost/链路本地/云元数据目标和禁止动作。
 4. 按真实发现 Tool Schema 完成风险审查：读取/快照、导航、点击、输入、上传、登录、提交、脚本、下载和存储写入分别分类。
 5. 登录、投递、消息、上传简历和绕过访问控制直接 deny；脚本、下载、存储写入和其他副作用 always_confirm。
-6. 新增 `src/starter_agent/capabilities/gate.py`，实现 `PreToolCallGate.evaluate(request) -> allow | require_confirmation | deny`，检查启停、snapshot/schema hash、JSON Schema 参数、范围、角色、规则、外发数据、预算与重复调用。
+6. 新增 `backend/src/starter_agent/capabilities/gate.py`，实现 `PreToolCallGate.evaluate(request) -> allow | require_confirmation | deny`，检查启停、snapshot/schema hash、JSON Schema 参数、范围、角色、规则、外发数据、预算与重复调用。
 7. 只有 Gate 生成的短期 `ExecutionPermit` 才能调用 `UnifiedToolExecutor`；修改内置 Tool 和 MCP Tool 执行路径拒绝无 Permit 调用。
 8. 管理页测试、Skill、重试和用户指定 Tool 都调用同一 Executor，不提供直接 Client 路由。
 9. 新增 `tests/unit/test_tool_policy_rules.py`、`test_pre_tool_call_gate.py`、`test_browser_scope_policy.py` 和 `tests/integration/test_gate_no_bypass.py`。
@@ -283,7 +283,7 @@
 
 ### 子任务
 
-1. 新增 `src/starter_agent/capabilities/confirmations.py`，实现 `ConfirmationService` 与内存 `ConfirmationBroker`。
+1. 新增 `backend/src/starter_agent/capabilities/confirmations.py`，实现 `ConfirmationService` 与内存 `ConfirmationBroker`。
 2. `require_confirmation` 先写 SQLite，再产生聊天事件；记录 Server、Tool、参数 hash/安全摘要、风险、数据去向、schema hash、策略 revision 和过期时间。
 3. 修改 `AgentRuntime` 与 `ApplicationService`，通过 `TurnCoordinator` 在当前 Tool Call 处异步等待，不占用线程且不提前调用 Tool。
 4. 实现决定动作：`once`、`allowlist`、`cancel`；前端文案对应「仅本次执行」「执行并加入白名单」「取消」。
@@ -319,11 +319,11 @@
 
 ### 子任务
 
-1. 新增 `src/starter_agent/mcp/tool_adapter.py`，将 MCP content blocks、错误标志和 upstream metadata 转成现有 `ToolResult`。
+1. 新增 `backend/src/starter_agent/mcp/tool_adapter.py`，将 MCP content blocks、错误标志和 upstream metadata 转成现有 `ToolResult`。
 2. 扩展 `ToolResultGuard`：先脱敏再裁剪，记录 raw/kept 字节、字符、Token、hash、`is_truncated`、`truncation_reason` 和 `raw_source_ref`。
 3. 扩展 `tool_artifacts`，保存受限且脱敏的原始结果、server、snapshot、schema hash、requested/final source URL 和裁剪摘要。
 4. 保护来源 URL、content hash、call id、snapshot id 和裁剪标记，使其不因 Context 裁剪丢失。
-5. 新增 `src/starter_agent/job_research/jd.py`，实现 `JobDescriptionNormalizer` 与字段级 source refs；无法验证最终 URL 或内容完整性时禁止入库。
+5. 新增 `backend/src/starter_agent/job_research/jd.py`，实现 `JobDescriptionNormalizer` 与字段级 source refs；无法验证最终 URL 或内容完整性时禁止入库。
 6. 复用现有知识库上传/更新服务实现 `job_description` 确认入库；重复 URL/hash 提示冲突，不静默复制。
 7. 增加 Trace 查询模型，串联模型 Tool Call、Gate 决策、确认、MCP 请求、结果、Artifact 和入库结果。
 8. 新增 `tests/unit/test_mcp_tool_adapter.py`、`test_mcp_result_guard.py`、`test_job_description_normalizer.py` 和 `tests/integration/test_job_description_ingestion.py`。
@@ -353,9 +353,9 @@
 
 ### 子任务
 
-1. 新增 `src/starter_agent/tools/builtin/knowledge.py`，实现 proposed Tool `retrieve_resume_evidence`：输入 `query` 与 `top_k`，user/project/knowledge base 从 `ToolContext` 注入。
+1. 新增 `backend/src/starter_agent/tools/builtin/knowledge.py`，实现 proposed Tool `retrieve_resume_evidence`：输入 `query` 与 `top_k`，user/project/knowledge base 从 `ToolContext` 注入。
 2. Tool 固定检索 `document_type=resume`，复用 `KnowledgeApplicationService.retrieve()` 并返回连续原文 quote、chunk/document/version/section/line/source_ref；不得回退为 `read_resume` 并声称使用 RAG。
-3. 新增 `src/starter_agent/skills/models.py`、`parser.py`、`registry.py` 和 `selector.py`，解析带 frontmatter 的 `SKILL.md`，保存不可变 Skill snapshot、依赖和启停覆盖。
+3. 新增 `backend/src/starter_agent/skills/models.py`、`parser.py`、`registry.py` 和 `selector.py`，解析带 frontmatter 的 `SKILL.md`，保存不可变 Skill snapshot、依赖和启停覆盖。
 4. 候选 Skill 解析成功后原子交换；失败保留旧定义并标记 stale/last_error。
 5. 新增 `skills/job-research/SKILL.md`，定义触发与不触发示例、输入、前置条件、工具依赖、步骤、验证、失败处理、输出和 JD 入库确认。
 6. Skill 步骤固定为：SerpAPI 搜索 → URL 选择 → Browser 读取 → JD 验证 → RAG 简历证据 → 带来源分析 → 用户确认入库。
@@ -388,7 +388,7 @@
 
 ### 子任务
 
-1. 新增 `src/starter_agent/interfaces/capabilities_api.py`，使用 FastAPI `APIRouter` 实现 Server 列表/详情、connect、disconnect、enable、disable、health-check、refresh。
+1. 新增 `backend/src/starter_agent/interfaces/capabilities_api.py`，使用 FastAPI `APIRouter` 实现 Server 列表/详情、connect、disconnect、enable、disable、health-check、refresh。
 2. 实现 Tool 详情/Schema、启停、审查、allowlist/deny/always-confirm 规则增删和 domain/action/参数范围管理。
 3. 实现 Skill 列表/详情、启停、候选 reload、原始定义查看和依赖健康查询。
 4. 实现 Pending 查询、确认决定、Tool Trace、Context snapshot 调试接口。
@@ -396,7 +396,7 @@
 6. 所有 mutation 接受 expected revision 或 `If-Match`，返回 operation id、最新 revision 和真实权威状态。
 7. connect/disconnect、扩大 allowlist、启用写 Tool、reload 外部定义必须先创建管理确认并显示 diff/风险/影响范围。
 8. 操作失败时回滚候选状态，返回稳定错误码并重新读取权威状态；禁止返回静态成功。
-9. 在 `src/starter_agent/interfaces/api.py` 挂载 router，并扩展 CORS/headers 仅满足真实接口所需范围。
+9. 在 `backend/src/starter_agent/interfaces/api.py` 挂载 router，并扩展 CORS/headers 仅满足真实接口所需范围。
 10. 新增 `tests/unit/test_capability_api_models.py`、`test_management_authorization.py` 和 `tests/integration/test_capabilities_api.py`、`test_confirmation_api.py`。
 
 ### 依赖关系
@@ -424,7 +424,7 @@
 
 ### 子任务
 
-1. 修改 `src/web/index.html`，在“对话/知识库”旁增加“能力管理”一级入口，并扩展 hash 路由：`#/capabilities/mcp-servers` 与 `#/capabilities/skills`。
+1. 修改 `frontend/web/index.html`，在“对话/知识库”旁增加“能力管理”一级入口，并扩展 hash 路由：`#/capabilities/mcp-servers` 与 `#/capabilities/skills`。
 2. 建立能力管理共同布局：页签、最后刷新时间、全局错误条、loading skeleton、空数据、stale 数据和窄屏单列钻取。
 3. 实现 MCP Server 列表与详情：来源、配置/运行时版本、transport、连接/健康/刷新生命周期、能力数量、最近错误和审计时间线。
 4. 实现 Tools/Resources/Prompts 子页、Tool Schema 抽屉、启停/审查、allowlist、domain/action/参数范围和 Context 暴露级别。
@@ -461,7 +461,7 @@
 ### 子任务
 
 1. 扩展 `/v1/chat/stream` 事件契约，支持 `confirmation_required`、`confirmation_resolved`、`tool_started`、`tool_completed` 和审计引用。
-2. 修改 `src/web/index.html` 的流式事件处理，渲染确认卡：Server、Tool、参数摘要、风险、目标/数据去向、过期时间。
+2. 修改 `frontend/web/index.html` 的流式事件处理，渲染确认卡：Server、Tool、参数摘要、风险、目标/数据去向、过期时间。
 3. 提供「仅本次执行」「执行并加入白名单」「取消」；强制确认动作禁用持久放行并显示原因。
 4. 当前 turn 等待确认时禁止重复提交消息或重复决定，但不冻结其他只读页面。
 5. 页面刷新后查询 Pending 并恢复卡片；决定请求携带 idempotency key。

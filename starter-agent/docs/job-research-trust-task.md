@@ -25,7 +25,7 @@
 1. 核对 `AgentRuntime`、`ApplicationService`、`ContextBuilder`、`UnifiedToolRegistry`、`McpManager`、`SkillRegistry`、`PreToolCallGate` 和 `UnifiedToolExecutor` 的真实调用链。
 2. 核对 `CapabilityStore`、`SQLiteSessionStore`、audit event、confirmation、execution permit、tool artifact、turn usage、context snapshot 和 JSONL log 的现有字段。
 3. 核对 `job-research` Skill、`JobResearchOrchestrator`、`search_jobs_serpapi`、Playwright MCP 工具、`retrieve_resume_evidence` 和能力目录的真实名称、Schema、错误码和启停行为。
-4. 核对 `src/web/index.html` 的现有 hash 路由、聊天确认卡、能力管理页、知识库页和缺失的 Trust Center。
+4. 核对 `frontend/web/index.html` 的现有 hash 路由、聊天确认卡、能力管理页、知识库页和缺失的 Trust Center。
 5. 生成或更新审计记录，明确哪些能力可复用、哪些能力需要新增。
 
 ### 依赖关系
@@ -459,7 +459,7 @@
 
 ### 子任务
 
-1. 扩展 `src/web/index.html` 主导航，新增 Trust Center 路由：`#/trust/evals`、`#/trust/traces`、`#/trust/safety`。
+1. 扩展 `frontend/web/index.html` 主导航，新增 Trust Center 路由：`#/trust/evals`、`#/trust/traces`、`#/trust/safety`。
 2. 实现共享 Trust layout、tabs、loading、empty、error、forbidden、stale 和 narrow screen 状态。
 3. `Evals` 页展示 Suite、Run、版本、指标、Case、Assertion、Failure Cluster 和报告。
 4. `Evals` 页支持运行固定评测、取消、刷新、查看详情和比较两次 Run。

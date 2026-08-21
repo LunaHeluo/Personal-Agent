@@ -26,25 +26,25 @@
 
 计划新增或重点修改的边界如下；最终以 Task1 审计结果和实施时最新工作区为准：
 
-- `src/starter_agent/delegation/models.py`：Task Contract、Run、Envelope、预算和状态转换模型。
-- `src/starter_agent/delegation/store.py`：SQLite Run Store、租约、乐观锁、Outbox 和幂等持久化。
-- `src/starter_agent/delegation/budget.py`：五维预算预留、结算、价格版本和硬限制。
-- `src/starter_agent/delegation/registry.py`：Specialist 定义、快照、启停、reload 和能力匹配。
-- `src/starter_agent/delegation/context.py`：Child Context Assembly、引用加载和 `RunContext` 创建。
-- `src/starter_agent/delegation/tool_view.py`：场景级 Effective Tool View 与 Schema 过滤。
-- `src/starter_agent/delegation/service.py`：Parent/Child 创建、`delegate_task` 服务和取消/恢复。
-- `src/starter_agent/delegation/dispatcher.py`：领取、租约、心跳、背压和孤儿回收。
-- `src/starter_agent/delegation/worker.py`：Worker Pool 和共享 Runtime 执行适配。
-- `src/starter_agent/delegation/coordinator.py`：Parent 挂起、唤醒、结果收集和阶段驱动。
-- `src/starter_agent/delegation/results.py`：Result Validator、确定性 Merger 和 Merge Report。
-- `src/starter_agent/delegation/backfill.py`：Chat 幂等回填 Outbox consumer。
-- `src/starter_agent/delegation/specialists/job_web_researcher.py`：网页推进循环。
-- `src/starter_agent/delegation/specialists/profile_evidence_analyst.py`：授权简历证据分析。
+- `backend/src/starter_agent/delegation/models.py`：Task Contract、Run、Envelope、预算和状态转换模型。
+- `backend/src/starter_agent/delegation/store.py`：SQLite Run Store、租约、乐观锁、Outbox 和幂等持久化。
+- `backend/src/starter_agent/delegation/budget.py`：五维预算预留、结算、价格版本和硬限制。
+- `backend/src/starter_agent/delegation/registry.py`：Specialist 定义、快照、启停、reload 和能力匹配。
+- `backend/src/starter_agent/delegation/context.py`：Child Context Assembly、引用加载和 `RunContext` 创建。
+- `backend/src/starter_agent/delegation/tool_view.py`：场景级 Effective Tool View 与 Schema 过滤。
+- `backend/src/starter_agent/delegation/service.py`：Parent/Child 创建、`delegate_task` 服务和取消/恢复。
+- `backend/src/starter_agent/delegation/dispatcher.py`：领取、租约、心跳、背压和孤儿回收。
+- `backend/src/starter_agent/delegation/worker.py`：Worker Pool 和共享 Runtime 执行适配。
+- `backend/src/starter_agent/delegation/coordinator.py`：Parent 挂起、唤醒、结果收集和阶段驱动。
+- `backend/src/starter_agent/delegation/results.py`：Result Validator、确定性 Merger 和 Merge Report。
+- `backend/src/starter_agent/delegation/backfill.py`：Chat 幂等回填 Outbox consumer。
+- `backend/src/starter_agent/delegation/specialists/job_web_researcher.py`：网页推进循环。
+- `backend/src/starter_agent/delegation/specialists/profile_evidence_analyst.py`：授权简历证据分析。
 - `config/specialists/*.yaml`、`config/prompts/specialists/*.md`：两个 Specialist 的版本化定义和 System Prompt。
-- `src/starter_agent/agent/runtime.py`、`agent/context.py`、`tools/base.py`：共享 Runtime 与 Run-scoped Context/ToolContext。
-- `src/starter_agent/interfaces/runs_api.py`、`interfaces/api.py`、`application.py`、`bootstrap.py`：Run API、路由和服务组装。
-- `src/starter_agent/trust/models.py`、`trust/store.py`、`trust/trace.py`、`interfaces/trust_api.py`：父子 Trace 和查询。
-- `src/web/index.html`：任务卡、父子运行详情、取消与恢复。
+- `backend/src/starter_agent/agent/runtime.py`、`agent/context.py`、`tools/base.py`：共享 Runtime 与 Run-scoped Context/ToolContext。
+- `backend/src/starter_agent/interfaces/runs_api.py`、`interfaces/api.py`、`application.py`、`bootstrap.py`：Run API、路由和服务组装。
+- `backend/src/starter_agent/trust/models.py`、`trust/store.py`、`trust/trace.py`、`interfaces/trust_api.py`：父子 Trace 和查询。
+- `frontend/web/index.html`：任务卡、父子运行详情、取消与恢复。
 - `tests/unit/`、`tests/integration/`、`tests/e2e/`、`evals/job-research/`：分层回归、Fixture 和 Smoke。
 
 ---
@@ -618,7 +618,7 @@
 
 ### 子任务
 
-1. 在 `src/web/index.html` 增加可恢复任务卡，显示 Parent ID、phase、Child 进度、五维预算和开始时间。
+1. 在 `frontend/web/index.html` 增加可恢复任务卡，显示 Parent ID、phase、Child 进度、五维预算和开始时间。
 2. 接入 Run 详情和增量事件 API，以 event_seq/run_version 去重；SSE 只是加速。
 3. 实现取消操作、幂等反馈和 `waiting_for_user` 的安全 resume/终止入口。
 4. 扩展 Trust Center 父子树，显示 Specialist/版本、attempt、失败、missing/conflicts 和 Merge Report 摘要。

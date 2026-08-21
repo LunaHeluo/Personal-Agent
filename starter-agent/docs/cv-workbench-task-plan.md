@@ -2,7 +2,7 @@
 
 ## 1. 文档目的
 
-本文将 `docs/cv-workbench-requirements.md` v0.2 与 `docs/cv-workbench-design.md` v0.1 拆分为可顺序执行、可独立测试、可独立验收的工程任务。
+本文将 `docs/cv-workbench-requirements.md` v0.3 与 `docs/cv-workbench-design.md` v0.2 拆分为可顺序执行、可独立测试、可独立验收的工程任务。
 
 本文只定义任务计划，不授权修改代码、数据库、配置、依赖、功能开关或生产数据。每个 Task 开始前仍需确认前置任务已经完成，并以执行时的真实仓库状态为准。
 
@@ -20,14 +20,17 @@
 10. 当前工作区已有大量未提交改动。执行任务时必须保存用户改动，只修改该 Task 明确列出的写集合；重叠时先审计，不得覆盖或重置。
 11. 每个 Task 完成后记录：实际改动文件、迁移、测试命令与结果、已知失败、Trace/Artifact/截图、风险和后续依赖。
 12. 环境或外部服务阻塞必须单列为 blocked evidence，不能把未运行、setup error 或静态 Mock 结果标记为通过。
+13. 工作台是默认任务入口，版本地图是一级关系入口；地图不得复制完整编辑器，也不得用前端节点坐标或连线充当权威版本血缘。
+14. 上游变化只产生提示，不自动修改下游正文、评分、导出或投递；选择性合并必须使用三方 Diff、逐条决策并在目标分支新增不可变版本。
+15. Agent 可以比较版本、解释差异和生成 Merge Proposal 候选，但不得自动提交合并、移动节点、重写父子关系或替用户解决冲突。
 
 ## 3. 里程碑与任务依赖
 
 | 里程碑 | 任务 | 完成结果 |
 |---|---|---|
 | M0：基础契约 | Task1–Task4 | 仓库边界、版本化契约、业务 Store、Operation 提交协议冻结 |
-| M1：MVP 业务后端 | Task5–Task12 | Workspace、简历、岗位、分析、建议和稳定 API 可用 |
-| M2：MVP 前端与 Agent | Task13–Task19 | 三栏工作台、档案、分析、审批、Starter Agent、Run 恢复与 MVP Gate 完成 |
+| M1：MVP 业务后端 | Task5–Task12 | Workspace、简历血缘/合并、岗位、分析、建议和稳定 API 可用 |
+| M2：MVP 前端与 Agent | Task13–Task19 | 三栏工作台、基础版本地图、档案、分析、审批、Starter Agent、Run 恢复与 MVP Gate 完成 |
 | M3：完整首版 | Task20–Task25 | 受 Gate 的候选调研、导出、投递、迁移、兼容与完整首版验收 |
 | M4：首版后增强 | Task26–Task28 | 面试复盘、多模板/统计、外部联动的独立设计与实现入口 |
 
@@ -37,14 +40,14 @@ flowchart LR
     T2 --> T3["Task3 业务 Store"] --> T4["Task4 Operation"]
     T4 --> T5["Task5 Workspace"]
     T4 --> T6["Task6 Evidence Binding"]
-    T5 --> T7["Task7 简历导入"] --> T8["Task8 Draft/Version"]
+    T5 --> T7["Task7 简历导入"] --> T8["Task8 Draft/血缘/合并"]
     T5 --> T9["Task9 Job/JD"]
     T6 --> T10["Task10 匹配分析"]
     T8 --> T10
     T9 --> T10 --> T11["Task11 Suggestion/Patch"]
     T11 --> T12["Task12 API/View Model"]
     T12 --> T13["Task13 前端拆分"] --> T14["Task14 Shell/布局"]
-    T14 --> T15["Task15 档案 UI"] --> T16["Task16 分析/编辑 UI"]
+    T14 --> T15["Task15 档案/版本地图 UI"] --> T16["Task16 分析/编辑 UI"]
     T12 --> T17["Task17 Agent 融合"]
     T12 --> T18["Task18 Run/Operation UI"]
     T16 --> T19["Task19 MVP Gate"]
@@ -98,11 +101,11 @@ flowchart LR
 
 ### 子任务
 
-1. 定义 Workspace、Resume、ResumeVersion、ResumeDraft、Job、JobSnapshot、MatchAnalysis、Suggestion、Application、ExportRecord、BusinessOperation 的 Schema。
+1. 定义 Workspace、Resume、ResumeBranch、ResumeVersion、ResumeDraft、MergeProposal、MergeDecision、VersionViewPreference、Job、JobSnapshot、MatchAnalysis、Suggestion、Application、ExportRecord、BusinessOperation 的 Schema。
 2. 定义 ID、revision、时间戳、content hash、引用、状态枚举、合法转移和 `allowed_actions`。
 3. 定义 WorkbenchContext、标准分析结果、要求项/evidence ref、Suggestion/Patch 和业务错误 envelope。
 4. 定义 Candidate/Job、CandidateResult/Analysis、Patch/Version、Run/Operation 的边界测试。
-5. 建立无数据、完整匹配、缺证据、来源冲突、partial、stale、revision conflict、commit failure 等固定 Fixture。
+5. 建立无数据、基础/方向/公司版本图、上游变化、合并冲突、完整匹配、缺证据、来源冲突、partial、stale、revision conflict、commit failure 等固定 Fixture。
 
 ### 依赖关系
 
@@ -136,6 +139,7 @@ flowchart LR
 3. 业务表只保存必要投影与 Knowledge/Artifact/Run/Trace 引用。
 4. 定义删除 restrict、归档和长期断链检测。
 5. 增加 Store 生命周期、并发、回滚、重开数据库和迁移版本测试。
+6. 增加分支、父子血缘、有向无环校验、Merge Proposal 单次提交和用户视图偏好持久化。
 
 ### 依赖关系
 
@@ -150,6 +154,7 @@ flowchart LR
 - 已确认 ResumeVersion、JobSnapshot 和 ApplicationEvent 不可原地改写。
 - revision 冲突不会覆盖先提交内容。
 - 有 Analysis/Application/Export/Trace 引用的版本不能物理删除。
+- 前端节点移动不能改变 `parent_version_id`；循环或跨 Resume 挂接被 Store/Service 拒绝。
 - Store 未保存完整 Child 对话、原始 HTML 或重复 Knowledge 正文。
 
 ### 预估复杂度
@@ -288,11 +293,11 @@ flowchart LR
 
 - 高（3–4 人日）。
 
-## Task8：实现 ResumeDraft、Diff、版本保存与确认
+## Task8：实现 ResumeDraft、版本血缘、Diff 与选择性合并
 
 ### 任务目标
 
-实现可恢复编辑草稿、不可变简历版本、版本比较和显式确认。
+实现可恢复编辑草稿、不可变简历版本、基础/方向/公司血缘、版本比较、显式确认和三方选择性合并。
 
 ### 子任务
 
@@ -301,6 +306,9 @@ flowchart LR
 3. 实现来源版本/hash 冲突、stale Patch 和三方比较所需响应。
 4. Draft 保存为待确认 ResumeVersion；确认是独立用户命令。
 5. 只有已确认版本开放 Export/Application 绑定。
+6. 实现 ResumeBranch、node type、parent/branch base、共同祖先和 `upstream_changes_available`，并保证版本图有向无环。
+7. 实现 base/upstream/target 三方 Diff、MergeProposal、逐条 MergeDecision、冲突重新校验和单次提交。
+8. 确认合并只在目标分支新增 ResumeVersion；不改写任何输入版本，不触发下游自动同步。
 
 ### 依赖关系
 
@@ -316,10 +324,13 @@ flowchart LR
 - 来源变化后旧 Patch 不会落到新版本。
 - 相同幂等键不重复创建版本。
 - 已确认版本内容不可修改，旧版本保持不变。
+- 上游变化不会自动改变下游正文、Analysis、Export 或 Application。
+- 未解决冲突或输入 tip/revision 已变化时拒绝提交，并保留可重新校验的用户决策。
+- 合并成功可追溯到共同祖先、上游、目标、逐条决策、Operation 和新版本。
 
 ### 预估复杂度
 
-- 高（4–5 人日）。
+- 很高（6–8 人日）。
 
 ## Task9：实现手工 JD、稳定 URL、JobCandidate 与 JobSnapshot
 
@@ -424,7 +435,7 @@ flowchart LR
 
 ### 任务目标
 
-将 Task5–Task11 的服务组合为稳定、分页、鉴权、幂等的 `/v1/workbench` API。
+将 Task5–Task11 的服务组合为稳定、分页、鉴权、幂等的 `/v1/workbench` API，并公开版本图与合并契约。
 
 ### 子任务
 
@@ -433,6 +444,7 @@ flowchart LR
 3. 实现首页、档案、分析、证据、allowed actions、功能可用性等 View Model。
 4. 实现稳定错误码、authoritative revision、retryable 和 recovery action。
 5. 保持现有 Chat、Knowledge、Run、Capability、Trust 和 Email API 兼容。
+6. 实现 version-map、branch、compare/common-ancestor、upstream-changes、merge-proposal/decision/commit 和 view-preference 端点。
 
 ### 依赖关系
 
@@ -448,6 +460,7 @@ flowchart LR
 - 所有列表稳定分页，默认不超过 50 项。
 - SSE/聚合响应不含完整简历、JD、HTML 或隐藏推理。
 - 现有 API 路由和响应契约无回归。
+- 版本图只返回按需节点、边、摘要和 allowed actions，不批量返回简历正文；视图偏好写入不产生业务版本。
 
 ### 预估复杂度
 
@@ -457,7 +470,7 @@ flowchart LR
 
 ### 任务目标
 
-先把 `src/web/index.html` 拆为可维护的原生 ES Modules 与分层 CSS，保持现有功能行为不变，为工作台 UI 提供安全落点。
+先把 `frontend/web/index.html` 拆为可维护的原生 ES Modules 与分层 CSS，保持现有功能行为不变，为工作台 UI 提供安全落点。
 
 ### 子任务
 
@@ -494,7 +507,7 @@ flowchart LR
 
 ### 子任务
 
-1. 实现顶部导航、Workspace 切换、五步条、左/中/右 mount 区域。
+1. 实现顶部导航、Workspace 切换、“工作台/版本地图”一级入口、五步条、左/中/右 mount 区域。
 2. 实现暖白视觉令牌、卡片、状态、Focus、Drawer/Modal 基础组件。
 3. 实现 1440/1280/1024/768/375px 响应式规则。
 4. 实现 Mode A–D 的后端驱动骨架和空态。
@@ -519,11 +532,11 @@ flowchart LR
 
 - 高（4–5 人日）。
 
-## Task15：实现档案、简历版本、导入与 Diff 前端
+## Task15：实现档案、版本地图、导入、Diff 与合并前端
 
 ### 任务目标
 
-完成 Mode A/B 的档案工作流和简历版本管理 UI。
+完成 Mode A/B 的档案工作流、基础/方向/公司版本地图和简历版本管理 UI；完整正文编辑仍由工作台承担。
 
 ### 子任务
 
@@ -532,6 +545,10 @@ flowchart LR
 3. 实现 Draft autosave 状态、revision conflict 和恢复。
 4. 实现版本比较、完整 Diff、待确认版本和确认动作。
 5. 页面刷新后从 API 恢复当前选择和状态。
+6. 实现 Version Map Canvas、节点检查器、类型/状态视觉、筛选搜索、聚焦链路、迷你地图和小屏分层列表降级。
+7. 实现创建方向/公司分支、从节点在工作台打开、双节点比较、共同祖先和上游变化提示。
+8. 实现三方合并面板、逐条接受/拒绝/编辑、冲突阻止提交和成功后聚焦新版本。
+9. 通过 GraphRenderer 适配层隔离具体图渲染器；拖拽、缩放和折叠只保存 VersionViewPreference。
 
 ### 依赖关系
 
@@ -547,10 +564,13 @@ flowchart LR
 - 待确认版本不可导出/投递。
 - 冲突不会覆盖服务器版本，用户可比较并重新应用。
 - 上传文件立即显示处理状态，但未完成前不可分析。
+- 节点坐标变化不会发送父子关系修改命令，刷新后业务血缘保持不变。
+- 上游变化只显示提示；用户完成三方决策并确认前，下游内容不变。
+- 地图不复制完整编辑器，任一节点可在两次点击内进入工作台。
 
 ### 预估复杂度
 
-- 高（4–5 人日）。
+- 很高（7–9 人日）。
 
 ## Task16：实现岗位、匹配、建议审批与简历编辑主区
 
@@ -589,7 +609,7 @@ flowchart LR
 
 ### 任务目标
 
-沿用现有 Starter Agent，在左下角增加显式工作台上下文、候选动作预览和业务 Operation 提交。
+沿用现有 Starter Agent，在工作台与版本地图的左下角增加显式上下文、候选动作预览和业务 Operation 提交。
 
 ### 子任务
 
@@ -598,6 +618,7 @@ flowchart LR
 3. 实现普通回答、导航建议、Candidate Action、Approval、Background Run、Business Commit、Failure 卡。
 4. 实现“解释分数、重写这段、重新评分、搜索相似岗位、确认版本、记录投递”的动作边界。
 5. 保留普通 Chat、完整会话入口、附件、知识问答和现有确认/邮件审批。
+6. 扩展 Context 引用 `resume_branch_id/lineage_focus_version_id/merge_proposal_id`，支持“比较版本、查找可复用经历、解释上游变化、生成 Merge Proposal”。
 
 ### 依赖关系
 
@@ -613,6 +634,7 @@ flowchart LR
 - 自然语言消息不构成业务确认。
 - 后端不信任前端传入正文或自报 principal。
 - 现有 Starter Agent Chat/Session/Tool/Approval 行为无回归。
+- Agent 不能自动提交合并、移动节点、改写父子关系或静默解决冲突；Proposal 必须进入工作台业务对象并由用户逐条确认。
 
 ### 预估复杂度
 
@@ -655,7 +677,7 @@ flowchart LR
 
 ### 任务目标
 
-独立验证“创建目标—导入 MD/TXT—确认 JD—匹配—审批修改—保存并确认版本”的真实闭环，并决定 MVP 是否可启用。
+独立验证“创建目标—导入 MD/TXT—建立基础/方向/公司血缘—确认 JD—匹配—审批修改—保存并确认版本”的真实闭环，并决定 MVP 是否可启用。
 
 ### 子任务
 
@@ -664,6 +686,7 @@ flowchart LR
 3. 验证 Multi-Agent、PDF/DOCX、邮件不可用时闭环仍完成。
 4. 运行现有 Chat、RAG、Capability、Trust、Email、Run API 回归。
 5. 保存桌面/平板/手机截图、Trace、Operation 和测试报告。
+6. 验证基础版本地图、节点打开工作台、节点拖拽不改血缘和上游变化不自动传播；MVP 可暂不开放完整合并 UI，但底层契约必须稳定。
 
 ### 依赖关系
 
@@ -679,6 +702,7 @@ flowchart LR
 - 无静态 Mock、前端假成功或手工改库完成验收。
 - 所有正向匹配/建议可追溯到 ResumeVersion、JobSnapshot 和证据。
 - 相关回归无未解释新增失败。
+- 基础/方向/公司节点来自真实 API，地图不是静态 Mock；小屏可通过分层列表完成同等浏览和打开动作。
 
 ### 预估复杂度
 
@@ -796,6 +820,7 @@ flowchart LR
 3. 将 `job_research_candidates` 只映射为 Candidate。
 4. 历史 Chat 不自动转业务对象；明确 Run/Artifact/Trace 只建只读链接。
 5. 实现 dry-run、断点续跑、幂等、批次记录和安全回滚。
+6. 仅在旧数据具有可验证父版本证据时建立血缘；不确定记录迁为独立根候选并进入人工归类队列。
 
 ### 依赖关系
 
@@ -811,6 +836,7 @@ flowchart LR
 - rollback 不删除原始文件、Knowledge、Session、Run、Trace 或 Artifact。
 - 有后续引用的映射不被回滚删除。
 - 异常 Manifest 和中断可恢复。
+- 迁移不会仅根据文件名、修改时间或相似文案猜测父子关系。
 
 ### 预估复杂度
 
@@ -829,6 +855,7 @@ flowchart LR
 3. 完成键盘、ARIA、Focus、对比度、200% 缩放、reduced motion 测试。
 4. 验证 1440/1280/1024/768/375px 布局和触屏热区。
 5. 优化首屏、分页、autosave、事件 reconnect 和长任务性能。
+6. 使用至少 200 个节点验证版本地图分层加载、视窗裁剪、键盘导航和高对比/无颜色可辨识性。
 
 ### 依赖关系
 
@@ -857,11 +884,12 @@ flowchart LR
 
 ### 子任务
 
-1. 执行导入—JD—分析—建议—版本—PDF/DOCX—投递全闭环。
+1. 执行导入—分支/版本地图—JD—分析—建议—版本—选择性合并—PDF/DOCX—投递全闭环。
 2. 执行全部必验场景和跨 principal、并发、断流、取消、partial、commit failure。
 3. 运行相关全量单元/集成/E2E、现有平台回归和真实环境 Smoke。
 4. 对照 v2/v1 图片及 design 视觉/响应式要求进行人工 QA。
 5. 保存失败修复记录、最终 Trace/Artifact/截图、发布和回滚决策。
+6. 覆盖共同祖先、上游提示、三方冲突、Proposal 输入过期、单次提交和“只新增目标分支版本”的验收。
 
 ### 依赖关系
 
@@ -877,6 +905,7 @@ flowchart LR
 - 没有未解释的新增回归、权限绕过或业务假成功。
 - PDF/DOCX、Application 和工作台 UI 均使用真实后端对象。
 - Multi-Agent 未通过时保持关闭且不阻塞核心闭环。
+- 版本地图在 200 节点 Fixture 下可用；拖拽不改血缘，Agent 不可绕过用户确认提交合并。
 
 ### 预估复杂度
 
@@ -982,6 +1011,7 @@ flowchart LR
 | 仓库融合与三层边界 | Task1–Task4、Task6 | Task19/25 |
 | 工作台首页与求职目标 | Task5、Task12、Task14 | Task19 |
 | 简历导入、版本、Draft、Diff | Task7、Task8、Task15 | Task19 |
+| 版本地图、分支血缘与选择性合并 | Task2、Task3、Task8、Task12、Task15、Task17 | Task19 基础图 / Task25 完整合并 |
 | 岗位、JD、候选与快照 | Task9、Task16、Task20 | Task19/25 |
 | 匹配分析与证据 | Task6、Task10、Task16 | Task19 |
 | AI 修改与人工审批 | Task11、Task16、Task17 | Task19 |
@@ -1001,10 +1031,11 @@ flowchart LR
 2. Task5 与 Task6 可在 Task4 后并行，但不得修改同一 Store 迁移或 API 装配文件。
 3. Task7 与 Task9 可在 Workspace/Binding 稳定后并行；Task10 等待 Task8、Task9、Task6。
 4. Task13 的前端拆分必须先于 Task14–Task18；不得在同一轮同时大规模移动文件和新增业务交互。
-5. Task17 与 Task18 可并行，但 Agent 动作卡和任务卡的共享组件/状态归属必须预先冻结。
-6. Task19 是硬 MVP Gate；未通过不得开始宣称 MVP 完成。
-7. Task20、Task21、Task23 可在 Task19 后并行；Task22 等待不可变版本/导出边界稳定。
-8. Task25 是完整首版硬 Gate；Task26–Task28 不得反向阻塞或污染首版闭环。
+5. Task15 的图渲染适配与业务交互可由不同执行者并行，但节点/边 Schema、view preference 和共享状态接口必须先冻结，且不能同时修改同一前端文件。
+6. Task17 与 Task18 可并行，但 Agent 动作卡和任务卡的共享组件/状态归属必须预先冻结。
+7. Task19 是硬 MVP Gate；未通过不得开始宣称 MVP 完成。
+8. Task20、Task21、Task23 可在 Task19 后并行；Task22 等待不可变版本/导出边界稳定。
+9. Task25 是完整首版硬 Gate；Task26–Task28 不得反向阻塞或污染首版闭环。
 
 ## 6. 每个任务的完成报告模板
 

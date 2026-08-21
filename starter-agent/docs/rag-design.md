@@ -132,7 +132,7 @@ MetadataBuilder   QueryNormalizer    CitationValidator
 建议模块：
 
 ```text
-src/starter_agent/knowledge/
+backend/src/starter_agent/knowledge/
   __init__.py
   models.py          # 文档、Chunk、证据、引用和业务状态模型
   errors.py          # 稳定错误码及安全公开消息
@@ -151,7 +151,7 @@ src/starter_agent/knowledge/
   service.py         # KnowledgeApplicationService
 ```
 
-FastAPI 路由仍位于 `src/starter_agent/interfaces/api.py`。前端继续使用 `src/web/index.html`，新增一级知识库视图，不把知识库隐藏在“设置/长期记忆”弹窗中。
+FastAPI 路由仍位于 `backend/src/starter_agent/interfaces/api.py`。前端继续使用 `frontend/web/index.html`，新增一级知识库视图，不把知识库隐藏在“设置/长期记忆”弹窗中。
 
 ### 入库数据流
 

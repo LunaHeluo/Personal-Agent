@@ -37,7 +37,7 @@ rag-requirements.md
 ### 子任务
 
 1. 在 `pyproject.toml` 增加 FastAPI Multipart 上传所需的 `python-multipart` 依赖。
-2. 在 `src/starter_agent/settings.py` 增加 `KnowledgeConfig`，至少包含：
+2. 在 `backend/src/starter_agent/settings.py` 增加 `KnowledgeConfig`，至少包含：
    - `enabled`
    - `default_user_id`
    - `default_project_id`
@@ -48,14 +48,14 @@ rag-requirements.md
    - `chunk_overlap_chars`
    - `retrieval_top_k`
 3. 在 `config/config.example.yaml` 增加不含秘密的 `knowledge` 示例配置，默认允许 `.md` 和 `.markdown`，单文件上限为 2 MiB。
-4. 新建 `src/starter_agent/knowledge/models.py`，定义：
+4. 新建 `backend/src/starter_agent/knowledge/models.py`，定义：
    - `KnowledgeScope`
    - `KnowledgeBase`
    - `KnowledgeDocument`
    - `DocumentVersion`
    - `IngestionJob`
    - 文档与任务的业务状态枚举
-5. 新建 `src/starter_agent/knowledge/errors.py`，定义稳定错误码及安全公开消息，至少覆盖：
+5. 新建 `backend/src/starter_agent/knowledge/errors.py`，定义稳定错误码及安全公开消息，至少覆盖：
    - `upload_authorization_required`
    - `unsupported_document_type`
    - `document_too_large`
@@ -63,27 +63,27 @@ rag-requirements.md
    - `sensitive_content_detected`
    - `duplicate_document_content`
    - `document_not_found`
-6. 新建 `src/starter_agent/knowledge/security.py`：
+6. 新建 `backend/src/starter_agent/knowledge/security.py`：
    - 校验安全文件名和扩展名。
    - 严格 UTF-8 解码。
    - 拒绝 NUL、明显二进制内容和异常控制字符。
    - 扫描模拟 API Key、Token、密码、邮箱授权码和身份证件号码模式。
    - 只返回规则 ID，不返回命中原文。
-7. 新建 `src/starter_agent/knowledge/store.py`，使用 SQLAlchemy/SQLite 建立：
+7. 新建 `backend/src/starter_agent/knowledge/store.py`，使用 SQLAlchemy/SQLite 建立：
    - `knowledge_bases`
    - `knowledge_documents`
    - `knowledge_document_versions`
    - `knowledge_ingestion_jobs`
 8. Store 的所有读写方法必须接收 `KnowledgeScope`，不得提供绕过 Scope 的按 ID 查询。
-9. 新建 `src/starter_agent/knowledge/service.py`，实现上传用例：
+9. 新建 `backend/src/starter_agent/knowledge/service.py`，实现上传用例：
    - 要求 `confirmed_authorized=true`。
    - 读取受限字节。
    - 校验 Markdown。
    - 计算 SHA-256。
    - 保存文档、初始版本和入库任务。
    - 相同知识库内重复内容返回冲突，不创建重复记录。
-10. 扩展 `src/starter_agent/bootstrap.py`，构造共享的 `KnowledgeApplicationService`。
-11. 扩展 `src/starter_agent/interfaces/api.py`，增加：
+10. 扩展 `backend/src/starter_agent/bootstrap.py`，构造共享的 `KnowledgeApplicationService`。
+11. 扩展 `backend/src/starter_agent/interfaces/api.py`，增加：
     - `POST /v1/knowledge-bases/{knowledge_base_id}/documents`
     - `GET /v1/knowledge-bases/{knowledge_base_id}/documents`
     - `GET /v1/knowledge-bases/{knowledge_base_id}/documents/{document_id}`
@@ -120,18 +120,18 @@ uv run pytest tests/unit/test_knowledge_settings.py tests/unit/test_knowledge_se
 
 ### 子任务
 
-1. 在 `src/starter_agent/knowledge/models.py` 增加：
+1. 在 `backend/src/starter_agent/knowledge/models.py` 增加：
    - `ParsedBlock`
    - `ParsedDocument`
    - `KnowledgeChunk`
    - `SourceLocation`
-2. 新建 `src/starter_agent/knowledge/parser.py`：
+2. 新建 `backend/src/starter_agent/knowledge/parser.py`：
    - 将 CRLF/CR 统一为 LF。
    - 去除 UTF-8 BOM。
    - 识别 ATX 标题、Setext 标题、段落、列表、表格、引用块和代码围栏。
    - 保留每个块的 `section_path`、`start_line` 和 `end_line`。
    - 为检索文本建立独立 Normalize 结果，不覆盖引用原文。
-3. 新建 `src/starter_agent/knowledge/chunker.py`：
+3. 新建 `backend/src/starter_agent/knowledge/chunker.py`：
    - 优先按标题和段落边界切分。
    - 目标长度默认 1,200 字符，上限 1,800 字符，重叠默认 150 字符。
    - 代码围栏、表格和列表尽量保持整体。
@@ -154,8 +154,8 @@ uv run pytest tests/unit/test_knowledge_settings.py tests/unit/test_knowledge_se
    - `search_text`
    - `content_sha256`
    - `created_at`
-5. 在 `src/starter_agent/knowledge/store.py` 增加 `knowledge_chunks` 表及批量写入、分页预览和按版本清理方法。
-6. 新建 `src/starter_agent/knowledge/ingestion.py`，串联：
+5. 在 `backend/src/starter_agent/knowledge/store.py` 增加 `knowledge_chunks` 表及批量写入、分页预览和按版本清理方法。
+6. 新建 `backend/src/starter_agent/knowledge/ingestion.py`，串联：
 
 ```text
 Upload → Parse → Normalize → Chunk → Metadata
@@ -197,7 +197,7 @@ uv run pytest tests/unit/test_markdown_parser.py tests/unit/test_knowledge_chunk
 
 ### 子任务
 
-1. 新建 `src/starter_agent/knowledge/index.py`，定义 `TextIndex` 接口和 `SQLiteFtsIndex` 实现。
+1. 新建 `backend/src/starter_agent/knowledge/index.py`，定义 `TextIndex` 接口和 `SQLiteFtsIndex` 实现。
 2. 初始化 FTS5 虚拟表 `knowledge_chunks_fts`：
    - 使用 `tokenize='trigram'`。
    - 使用 external-content 模式索引 `search_text` 和扁平化 `section_path`。
@@ -211,7 +211,7 @@ Upload → Parse → Normalize → Chunk → Metadata → Text Index
 ```
 
 5. 索引写入与版本激活使用事务边界；索引失败时该版本不可检索。
-6. 新建 `src/starter_agent/knowledge/query.py`：
+6. 新建 `backend/src/starter_agent/knowledge/query.py`：
    - 规范化用户查询。
    - 对 FTS5 特殊字符进行安全处理。
    - 生成参数化 MATCH 查询，禁止拼接未转义表达式。
@@ -220,7 +220,7 @@ Upload → Parse → Normalize → Chunk → Metadata → Text Index
      - `RAG / 检索增强 / 知识库`
      - `LLM / 大语言模型`
    - 对 1～2 字有效关键词使用同一 Scope 下、带候选上限的 `instr(search_text, :term)` 补充查询，不允许无界全库扫描。
-7. 新建 `src/starter_agent/knowledge/retrieval.py`，实现：
+7. 新建 `backend/src/starter_agent/knowledge/retrieval.py`，实现：
    - Scope 过滤。
    - 仅检索活动、已索引版本。
    - `document_ids`、`document_types`、`filenames` 和 `versions` 过滤。
@@ -335,7 +335,7 @@ uv run pytest tests/unit/test_knowledge_lifecycle.py tests/unit/test_fts_index.p
 
 ### 子任务
 
-1. 修改 `src/web/index.html`，在左侧一级导航增加：
+1. 修改 `frontend/web/index.html`，在左侧一级导航增加：
    - “对话”
    - “知识库”
 2. 新增知识库视图，不能放入现有“设置/长期记忆”弹窗中。
@@ -402,23 +402,23 @@ uv run pytest tests/unit/test_knowledge_ui_contract.py tests/integration/test_kn
 
 ### 子任务
 
-1. 在 `src/starter_agent/knowledge/models.py` 增加：
+1. 在 `backend/src/starter_agent/knowledge/models.py` 增加：
    - `Evidence`
    - `GeneratedClaim`
    - `Citation`
    - `RagAnswer`
-2. 新建 `src/starter_agent/knowledge/context.py`：
+2. 新建 `backend/src/starter_agent/knowledge/context.py`：
    - 为本次证据分配临时 `evidence_id`。
    - 加入明确证据边界。
    - 标注文档、版本、Chunk、章节和行号。
    - 明确 Chunk 内容是资料，不是系统指令。
    - 只加入本次 Retrieval 返回且通过 Scope 的证据。
-3. 新建 `src/starter_agent/knowledge/generation.py`：
+3. 新建 `backend/src/starter_agent/knowledge/generation.py`：
    - 复用 `ProviderRegistry`。
    - 调用 `Provider.complete(..., tools=[])`。
    - 要求输出 `answered/refused/conflict`、answer、claims 和 evidence IDs。
    - JSON 解析失败最多进行一次格式修复。
-4. 新建 `src/starter_agent/knowledge/citations.py`：
+4. 新建 `backend/src/starter_agent/knowledge/citations.py`：
    - 只接受本次 Evidence 中存在的 ID。
    - 校验每个事实性 claim 至少有一个证据。
    - 校验 quote 是对应 Chunk 原文的连续子串。
@@ -472,7 +472,7 @@ uv run pytest tests/unit/test_rag_context.py tests/unit/test_rag_citations.py te
 
 ### 子任务
 
-1. 新建 `src/starter_agent/knowledge/evidence.py`，实现 `EvidenceSufficiencyGate`：
+1. 新建 `backend/src/starter_agent/knowledge/evidence.py`，实现 `EvidenceSufficiencyGate`：
    - 无命中返回 `no_evidence`。
    - 关键词覆盖不足返回 `insufficient_evidence`。
    - 问题中的关键数字或专有实体在证据中不存在时不支持确定性结论。
@@ -535,7 +535,7 @@ uv run pytest tests/unit/test_evidence_gate.py tests/unit/test_rag_refusal.py te
 
 ### 子任务
 
-1. 扩展 `src/starter_agent/observability/logging.py` 的敏感字段规则，覆盖：
+1. 扩展 `backend/src/starter_agent/observability/logging.py` 的敏感字段规则，覆盖：
    - `document_text`
    - `chunk_text`
    - `search_text`

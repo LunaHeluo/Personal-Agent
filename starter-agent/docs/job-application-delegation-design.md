@@ -635,7 +635,7 @@ Profile Child 可以先依据岗位查询模板检索通用简历能力证据；
 
 ```mermaid
 flowchart LR
-    FE["src/web/index.html sendMessage"] --> CHAT["POST /v1/chat 或 /v1/chat/stream"]
+    FE["frontend/web/index.html sendMessage"] --> CHAT["POST /v1/chat 或 /v1/chat/stream"]
     CHAT --> CLASS["_classify_chat_request"]
     CLASS --> ROUTER["_dispatch_classified_chat JOB_RESEARCH"]
     ROUTER --> WF["_chat_with_public_job_search_fallback"]

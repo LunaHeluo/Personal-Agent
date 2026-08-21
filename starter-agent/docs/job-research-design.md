@@ -28,7 +28,7 @@
 | 健康检查 | `/health` 只返回应用存活；Provider 有独立 health；Tool/MCP 无 health | 增加 MCP Server 级状态、协议 Ping、能力刷新和详情 API |
 | 日志 | `structlog` JSON 日志写 stderr 和文件，并按字段名脱敏 | 复用日志设施，增加 MCP、Gate、确认和快照事件；不记录正文或凭证 |
 | Tool Result | `ToolResultGuard` 按 Token 预算裁剪，超长内容可保存 `tool_artifacts` | 扩展为 MCP 结果标准化、脱敏、来源保留、完整裁剪元数据 |
-| 前端 | 单文件 `src/web/index.html`，用 `showPrimaryView()` 切换“对话/知识库”；`/v1/tools` 展示内置工具 | 新增第三个“能力管理”主视图及两个页签；所有状态从后端读取 |
+| 前端 | 单文件 `frontend/web/index.html`，用 `showPrimaryView()` 切换“对话/知识库”；`/v1/tools` 展示内置工具 | 新增第三个“能力管理”主视图及两个页签；所有状态从后端读取 |
 | SerpAPI | Tool Name 为 `search_jobs_serpapi` | 直接复用，不重命名 |
 | SerpAPI Schema | `query` 必填字符串 2–300；`location` 可选字符串最长 100；`limit` 可选整数 1–10，默认 5；禁止额外字段 | Skill 按真实 Schema 调用 |
 | RAG | 存在 `POST /v1/knowledge-bases/{id}/retrieve`，请求含 `question/top_k/document_ids/document_types/filenames/versions`；不存在模型 callable RAG Tool | 明确为待新增依赖：`retrieve_resume_evidence` 适配器 Tool |
