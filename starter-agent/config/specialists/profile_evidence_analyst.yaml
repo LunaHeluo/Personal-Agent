@@ -1,0 +1,58 @@
+specialist_id: profile_evidence_analyst
+version: "1.0.0"
+enabled: true
+system_prompt_ref: config/specialists/prompts/profile_evidence_analyst-v1.md
+prompt_version: "1.0.0"
+capability_tags: [resume_evidence, requirement_matching, gap_analysis]
+schema_version: profile-evidence-output-v1
+allowed_tools: [retrieve_resume_evidence]
+allowed_knowledge_scope_types: [resume]
+allowed_artifact_types: [profile_evidence_result]
+default_budget: {tokens: 20000, cost_microunits: 800000, wall_clock_ms: 120000, model_calls: 8, tool_calls: 12}
+max_budget: {tokens: 80000, cost_microunits: 4000000, wall_clock_ms: 300000, model_calls: 24, tool_calls: 40}
+max_steps: 12
+max_concurrency: 4
+default_deadline_ms: 240000
+per_step_timeout_ms: 30000
+retry_policy: {max_retries_per_error: 1}
+failure_behavior: allow_partial
+dependency_requirements: [tool:retrieve_resume_evidence, service:rag]
+input_schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  additionalProperties: false
+  required: [normalized_job_requirements_ref, depends_on_task_id, knowledge_scope, top_k, output_schema_version]
+  properties:
+    normalized_job_requirements_ref: {type: string, minLength: 1}
+    depends_on_task_id: {type: string, minLength: 1}
+    knowledge_scope: {type: object}
+    candidate_chunk_ids: {type: array, maxItems: 500, uniqueItems: true, items: {type: string}}
+    top_k: {type: integer, minimum: 1, maximum: 50}
+    output_schema_version: {const: profile-evidence-output-v1}
+output_schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  additionalProperties: false
+  required: [matches, missing, conflicts]
+  properties:
+    matches:
+      type: array
+      items:
+        type: object
+        additionalProperties: false
+        required: [requirement_ref, match_status, evidence, evidence_strength]
+        properties:
+          requirement_ref: {type: string}
+          match_status: {enum: [matched, partial, missing, conflict]}
+          evidence_strength: {enum: [strong, moderate, weak, none]}
+          evidence:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              required: [chunk_id, source_ref]
+              properties:
+                chunk_id: {type: string}
+                source_ref: {type: string}
+    missing: {type: array}
+    conflicts: {type: array}

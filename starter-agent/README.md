@@ -224,13 +224,15 @@ uv run agent model test --provider deepseek --model deepseek-chat
 ```text
 config/              配置和 system prompt
 docs/                Agent 身份和架构说明
-src/starter_agent/
-  agent/             上下文构建和 Agent Runtime
-  providers/         Mock 与 OpenAI-compatible Provider
-  tools/             工具定义、注册和策略检查
-  infrastructure/    SQLite 会话存储
-  interfaces/        CLI 与 FastAPI
-tests/               单元测试与集成测试
+frontend/web/         HTML、CSS、JavaScript 工作台
+backend/src/starter_agent/
+  agent/              上下文构建和 Agent Runtime
+  cv_workbench/       简历工作台业务域
+  providers/          Mock 与 OpenAI-compatible Provider
+  tools/              工具定义、注册和策略检查
+  infrastructure/     SQLite 会话存储
+  interfaces/         CLI 与 FastAPI
+tests/                跨前后端单元、集成与 E2E 测试
 ```
 
 ## 交前检查

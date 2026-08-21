@@ -1,0 +1,74 @@
+specialist_id: job_web_researcher
+version: "1.0.0"
+enabled: true
+system_prompt_ref: config/specialists/prompts/job_web_researcher-v1.md
+prompt_version: "1.0.0"
+capability_tags: [job_web_research, multi_page_navigation, dynamic_page_extraction]
+schema_version: job-web-output-v1
+allowed_tools:
+  - search_jobs_serpapi
+  - mcp__playwright__browser_navigate
+  - mcp__playwright__browser_wait_for
+  - mcp__playwright__browser_snapshot
+  - mcp__playwright__browser_click
+  - mcp__playwright__browser_navigate_back
+allowed_knowledge_scope_types: []
+allowed_artifact_types: [browser_snapshot, normalized_job_description]
+default_budget: {tokens: 50000, cost_microunits: 2000000, wall_clock_ms: 300000, model_calls: 20, tool_calls: 60}
+max_budget: {tokens: 200000, cost_microunits: 10000000, wall_clock_ms: 900000, model_calls: 60, tool_calls: 180}
+max_steps: 30
+max_concurrency: 3
+default_deadline_ms: 600000
+per_step_timeout_ms: 35000
+retry_policy: {max_retries_per_error: 2, stop_after_unrecoverable_candidates: 3}
+failure_behavior: allow_partial
+dependency_requirements: [service:serpapi, mcp:playwright]
+input_schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  additionalProperties: false
+  required: [query, target_fields, max_pages, stop_conditions, output_schema_version]
+  properties:
+    query: {type: string, minLength: 1, maxLength: 1000}
+    urls: {type: array, maxItems: 100, items: {type: string, format: uri, pattern: '^https?://'}}
+    require_search: {type: boolean}
+    target_fields: {type: array, minItems: 1, maxItems: 50, uniqueItems: true, items: {type: string}}
+    max_pages: {type: integer, minimum: 1, maximum: 10}
+    stop_conditions: {type: object}
+    output_schema_version: {const: job-web-output-v1}
+output_schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  additionalProperties: false
+  required: [jobs, missing, errors, visited]
+  properties:
+    jobs:
+      type: array
+      items:
+        type: object
+        additionalProperties: false
+        required: [title, company, location, responsibilities, requirements, source_url, final_url, retrieved_at, validation_state, content_hash, artifact_refs]
+        properties:
+          title: {type: [string, 'null']}
+          company: {type: [string, 'null']}
+          location: {type: [string, 'null']}
+          responsibilities: {type: array, items: {type: string}}
+          requirements: {type: array, items: {type: string}}
+          source_url: {type: string, format: uri, pattern: '^https?://'}
+          final_url: {type: string, format: uri, pattern: '^https?://'}
+          retrieved_at: {type: string, format: date-time}
+          validation_state: {enum: [verified, partial_verified]}
+          content_hash: {type: string, pattern: '^[0-9a-f]{64}$'}
+          artifact_refs: {type: array, items: {type: string}}
+    missing: {type: array}
+    errors: {type: array}
+    visited:
+      type: object
+      additionalProperties: false
+      required: [page_count, step_count, attempts, states, stop_reason]
+      properties:
+        page_count: {type: integer, minimum: 0, maximum: 10}
+        step_count: {type: integer, minimum: 0, maximum: 30}
+        attempts: {type: array, items: {type: object}}
+        states: {type: array, items: {type: string}}
+        stop_reason: {type: string}

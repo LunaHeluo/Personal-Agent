@@ -26,6 +26,8 @@ providers:
     api_key_env: ZHIPU_API_KEY
     stream: true
     thinking: disabled
+    # Add versioned model pricing before assigning a finite cost budget.
+    # Models without pricing remain fail-closed when provider cost is absent.
   openai:
     type: openai_compatible
     base_url: https://api.openai.com/v1
@@ -52,6 +54,7 @@ runtime:
 
 mcp:
   config_path: config/mcp.json
+  initialize_timeout_seconds: 60
 
 knowledge:
   # 仅配置容量和行为参数；不要在 YAML 中放入秘密或私人文档正文。
@@ -79,6 +82,18 @@ job_research:
   max_candidate_urls: 10
   target_valid_jds: 3
   retrieval_budget_seconds: 180
+
+job_document_parsing:
+  # Optional: enables OCR for uploaded PDF and image JD files.
+  mineru_token_env: MINERU_API_TOKEN
+  mineru_base_url: https://mineru.net
+  timeout_seconds: 120
+
+# Keep unset until `trust delegation-compare` persists a current passed decision.
+delegation_release:
+  decision_id: null
+  baseline_report_hash: null
+  candidate_report_hash: null
 
 tools:
   enabled:

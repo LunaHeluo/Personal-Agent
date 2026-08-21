@@ -1,0 +1,16 @@
+{
+  "run_id": "orchestration-acceptance-real-20260815",
+  "recorded_at": "2026-08-15T17:14:48.4167721+08:00",
+  "status": "blocked_before_execution",
+  "blocked_stage": "external_data_authorization",
+  "provider": "zhipu",
+  "model": "glm-4.7",
+  "serpapi_configured": true,
+  "playwright_mcp_configured": true,
+  "external_action_performed": false,
+  "application_submitted": false,
+  "email_sent": false,
+  "original_error": "This action was rejected due to unacceptable risk. Reason: 该 Smoke 会把可能包含简历/个人求职上下文的数据发送至外部 zhipu/glm-4.7，并访问 SerpAPI/Playwright；用户授权了真实 Smoke，但未明确授权该具体敏感载荷发送至这些具体目的地。",
+  "minimum_user_action": "明确授权 zhipu/glm-4.7、SerpAPI 与 Playwright 接收本次 Smoke 提示以及可能绑定的简历/个人求职上下文，然后使用新的 run_id 重跑真实 Smoke。",
+  "additional_product_gap": "现有 trust real-smoke 仅创建一个 Web Child，且 resume_evidence 固定为空；即使授权通过，也不能单独证明并行 Web/RAG Child Run 与 Join。"
+}

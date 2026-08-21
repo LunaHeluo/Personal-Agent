@@ -7,14 +7,14 @@
 前端页面放在：
 
 ```text
-src/web/index.html
+frontend/web/index.html
 ```
 
 目录约束：
 
-- Web 前端相关静态文件统一放在 `src/web/` 下。
+- Web 前端相关静态文件统一放在 `frontend/web/` 下。
 - 项目根目录不再新增或保留独立的 `web/` 目录，避免和 Python 源码目录之外的散落入口混用。
-- 启动静态服务时统一使用 `python3 -m http.server 8001 -d src/web`。
+- 启动静态服务时统一使用 `python3 -m http.server 8001 -d frontend/web`。
 
 前端优先调用现有流式接口：
 
@@ -31,14 +31,14 @@ uv run agent serve
 静态前端建议用单独端口启动，例如：
 
 ```bash
-python3 -m http.server 8001 -d src/web
+python3 -m http.server 8001 -d frontend/web
 ```
 
-当前 `src/starter_agent/interfaces/api.py` 已经允许 `http://127.0.0.1:8001` 和 `http://localhost:8001` 跨域访问，因此前端独立启动后可以直接调用本地 API。
+当前 `backend/src/starter_agent/interfaces/api.py` 已经允许 `http://127.0.0.1:8001` 和 `http://localhost:8001` 跨域访问，因此前端独立启动后可以直接调用本地 API。
 
 ## 页面功能
 
-`src/web/index.html` 作为单文件前端实现，包含 HTML、CSS、JavaScript，不引入复杂构建工具。
+`frontend/web/index.html` 作为单文件前端实现，包含 HTML、CSS、JavaScript，不引入复杂构建工具。
 
 需要实现的核心能力：
 
@@ -62,12 +62,12 @@ python3 -m http.server 8001 -d src/web
 
 ## 需要改动的文件
 
-### 1. 新增 `src/web/index.html`
+### 1. 新增 `frontend/web/index.html`
 
 新增单文件静态页面，建议结构如下：
 
 ```text
-src/web/
+frontend/web/
   index.html
 ```
 
@@ -145,7 +145,7 @@ const response = await fetch(`${apiBase}/v1/chat/stream`, {
 
 ```bash
 uv run agent serve
-python3 -m http.server 8001 -d src/web
+python3 -m http.server 8001 -d frontend/web
 ```
 
 然后打开：
@@ -156,7 +156,7 @@ http://127.0.0.1:8001
 
 这一步不是第一版必须改动，但建议实现前端时同步补充，降低使用门槛。
 
-### 3. 修改 `src/starter_agent/interfaces/api.py`
+### 3. 修改 `backend/src/starter_agent/interfaces/api.py`
 
 基础聊天能力已经满足，但要支持 ChatGPT 风格的历史会话切换，需要新增 session 查询接口。
 
@@ -226,7 +226,7 @@ class SessionMessagesResponse(BaseModel):
 - 如果 session 不存在，返回 404。
 - 前端调用该接口前必须先提示用户确认删除。
 
-### 4. 修改 `src/starter_agent/infrastructure/session_store.py`
+### 4. 修改 `backend/src/starter_agent/infrastructure/session_store.py`
 
 当前 `SQLiteSessionStore` 已经有：
 
@@ -277,9 +277,9 @@ class StoredSessionSummary(BaseModel):
     last_message: str | None = None
 ```
 
-这些模型可以放在 `src/starter_agent/domain/models.py`，也可以先作为 API 层响应模型和存储层内部 DTO。为了后续复用，建议放在 `domain/models.py`。
+这些模型可以放在 `backend/src/starter_agent/domain/models.py`，也可以先作为 API 层响应模型和存储层内部 DTO。为了后续复用，建议放在 `domain/models.py`。
 
-### 5. 可选修改 `src/starter_agent/application.py`
+### 5. 可选修改 `backend/src/starter_agent/application.py`
 
 如果希望 API 层不直接访问 `store`，可以在 `ApplicationService` 中增加查询方法：
 
@@ -295,9 +295,9 @@ list_session_messages(session_id: UUID, limit: int = 100)
 session 切换只涉及历史查询和前端展示，不需要修改：
 
 ```text
-src/starter_agent/agent/runtime.py
-src/starter_agent/providers/*
-src/starter_agent/tools/*
+backend/src/starter_agent/agent/runtime.py
+backend/src/starter_agent/providers/*
+backend/src/starter_agent/tools/*
 ```
 
 这样可以降低改动风险，确保 Agent 生成逻辑不被前端功能影响。
@@ -423,7 +423,7 @@ curl http://127.0.0.1:8000/v1/sessions/<session_id>/messages
 启动静态前端：
 
 ```bash
-python3 -m http.server 8001 -d src/web
+python3 -m http.server 8001 -d frontend/web
 ```
 
 浏览器打开：
@@ -479,7 +479,7 @@ http://127.0.0.1:8001
 3. 在 `application.py` 增加查询方法，或由 API 层直接调用 store。
 4. 在 `interfaces/api.py` 新增 `GET /v1/sessions` 和 `GET /v1/sessions/{session_id}/messages`。
 5. 为新增 session API 补充集成测试。
-6. 新增 `src/web/index.html`，完成带会话侧边栏的基础布局和静态样式。
+6. 新增 `frontend/web/index.html`，完成带会话侧边栏的基础布局和静态样式。
 7. 接入 `/v1/chat/stream`，完成流式读取和消息追加。
 8. 接入 session 列表、历史消息读取、新建会话、切换会话。
 9. 增加错误态、发送中状态、空消息校验。

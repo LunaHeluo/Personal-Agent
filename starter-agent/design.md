@@ -188,7 +188,7 @@ flowchart LR
 ### 建议模块边界
 
 ```text
-src/starter_agent/tools/email/
+backend/src/starter_agent/tools/email/
 ├── adapters/
 │   ├── base.py
 │   ├── mock_fixture.py

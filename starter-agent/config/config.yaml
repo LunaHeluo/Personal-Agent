@@ -34,6 +34,22 @@ providers:
     api_key_env: ZHIPU_API_KEY
     stream: true
     thinking: disabled
+    pricing:
+      glm-4.7:
+        currency: CNY
+        price_version: zhipu-glm-4.7-cny-2026-08-14
+        source_url: https://bigmodel.cn/pricing
+        tiers:
+          - max_input_tokens: 31999
+            max_output_tokens: 199
+            input_microunits_per_token: 2
+            output_microunits_per_token: 8
+          - max_input_tokens: 31999
+            input_microunits_per_token: 3
+            output_microunits_per_token: 14
+          - max_input_tokens: 200000
+            input_microunits_per_token: 4
+            output_microunits_per_token: 16
   openai:
     type: openai_compatible
     models:
@@ -59,6 +75,7 @@ runtime:
 
 mcp:
   config_path: config/mcp.json
+  initialize_timeout_seconds: 60
 
 context:
   max_total_tokens: 128000
@@ -83,6 +100,18 @@ job_research:
   max_candidate_urls: 10
   target_valid_jds: 3
   retrieval_budget_seconds: 180
+
+job_document_parsing:
+  # Optional: enables OCR for uploaded PDF and image JD files.
+  mineru_token_env: MINERU_API_TOKEN
+  mineru_base_url: https://mineru.net
+  timeout_seconds: 120
+
+delegation_release:
+  # Offline gate and the real model + Search + Playwright smoke passed.
+  decision_id: job-delegation-release-20260815-r2
+  baseline_report_hash: 06e9f65c443a3acfb711e3cad5a6380e52b8b32ce94b350fdd02d96bb3d607a0
+  candidate_report_hash: 2bc361f2bd04e91f760cb1185fa196877e261d72aa6f8ab4be349afa65d1ff29
 
 tools:
   enabled:

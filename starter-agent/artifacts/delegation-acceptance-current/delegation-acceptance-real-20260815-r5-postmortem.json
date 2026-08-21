@@ -1,0 +1,33 @@
+{
+  "run_id": "delegation-acceptance-real-20260815-r5",
+  "status": "product_path_passed_report_serialization_failed",
+  "provider": "zhipu",
+  "model": "glm-4.7",
+  "public_data_only": true,
+  "parent_run_id": "parent:job:b0715b68a9830569d3ed1979b850e94a",
+  "child_task_id": "task:cc3b061b84afd75de70dfcde87c1bf2d",
+  "child_run_id": "child-run:7038bf4dace1143267b903dcfe3961a5",
+  "child_status": "partial",
+  "accepted_result_envelope_ref": "artifact:result-envelope:child-run:7038bf4dace1143267b903dcfe3961a5:a2180d085a1741f4",
+  "accepted_result_hash": "a2180d085a1741f4ff2752b480d9cbd025c832aba6f43ff1d6d9eb2f298227ff",
+  "merge_report_id": "merge:a77a3ed121595af74044dde1fdd9dca1",
+  "final_output_ref": "artifact:merged:72159d1c4d2da52b8e8e5c26db976e4c86454fc7179b428c04b6d1bf2ace3dca",
+  "verified_job_count": 1,
+  "legacy_path_used": false,
+  "observed_sequence": [
+    "route",
+    "delegate_task",
+    "child_model",
+    "search_jobs_serpapi",
+    "browser_navigate",
+    "browser_wait_for",
+    "browser_snapshot",
+    "result_validation",
+    "parent_merge",
+    "final_model"
+  ],
+  "external_writes": 0,
+  "report_error": "AttributeError: 'ParentMergeResult' object has no attribute 'output_ref'",
+  "report_error_fixed": true,
+  "evidence_source": "data/agent.db durable Parent/Child/Task/Artifact/Merge rows and captured CLI traceback"
+}

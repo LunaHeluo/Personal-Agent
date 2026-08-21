@@ -1,0 +1,29 @@
+{
+  "budget": null,
+  "delegation": {
+    "child_run_id": "child-run:eca99ed10fe5f57568b4a8cc3d6f4ab6",
+    "child_task_id": "task:c91fff8181f87b9a15814deb1b192dc7",
+    "legacy_path_used": false,
+    "parent_run_id": "parent:job:3de4308a2fc39d0511f381fc901e2ec0",
+    "route": "delegated_job_research"
+  },
+  "error_code": "delegated_web_child_returned_no_jobs",
+  "failure_stage": "child_execution",
+  "model": "glm-4.7",
+  "provider": "zhipu",
+  "retrieved_at": "2026-08-15T13:23:54.788014+00:00",
+  "route_decision": {
+    "reason_code": "skill_selected",
+    "route": "job_research"
+  },
+  "run_id": "shanghai-ai-agent-search-diagnostic-20260815-r1",
+  "run_type": "smoke",
+  "separate_from_fixture_baseline": true,
+  "source_url": "https://jobs.kuehne-nagel.com/global/en/job/KUNAGLOBAL14013EXTERNALENGLOBAL/Sea-Logistics-Agentic-AI-Engineer",
+  "source_url_hash": "cfdee65d424708b0f08c434e978d27972ce5360ee2aa9112b71880c63a1f3d19",
+  "status": "blocked",
+  "trace_event_ids": [
+    "shanghai-ai-agent-search-diagnostic-20260815-r1:environment:1"
+  ],
+  "verified_source_url": null
+}

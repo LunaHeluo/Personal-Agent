@@ -1,0 +1,19 @@
+{
+  "run_id": "orchestration-real-smoke-20260815",
+  "run_type": "smoke",
+  "status": "blocked",
+  "source_url": "https://openai.com/careers/offensive-security-agent-engineer-remote-us/",
+  "source_verified_public": true,
+  "blocked_stage": "model_authorization",
+  "error_code": "external_model_personal_context_not_explicitly_authorized",
+  "external_action_performed": false,
+  "application_submitted": false,
+  "email_sent": false,
+  "separate_from_fixture_baseline": true,
+  "fixture_release_gate_affected": false,
+  "recovery_actions": [
+    "explicitly authorize the configured provider/model to receive the smoke prompt and any bound resume context",
+    "or configure a privacy-approved test model and rerun agent trust real-smoke"
+  ],
+  "recorded_at": "2026-08-15T00:00:00+08:00"
+}

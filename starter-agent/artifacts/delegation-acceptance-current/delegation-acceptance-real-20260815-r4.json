@@ -1,0 +1,29 @@
+{
+  "budget": null,
+  "delegation": {
+    "child_run_id": "child-run:8fe6ada14b5721782354f7e101a58143",
+    "child_task_id": "task:122abe1d7718d5b1e3e98064723088ae",
+    "legacy_path_used": false,
+    "parent_run_id": "parent:job:5a59ffcf7414e4361b83119495ad367a",
+    "route": "delegated_job_research"
+  },
+  "error_code": "delegated_web_child_not_claimed",
+  "failure_stage": "child_execution",
+  "model": "glm-4.7",
+  "provider": "zhipu",
+  "retrieved_at": "2026-08-15T10:33:04.257358+00:00",
+  "route_decision": {
+    "reason_code": "skill_selected",
+    "route": "job_research"
+  },
+  "run_id": "delegation-acceptance-real-20260815-r4",
+  "run_type": "smoke",
+  "separate_from_fixture_baseline": true,
+  "source_url": "https://jobs.lever.co/payugpo/49975338-7270-422e-a3c1-e2375394cef4",
+  "source_url_hash": "ce1ff0fb212ccd4dc06d4da7d6a4ae38b34ba60c5e133f5a102a723197249bc0",
+  "status": "blocked",
+  "trace_event_ids": [
+    "delegation-acceptance-real-20260815-r4:environment:1"
+  ],
+  "verified_source_url": null
+}
