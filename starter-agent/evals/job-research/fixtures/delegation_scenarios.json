@@ -1,0 +1,236 @@
+{
+  "schema_version": "delegation-fixture-v1",
+  "scenarios": {
+    "dual_child_success": {
+      "child_statuses": ["succeeded", "succeeded"], "callback_count": 2, "tool_invoked": true, "delegation_count": 2,
+      "quality": {"accepted_children": 2, "merge_quality": "complete"}, "merge_count": 1, "result_envelope_valid": true,
+      "evidence_test_ids": ["tests/integration/test_delegation_runtime.py::test_parent_and_children_share_runtime_loop_but_not_context_state", "tests/unit/test_result_merger.py::test_merger_preserves_profile_matches_chunk_evidence_and_validation_counts"]
+    },
+    "one_child_failure_partial": {
+      "task_success": false, "parent_status": "partial", "child_statuses": ["succeeded", "failed"], "error_code": "mcp_unavailable", "partial": true,
+      "callback_count": 2, "tool_invoked": true, "budget_status": "released_partial", "delegation_count": 2,
+      "quality": {"accepted_children": 1, "merge_quality": "partial"}, "merge_count": 1,
+      "evidence_test_ids": ["tests/unit/test_result_merger.py::test_merger_preserves_profile_matches_chunk_evidence_and_validation_counts"]
+    },
+    "child_deadline_timeout": {
+      "task_success": false, "parent_status": "timed_out", "child_statuses": ["timed_out"], "error_code": "deadline_exceeded", "schema_valid": false,
+      "tool_invoked": true, "budget_status": "released_timeout", "delegation_count": 1,
+      "quality": {"accepted_children": 0, "merge_quality": "none"},
+      "evidence_test_ids": ["tests/unit/test_delegation_models.py::test_transition_requires_expected_version_and_terminal_state_is_immutable"]
+    },
+    "stable_single_url_direct": {
+      "route": "tool_loop", "child_statuses": [], "tool_invoked": true, "delegation_count": 0,
+      "tool_sequence": ["read_public_job_page"], "single_page_path": true, "direct_browser_calls": 0, "legacy_workflow_calls": 0,
+      "quality": {"accepted_children": 0, "merge_quality": "single_tool"},
+      "evidence_test_ids": ["tests/unit/test_legacy_migration_policy.py::test_legacy_migration_is_disabled_by_default"]
+    },
+    "three_jd_multistep": {
+      "child_statuses": ["succeeded"], "callback_count": 1, "tool_invoked": true, "delegation_count": 1,
+      "tool_sequence": ["search_jobs_serpapi", "browser_navigate", "browser_wait_for", "browser_click", "browser_snapshot", "browser_navigate", "browser_wait_for", "browser_snapshot", "browser_navigate", "browser_wait_for", "browser_snapshot"],
+      "web_step_count": 11, "valid_job_count": 3, "completeness_checks": 3, "next_page_count": 2,
+      "quality": {"accepted_children": 1, "merge_quality": "complete"}, "merge_count": 1,
+      "evidence_test_ids": ["tests/unit/test_job_web_researcher.py::test_scripted_multi_page_research_uses_shared_runtime_loop_and_deduplicates_jobs"]
+    },
+    "page_load_retry": {
+      "child_statuses": ["succeeded"], "tool_invoked": true, "delegation_count": 1, "retry_count": 1, "retry_limit": 2,
+      "tool_sequence": ["browser_navigate", "browser_wait_for", "browser_navigate", "browser_snapshot"], "error_policy": "bounded_retry",
+      "quality": {"accepted_children": 1, "merge_quality": "complete"},
+      "evidence_test_ids": ["tests/unit/test_job_web_error_policy.py::test_recoverable_retries_are_bounded_and_backoff_is_capped"]
+    },
+    "page_404_degrade": {
+      "parent_status": "partial", "child_statuses": ["partial"], "partial": true, "tool_invoked": true, "delegation_count": 1,
+      "retry_count": 0, "error_code": "page_not_found", "missing_count": 1, "degraded": true,
+      "quality": {"accepted_children": 1, "merge_quality": "partial"}, "merge_count": 1,
+      "evidence_test_ids": ["tests/unit/test_job_web_error_policy.py::test_not_found_duplicate_and_three_unrecoverable_candidates_never_retry_original"]
+    },
+    "empty_body_next_candidate": {
+      "child_statuses": ["succeeded"], "tool_invoked": true, "delegation_count": 1, "retry_count": 1, "candidate_advance_count": 1,
+      "tool_sequence": ["browser_navigate", "browser_snapshot", "browser_navigate", "browser_snapshot"], "empty_body_rejected": true,
+      "quality": {"accepted_children": 1, "merge_quality": "complete"},
+      "evidence_test_ids": ["tests/unit/test_job_web_error_policy.py::test_empty_body_only_retries_one_snapshot_and_render_timeout_uses_two_wait_tiers"]
+    },
+    "redirect_revalidated": {
+      "child_statuses": ["succeeded"], "tool_invoked": true, "delegation_count": 1, "redirect_count": 1, "redirect_scope_rechecked": true,
+      "source_and_final_url_preserved": true, "quality": {"accepted_children": 1, "merge_quality": "complete"},
+      "evidence_test_ids": ["tests/unit/test_job_web_error_policy.py::test_redirect_chain_each_hop_is_validated_and_hard_limited"]
+    },
+    "structure_change_recovery": {
+      "child_statuses": ["succeeded"], "tool_invoked": true, "delegation_count": 1, "retry_count": 1, "selector_fallback_used": true,
+      "retry_limit": 2, "quality": {"accepted_children": 1, "merge_quality": "complete"},
+      "evidence_test_ids": ["tests/integration/test_job_web_handoff.py::test_real_runtime_recoverable_failure_reenters_model_gate_tool_and_counts_attempts"]
+    },
+    "duplicate_page_dedup": {
+      "child_statuses": ["succeeded"], "tool_invoked": true, "delegation_count": 1, "visited_page_count": 3, "valid_job_count": 2,
+      "duplicate_page_count": 1, "duplicate_charge_count": 0, "quality": {"accepted_children": 1, "merge_quality": "deduplicated"},
+      "evidence_test_ids": ["tests/unit/test_result_merger.py::test_merger_is_order_independent_and_never_silently_overwrites_conflicting_facts"]
+    },
+    "restricted_access_wait": {
+      "task_success": false, "parent_status": "waiting_for_user", "child_statuses": ["waiting_for_user"], "error_code": "site_access_restricted",
+      "tool_invoked": true, "delegation_count": 1, "bypass_attempt_count": 0, "access_block_reason_count": 4, "missing_count": 1,
+      "quality": {"accepted_children": 0, "merge_quality": "waiting"},
+      "evidence_test_ids": ["tests/unit/test_job_web_error_policy.py::test_access_blocks_never_retry_or_bypass"]
+    },
+    "raw_artifact_isolation": {
+      "child_statuses": ["succeeded"], "tool_invoked": true, "delegation_count": 1, "raw_artifact_child_only": true,
+      "raw_html_in_parent": false, "browser_snapshot_in_parent": false, "duplicate_dom_in_parent": false, "parent_projection_field_count": 6,
+      "quality": {"accepted_children": 1, "merge_quality": "complete"}, "merge_count": 1,
+      "evidence_test_ids": ["tests/unit/test_delegated_web_artifact_sink.py::test_child_executor_persists_and_links_restricted_web_artifact", "tests/unit/test_web_context_governance.py::test_raw_snapshot_never_appears_in_parent_or_public_payload"]
+    },
+    "unique_web_subagent_route": {
+      "child_statuses": ["succeeded"], "callback_count": 1, "tool_invoked": true, "delegation_count": 1,
+      "delegate_task_calls": 1, "legacy_workflow_calls": 0, "direct_browser_calls": 0, "legacy_path_used": false,
+      "quality": {"accepted_children": 1, "merge_quality": "complete", "unique_web_evidence": true}, "merge_count": 1,
+      "evidence_test_ids": ["tests/unit/test_job_research_migration.py::test_job_research_router_creates_only_persisted_web_child"]
+    },
+    "legacy_paths_disabled": {
+      "child_statuses": ["succeeded"], "tool_invoked": true, "delegation_count": 1, "legacy_path_used": false,
+      "old_router_calls": 0, "old_api_calls": 0, "old_service_calls": 0, "old_frontend_calls": 0, "duplicate_fetch_count": 0, "duplicate_write_count": 0,
+      "quality": {"accepted_children": 1, "merge_quality": "complete"},
+      "evidence_test_ids": ["tests/unit/test_job_research_migration.py::test_default_job_research_router_and_frontend_do_not_reference_old_workflow"]
+    },
+    "tool_schema_partition": {
+      "child_statuses": ["succeeded", "succeeded"], "delegation_count": 2, "parent_search_schema_count": 0, "parent_browser_schema_count": 0,
+      "parent_raw_rag_schema_count": 0, "web_search_browser_only": true, "profile_rag_only": true, "quality": {"accepted_children": 2, "merge_quality": "complete"},
+      "evidence_test_ids": ["tests/integration/test_delegation_tool_exposure.py::test_each_child_model_request_only_receives_its_effective_tool_schema"]
+    },
+    "compatibility_adapter": {
+      "child_statuses": ["succeeded"], "delegation_count": 1, "compatibility_contract_preserved": true, "adapter_internal_subagent_only": true,
+      "legacy_path_used": false, "quality": {"accepted_children": 1, "merge_quality": "complete"},
+      "evidence_test_ids": ["tests/unit/test_job_research_migration.py::test_compatibility_adapter_keeps_legacy_card_fields_from_accepted_envelope"]
+    },
+    "rollback_disabled": {
+      "child_statuses": ["succeeded"], "delegation_count": 1, "rollback_flag_enabled": false, "normal_fallback_uses_legacy": false,
+      "legacy_path_used": false, "quality": {"accepted_children": 1, "merge_quality": "complete"},
+      "evidence_test_ids": ["tests/unit/test_legacy_migration_policy.py::test_legacy_migration_is_disabled_by_default"]
+    },
+    "profile_no_evidence": {
+      "parent_status": "partial", "child_statuses": ["partial"], "partial": true, "delegation_count": 1, "fabricated_evidence_count": 0,
+      "missing_count": 2, "chunk_reference_count": 0, "quality": {"accepted_children": 1, "merge_quality": "honest_gap"}, "merge_count": 1,
+      "evidence_test_ids": ["tests/unit/test_profile_evidence_analyst.py::test_profile_rejects_positive_match_without_authorized_retrieved_chunk"]
+    },
+    "parent_cancelled": {
+      "task_success": false, "parent_status": "cancelled", "child_statuses": ["cancelled"], "error_code": "parent_cancelled",
+      "budget_status": "released_cancelled", "delegation_count": 1, "cancel_propagated": true, "post_cancel_tool_calls": 0,
+      "quality": {"accepted_children": 0, "merge_quality": "none"},
+      "evidence_test_ids": ["tests/integration/test_delegation_runtime.py::test_durable_cancellation_after_model_response_stops_before_tool_execution"]
+    },
+    "duplicate_callback_idempotent": {
+      "child_statuses": ["succeeded"], "callback_count": 2, "delegation_count": 1, "late_callback_count": 1, "accepted_result_count": 1,
+      "merge_count": 1, "quality": {"accepted_children": 1, "merge_quality": "complete"},
+      "evidence_test_ids": ["tests/unit/test_delegate_task.py::test_delegate_task_is_idempotent_and_rejects_changed_payload"]
+    },
+    "invalid_result_envelope": {
+      "task_success": false, "parent_status": "failed", "child_statuses": ["failed"], "error_code": "result_envelope_invalid", "schema_valid": false,
+      "delegation_count": 1, "budget_status": "released_validation", "quality": {"accepted_children": 0, "merge_quality": "none"},
+      "evidence_test_ids": ["tests/unit/test_result_validator.py::test_validator_rejects_unknown_cost_late_result_identity_schema_and_unauthorized_source"]
+    },
+    "source_conflict": {
+      "task_success": false, "parent_status": "partial", "child_statuses": ["succeeded", "failed"], "error_code": "source_conflict", "partial": true,
+      "conflicts": ["source_url"], "delegation_count": 2, "quality": {"accepted_children": 1, "merge_quality": "conflicted"}, "merge_count": 1,
+      "evidence_test_ids": ["tests/unit/test_result_merger.py::test_merger_is_order_independent_and_never_silently_overwrites_conflicting_facts"]
+    },
+    "chunk_conflict": {
+      "task_success": false, "parent_status": "partial", "child_statuses": ["succeeded", "failed"], "error_code": "chunk_conflict", "partial": true,
+      "conflicts": ["chunk_id"], "delegation_count": 2, "quality": {"accepted_children": 1, "merge_quality": "conflicted"}, "merge_count": 1,
+      "evidence_test_ids": ["tests/unit/test_result_validator.py::test_validator_rejects_unknown_cost_late_result_identity_schema_and_unauthorized_source"]
+    },
+    "policy_denied": {
+      "task_success": false, "parent_status": "failed", "child_statuses": ["failed"], "error_code": "policy_denied", "schema_valid": false,
+      "policy_decision": "deny", "tool_invoked": false, "delegation_count": 1, "requested_tool_rejected": true,
+      "quality": {"accepted_children": 0, "merge_quality": "none"},
+      "evidence_test_ids": ["tests/integration/test_delegation_tool_exposure.py::test_child_cannot_execute_tool_omitted_from_effective_view"]
+    },
+    "real_child_runtime": {
+      "child_statuses": ["succeeded"], "delegation_count": 1, "real_child_run_created": true, "shared_runtime_path": true,
+      "run_context_distinct": true, "independent_model_request": true, "independent_tool_trace": true, "static_result_wrapper": false,
+      "quality": {"accepted_children": 1, "merge_quality": "complete"},
+      "evidence_test_ids": ["tests/integration/test_delegation_runtime.py::test_parent_and_children_share_runtime_loop_but_not_context_state"]
+    },
+    "run_context_isolation": {
+      "child_statuses": ["succeeded", "succeeded"], "delegation_count": 2, "shared_runtime_path": true, "run_context_distinct": true,
+      "message_pollution_count": 0, "memory_pollution_count": 0, "plan_pollution_count": 0, "tool_view_pollution_count": 0,
+      "budget_pollution_count": 0, "cancellation_pollution_count": 0, "trim_pollution_count": 0, "output_pollution_count": 0,
+      "quality": {"accepted_children": 2, "merge_quality": "complete"},
+      "evidence_test_ids": ["tests/unit/test_run_context_isolation.py::test_parent_and_children_own_distinct_mutable_run_state"]
+    },
+    "concurrent_sibling_isolation": {
+      "child_statuses": ["succeeded", "cancelled"], "delegation_count": 2, "concurrent_children": 2, "sibling_state_mutation_count": 0,
+      "parent_state_mutation_count": 0, "independent_budget_ledgers": true, "independent_trim_state": true,
+      "quality": {"accepted_children": 1, "merge_quality": "partial"}, "merge_count": 1,
+      "evidence_test_ids": ["tests/integration/test_delegation_runtime.py::test_concurrent_tool_context_uses_each_runs_trace_identity"]
+    },
+    "shared_registry_intersection": {
+      "child_statuses": ["succeeded", "succeeded"], "delegation_count": 2, "public_registry_shared": true, "safe_tool_intersection": true,
+      "web_tool_schema_count": 6, "profile_tool_schema_count": 1, "unauthorized_tool_schema_count": 0,
+      "quality": {"accepted_children": 2, "merge_quality": "complete"},
+      "evidence_test_ids": ["tests/unit/test_effective_tool_view.py::test_effective_view_is_five_way_intersection_and_never_contains_delegate"]
+    },
+    "reference_loading_minimal": {
+      "child_statuses": ["succeeded", "succeeded"], "delegation_count": 2, "reference_loading_only": true, "artifact_reference_count": 2,
+      "copied_main_chat": false, "copied_full_resume": false, "copied_full_jd": false, "copied_sibling_result": false,
+      "quality": {"accepted_children": 2, "merge_quality": "complete"},
+      "evidence_test_ids": ["tests/unit/test_child_context_builder.py::test_builder_loads_only_authorized_references_as_untrusted_fragments"]
+    },
+    "shared_write_conflict": {
+      "child_statuses": ["succeeded", "succeeded"], "delegation_count": 2, "concurrent_write_attempts": 2, "accepted_write_count": 1,
+      "overwrite_count": 0, "duplicate_write_count": 0, "version_conflict_count": 1, "quality": {"accepted_children": 2, "merge_quality": "conflict_preserved"}, "merge_count": 1,
+      "evidence_test_ids": ["tests/integration/test_result_merge_writes.py::test_concurrent_candidate_writes_do_not_last_write_win"]
+    },
+    "recursive_delegation_denied": {
+      "task_success": false, "parent_status": "failed", "child_statuses": ["failed"], "error_code": "recursive_delegation_forbidden",
+      "delegation_count": 1, "delegate_task_in_child_tools": false, "recursive_request_rejected": true, "policy_decision": "deny",
+      "quality": {"accepted_children": 0, "merge_quality": "none"},
+      "evidence_test_ids": ["tests/integration/test_delegate_task_gate.py::test_only_coordinator_parent_context_can_call_delegate_task"]
+    },
+    "specialist_not_found": {
+      "task_success": false, "parent_status": "failed", "child_statuses": [], "error_code": "specialist_not_found", "delegation_count": 0,
+      "child_run_created": false, "quality": {"accepted_children": 0, "merge_quality": "none"},
+      "evidence_test_ids": ["tests/unit/test_specialist_registry.py::test_resolve_rejects_missing_disabled_dependency_and_capability_mismatch"]
+    },
+    "specialist_disabled": {
+      "task_success": false, "parent_status": "failed", "child_statuses": [], "error_code": "specialist_disabled", "delegation_count": 0,
+      "child_run_created": false, "quality": {"accepted_children": 0, "merge_quality": "none"},
+      "evidence_test_ids": ["tests/unit/test_specialist_registry.py::test_resolve_rejects_missing_disabled_dependency_and_capability_mismatch"]
+    },
+    "specialist_version_mismatch": {
+      "task_success": false, "parent_status": "failed", "child_statuses": [], "error_code": "specialist_registry_stale", "delegation_count": 0,
+      "child_run_created": false, "quality": {"accepted_children": 0, "merge_quality": "none"},
+      "evidence_test_ids": ["tests/unit/test_specialist_registry.py::test_tampered_persisted_snapshot_is_rejected_and_cannot_become_current"]
+    },
+    "coordinator_override_denied": {
+      "task_success": false, "parent_status": "failed", "child_statuses": [], "error_code": "delegation_authority_expansion", "delegation_count": 0,
+      "system_prompt_override_denied": true, "tool_expansion_denied": true, "budget_expansion_denied": true, "child_run_created": false,
+      "quality": {"accepted_children": 0, "merge_quality": "none"},
+      "evidence_test_ids": ["tests/integration/test_delegate_task_gate.py::test_adapter_rejects_runtime_owned_fields_even_for_coordinator"]
+    },
+    "result_envelope_projection": {
+      "child_statuses": ["succeeded"], "delegation_count": 1, "result_envelope_valid": true, "parent_output_fields": 6,
+      "child_messages_in_parent": false, "raw_tool_result_in_parent": false, "raw_artifact_in_parent": false,
+      "quality": {"accepted_children": 1, "merge_quality": "complete"}, "merge_count": 1,
+      "evidence_test_ids": ["tests/unit/test_child_result_envelope.py::test_child_adapter_output_becomes_a_bound_result_envelope_not_context_output"]
+    },
+    "child_budget_exhausted": {
+      "task_success": false, "parent_status": "partial", "child_statuses": ["budget_exhausted", "succeeded"], "error_code": "child_budget_exhausted", "partial": true,
+      "delegation_count": 2, "budget_status": "child_exhausted", "post_budget_tool_calls": 0, "quality": {"accepted_children": 1, "merge_quality": "partial"}, "merge_count": 1,
+      "evidence_test_ids": ["tests/integration/test_delegation_runtime.py::test_provider_usage_over_limit_returns_controlled_budget_outcome"]
+    },
+    "budget_exhausted": {
+      "task_success": false, "parent_status": "budget_exhausted", "child_statuses": ["budget_exhausted"], "error_code": "budget_exhausted", "schema_valid": false,
+      "delegation_count": 1, "budget_status": "exhausted", "post_budget_tool_calls": 0, "quality": {"accepted_children": 0, "merge_quality": "none"},
+      "evidence_test_ids": ["tests/unit/test_delegation_models.py::test_budget_allocation_enforces_hard_accounting_invariants"]
+    },
+    "single_agent_better": {
+      "route": "tool_loop", "child_statuses": [], "delegation_count": 0, "error_code": null, "single_agent_selected": true,
+      "single_agent_latency_ms": 80, "multi_agent_latency_ms": 240, "single_agent_token_count": 600, "multi_agent_token_count": 1800,
+      "single_agent_cost_units": 12, "multi_agent_cost_units": 36, "quality": {"accepted_children": 0, "merge_quality": "single_agent"},
+      "evidence_test_ids": ["tests/unit/test_legacy_migration_policy.py::test_legacy_migration_is_disabled_by_default"]
+    },
+    "single_multi_comparison": {
+      "child_statuses": ["succeeded", "succeeded"], "delegation_count": 2, "single_agent_latency_ms": 420, "multi_agent_latency_ms": 260,
+      "single_agent_token_count": 2400, "multi_agent_token_count": 3100, "single_agent_cost_units": 48, "multi_agent_cost_units": 62,
+      "single_agent_quality_score": 72, "multi_agent_quality_score": 91, "comparison_deterministic": true,
+      "quality": {"accepted_children": 2, "merge_quality": "complete"}, "merge_count": 1,
+      "evidence_test_ids": ["tests/unit/test_delegation_fixture_suite.py::test_multistep_tool_order_context_isolation_and_comparison_are_deterministic"]
+    }
+  }
+}

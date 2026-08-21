@@ -1,0 +1,9 @@
+{
+  "tool_name": "mcp__playwright__browser_snapshot",
+  "status": "error",
+  "result": {
+    "source_url": "https://careers.example.test/jobs/unavailable",
+    "snapshot": "Access denied\nYour request could not be completed. Reference fixture-error-42.",
+    "page_type": "error"
+  }
+}

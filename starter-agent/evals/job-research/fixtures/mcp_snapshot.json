@@ -1,0 +1,12 @@
+{
+  "tool_name": "mcp__playwright__browser_snapshot",
+  "status": "success",
+  "requested_url": "https://jobs.example.org/ai-agent-engineer",
+  "final_url": "https://jobs.example.org/ai-agent-engineer",
+  "result": {
+    "source_url": "https://jobs.example.org/ai-agent-engineer",
+    "snapshot_text": "AI Agent Engineer. Example Robotics. Responsibilities include retrieval workflows, tool orchestration, deterministic evals, and release gates.",
+    "is_truncated": false,
+    "content_sha256": "placeholder-filled-by-loader-test"
+  }
+}

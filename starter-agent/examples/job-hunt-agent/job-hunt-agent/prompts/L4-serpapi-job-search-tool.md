@@ -4,9 +4,9 @@
 请在 Starter Agent 中实现或生成 `search_jobs_serpapi` 工具的代码草案和测试。
 
 读取：
-- `starter-agent/src/starter_agent/tools/base.py`
-- `starter-agent/src/starter_agent/tools/registry.py`
-- `starter-agent/src/starter_agent/settings.py`
+- `starter-agent/backend/src/starter_agent/tools/base.py`
+- `starter-agent/backend/src/starter_agent/tools/registry.py`
+- `starter-agent/backend/src/starter_agent/settings.py`
 - `starter-agent/config/config.example.yaml`
 - `starter-agent/docs/tools/job_hunt_tools.md`
 

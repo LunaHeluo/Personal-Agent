@@ -13,8 +13,8 @@
 为 Starter Agent 设计「带引用、可更新、可删除的个人知识库 / RAG 能力」，服务求职 Agent 场景。
 
 请先阅读现有仓库：
-- `src/starter_agent/`
-- `src/starter_agent/tools/`
+- `backend/src/starter_agent/`
+- `backend/src/starter_agent/tools/`
 - `config/config.example.yaml`
 - `tests/`
 - 已有求职工具、邮件工具、context/todo 工具相关实现和文档

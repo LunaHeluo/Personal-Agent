@@ -1,0 +1,26 @@
+{
+  "knowledge_base_id": "kb-redacted-resume",
+  "retrieved_at": "2026-07-26T00:02:00Z",
+  "chunks": [
+    {
+      "chunk_id": "resume-chunk-agent-eval-001",
+      "source_ref": "resume://redacted/v1#agent-eval",
+      "document_id": "resume-redacted",
+      "version": "v1",
+      "line_start": 12,
+      "line_end": 18,
+      "quote": "Built a local agent workflow with retrieval, tool routing, trace summaries, and regression checks.",
+      "score": 0.91
+    },
+    {
+      "chunk_id": "resume-chunk-browser-002",
+      "source_ref": "resume://redacted/v1#browser",
+      "document_id": "resume-redacted",
+      "version": "v1",
+      "line_start": 31,
+      "line_end": 35,
+      "quote": "Integrated Playwright based page reading for public documentation and preserved source URLs.",
+      "score": 0.84
+    }
+  ]
+}

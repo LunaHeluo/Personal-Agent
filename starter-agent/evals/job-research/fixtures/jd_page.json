@@ -1,0 +1,22 @@
+{
+  "source_url": "https://jobs.example.org/ai-agent-engineer",
+  "final_url": "https://jobs.example.org/ai-agent-engineer",
+  "title": "AI Agent Engineer",
+  "company": "Example Robotics",
+  "location": "Remote",
+  "retrieved_at": "2026-07-26T00:01:00Z",
+  "body_text": "Example Robotics is hiring an AI Agent Engineer to build retrieval workflows, tool orchestration, evaluation suites, and safety reviews. Responsibilities include designing deterministic evals, integrating browser based JD reading, and documenting release gates. Requirements include Python, Playwright, RAG, structured logging, and careful handling of untrusted web content.",
+  "responsibilities": [
+    "Build retrieval workflows and tool orchestration.",
+    "Design deterministic evals and release gates.",
+    "Integrate browser based public JD reading."
+  ],
+  "requirements": [
+    "Python",
+    "Playwright",
+    "RAG",
+    "structured logging",
+    "untrusted web content handling"
+  ],
+  "completeness": "complete"
+}

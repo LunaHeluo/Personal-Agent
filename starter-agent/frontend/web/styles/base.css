@@ -1,0 +1,4 @@
+/* Shared reset/accessibility layer. Feature styles remain in legacy.css during Task 13. */
+*, *::before, *::after { box-sizing: border-box; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+[hidden] { display: none !important; }

@@ -1,0 +1,23 @@
+{
+  "query": "Agent Platform Engineer Example City",
+  "results": [
+    {
+      "title": "AI engineering jobs",
+      "company": "",
+      "location": "Example City",
+      "source_url": "https://board.example.test/q-ai-engineering-jobs",
+      "snippet": "Browse current openings",
+      "source": "organic",
+      "url_kind": "organic"
+    },
+    {
+      "title": "Agent Platform Engineer",
+      "company": "Example Labs",
+      "location": "Example City",
+      "source_url": "https://careers.example.test/jobs/agent-platform-engineer-42",
+      "snippet": "Build and operate agent platforms",
+      "source": "jobs_results",
+      "url_kind": "structured_apply"
+    }
+  ]
+}

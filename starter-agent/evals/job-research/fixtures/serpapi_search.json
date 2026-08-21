@@ -1,0 +1,44 @@
+{
+  "query": "AI Agent Engineer",
+  "location": "Remote",
+  "retrieved_at": "2026-07-26T00:00:00Z",
+  "results": [
+    {
+      "title": "成都 AI 工程师招聘信息",
+      "company": "",
+      "location": "成都",
+      "source_url": "https://board.example/zhaopin/ai-engineer/",
+      "snippet": "职位搜索集合页，不是单一岗位详情。",
+      "source": "serpapi_fixture",
+      "url_kind": "structured_apply"
+    },
+    {
+      "title": "AI Agent 外围联系电话 12345678",
+      "company": "",
+      "location": "成都",
+      "source_url": "https://social.example/jobs/ai-chengdu-jobs?position=1&pageNum=0",
+      "snippet": "带分页参数的职位集合页和垃圾联系方式。",
+      "source": "serpapi_fixture",
+      "url_kind": "structured_share"
+    },
+    {
+      "title": "AI Agent Engineer",
+      "company": "Example Robotics",
+      "location": "Remote",
+      "source_url": "https://jobs.example.org/ai-agent-engineer",
+      "snippet": "Build agent workflows, evaluate tools, and maintain safety reviews.",
+      "source": "serpapi_fixture",
+      "url_kind": "structured_apply",
+      "usable_for_resume_search": true
+    },
+    {
+      "title": "Agent Platform Analyst",
+      "company": "Sample Systems",
+      "location": "Shanghai",
+      "source_url": "https://jobs.example.org/agent-platform-analyst",
+      "snippet": "Research product requirements and coordinate internal agent launches.",
+      "source": "serpapi_fixture",
+      "url_kind": "organic"
+    }
+  ]
+}

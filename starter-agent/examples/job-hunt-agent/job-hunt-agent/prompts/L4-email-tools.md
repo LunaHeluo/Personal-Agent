@@ -4,8 +4,8 @@
 请为求职 Agent 设计并生成邮箱工具草案，支持 Gmail 和 QQ 邮箱的常见路径。
 
 读取：
-- `starter-agent/src/starter_agent/tools/base.py`
-- `starter-agent/src/starter_agent/tools/registry.py`
+- `starter-agent/backend/src/starter_agent/tools/base.py`
+- `starter-agent/backend/src/starter_agent/tools/registry.py`
 - `starter-agent/docs/tools/job_hunt_tools.md`
 
 工具范围：

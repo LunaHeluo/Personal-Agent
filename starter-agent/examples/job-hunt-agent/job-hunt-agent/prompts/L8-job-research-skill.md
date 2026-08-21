@@ -34,7 +34,7 @@ Skill 必须包含：
 - Validation：检查 JD 来源、字段完整性、简历引用、未验证信息和 Tool Trace。
 - Failure Handling：Server 不可用、页面不允许访问、内容被裁剪、RAG 无证据、多个岗位无法确定时的处理。
 - Output Format：岗位摘要、必备要求、匹配证据、能力缺口、待确认事项、来源与 Tool Trace。
--生成的skill产物放在src/starter_agent/skills目录里面
+-生成的skill产物放在backend/src/starter_agent/skills目录里面
 -生成的skill产物必须符合以下结构：文件夹为skill名称。然后里面是一个SKILL.md,skill.md必须符合以下结构：
 ``---
 name: job-research

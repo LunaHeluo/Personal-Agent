@@ -1,0 +1,166 @@
+id: job-research-fixtures-v1
+version: v1
+fixtures:
+  - id: serpapi-ai-agent-redacted-v1
+    type: serpapi_search
+    version: v1
+    path: serpapi_search.json
+    sha256: 5c0055ea9860550c6370181930e34185eae064e644eae81256320b65de6874fa
+    redaction:
+      secrets: none
+      personal_data: synthetic
+      source: public_url_domain_replaced
+    case_ids:
+      - JR-KB-LOCATION-MISS-001
+      - JR-KB-ROLE-MISS-001
+      - JR-KB-EXPIRED-001
+      - JR-CANDIDATE-RANK-001
+  - id: jd-public-ai-agent-redacted-v1
+    type: jd_page
+    version: v1
+    path: jd_page.json
+    sha256: 73dd5b168946def8b5fca8d461050333a6a536b2f2b480e6045f510a2432328d
+    redaction:
+      secrets: none
+      personal_data: none
+      source: synthetic_public_jd
+    case_ids:
+      - JR-KB-MATCH-001
+      - JR-URL-FALLTHROUGH-001
+      - JR-CONFLICTING-CONTEXT-001
+      - JR-INJECTION-WEB-001
+  - id: resume-chunks-redacted-v1
+    type: resume_chunks
+    version: v1
+    path: resume_chunks.json
+    sha256: 65cd08c3853902caa3d4ee984974b1b972f3390dda8c44eb64c4fbafaa050ddf
+    redaction:
+      secrets: none
+      personal_data: synthetic_resume_chunks_only
+      full_resume: absent
+    case_ids:
+      - JR-CONFLICTING-CONTEXT-001
+  - id: mcp-snapshot-public-jd-redacted-v1
+    type: mcp_response
+    version: v1
+    path: mcp_snapshot.json
+    sha256: 7b89974d386f35bebd2f294619bef288c6e660548910eba32c862153ecc5facf
+    redaction:
+      secrets: none
+      cookies: absent
+      auth_headers: absent
+    case_ids:
+      - JR-INJECTION-WEB-001
+  - id: tool-error-mcp-unavailable-v1
+    type: tool_error
+    version: v1
+    path: tool_error.json
+    sha256: 41c8d80a964c1c301a5855264ec82ee38491e9e934b1a8e608cba5201ac5e83f
+    redaction:
+      secrets: none
+      stderr: summarized
+      path_details: removed
+    case_ids:
+      - JR-URL-FALLTHROUGH-001
+      - JR-MCP-UNAVAILABLE-001
+  - id: policy-non-allowlisted-browser-v1
+    type: policy
+    version: v1
+    path: policy.json
+    sha256: 1bd878afc898b6aed7fd1ede38aa0fb901a3b480f4d151fb3e0fdc1fc5c70b50
+    redaction:
+      secrets: none
+      user_identity: synthetic
+      destinations: public_example_domains
+    case_ids:
+      - JR-TOOL-DISABLED-001
+  - id: injection-web-pdf-email-tool-result-v1
+    type: injection
+    version: v1
+    path: injection_vectors.json
+    sha256: 167de2384388df8ee2e74f3f8a390d47649e6649fb9f31ad1cd32bcdb9475941
+    redaction:
+      secrets: none
+      malicious_text: synthetic
+      external_actions: blocked_examples_only
+    case_ids:
+      - JR-INJECTION-WEB-001
+  - id: knowledge-routing-redacted-v1
+    type: knowledge_routing
+    version: v1
+    path: knowledge_routing.json
+    sha256: b5b4ce6b44716c2e548d0ca4442cd920f947d2a2660de6f8ad22887aaeb39b16
+    redaction:
+      secrets: none
+      personal_data: synthetic
+      external_sources: example_domains_only
+    case_ids:
+      - jr-conversation-greeting-no-tools
+      - JR-ROUTE-FLEXIBLE-001
+      - JR-LEGACY-SCHEMA-ABSENT-001
+  - id: mixed-job-results-redacted-v1
+    type: serpapi_search
+    version: v1
+    path: mixed_results.json
+    sha256: a97acd0fae9cf922401c897a55ebc8aa8a4807a14027c8c7e97aa845eb43b07a
+    redaction:
+      secrets: none
+      personal_data: synthetic
+      source: example_domains_only
+    case_ids:
+      - collection_candidate_rejected
+  - id: single-block-jd-redacted-v1
+    type: mcp_response
+    version: v1
+    path: job_details_single_block.json
+    sha256: 220d261e2b8a9d2cb8591af2903ae0ef8202117e93ba90ee7accbee40da489d3
+    redaction:
+      secrets: none
+      personal_data: none
+      source: synthetic_public_jd
+    case_ids:
+      - single_block_jd_verified
+      - error_page_then_valid_jd
+      - partial_company_unverified
+  - id: job-posting-json-ld-redacted-v1
+    type: jd_page
+    version: v1
+    path: job_posting_json_ld.json
+    sha256: bb90036b0f0d331fd7fd2462c2def345e95fdb5e1e2457d857eae137c7e6af2a
+    redaction:
+      secrets: none
+      personal_data: none
+      source: synthetic_public_jd
+    case_ids:
+      - single_block_jd_verified
+  - id: browser-error-page-redacted-v1
+    type: mcp_response
+    version: v1
+    path: browser_error_page.json
+    sha256: cfa74c11fdb210de4b1e3e0e7ac0b5261a29c4059a0bbe6e10bb276e222ab7a5
+    redaction:
+      secrets: none
+      personal_data: none
+      source: synthetic_error_page
+    case_ids:
+      - error_page_then_valid_jd
+  - id: orchestration-scenarios-redacted-v1
+    type: orchestration_scenarios
+    version: v1
+    path: orchestration_scenarios.json
+    sha256: e1810e3676415e12834d9cefa677a2c1ac9cf172f96fe4846ce7a07bc14446c8
+    redaction:
+      secrets: none
+      personal_data: synthetic_only
+      source: deterministic_orchestration_contracts
+    case_ids: []
+  - id: delegation-scenarios-redacted-v1
+    type: delegation_scenarios
+    version: v1
+    path: delegation_scenarios.json
+    sha256: d6af0b44371bf5eaef4992d9be90d804478021c023cd90b511ce30e253204b90
+    redaction:
+      secrets: none
+      personal_data: synthetic_only
+      source: deterministic_delegation_contracts
+    case_ids: []

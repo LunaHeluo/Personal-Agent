@@ -1,0 +1,29 @@
+{
+  "policy_id": "job-research-browser-policy-v1",
+  "rules": [
+    {
+      "id": "allow-serpapi-read",
+      "tool": "search_jobs_serpapi",
+      "effect": "allowlist_auto",
+      "conditions": {
+        "risk": "read"
+      }
+    },
+    {
+      "id": "confirm-browser-navigate",
+      "tool": "mcp__playwright__browser_navigate",
+      "effect": "require_confirmation",
+      "conditions": {
+        "destination": "jobs.example.org"
+      }
+    },
+    {
+      "id": "force-confirm-external-write",
+      "tool": "external_send",
+      "effect": "always_confirm",
+      "conditions": {
+        "risk": "external"
+      }
+    }
+  ]
+}

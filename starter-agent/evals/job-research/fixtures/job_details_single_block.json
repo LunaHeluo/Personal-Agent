@@ -1,0 +1,8 @@
+{
+  "tool_name": "mcp__playwright__browser_snapshot",
+  "status": "ok",
+  "result": {
+    "source_url": "https://careers.example.test/jobs/agent-platform-engineer-42",
+    "snapshot": "- Page Title: Example Labs - Agent Platform Engineer\n- heading \"Agent Platform Engineer\" [level=1]\n- generic: Location: Example City\n- heading \"Job details\" [level=2]\n- paragraph: Build and operate reliable agent workflows.\n- paragraph: Collaborate with platform teams.\n- paragraph: Production Python experience required.\n- paragraph: Experience with retrieval systems required."
+  }
+}

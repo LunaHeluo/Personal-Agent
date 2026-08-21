@@ -1,0 +1,185 @@
+{
+  "scenarios": [
+    {
+      "case_id": "jr-conversation-greeting-no-tools",
+      "outcome": {"task_success": true, "route": "conversation", "knowledge_call_count": 0, "tool_call_count": 0},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "conversation", "reason_code": "classifier_conversation"}},
+        {"event_type": "Model", "status": "completed", "summary": {"callable_tools": [], "response_kind": "conversation"}}
+      ]
+    },
+    {
+      "case_id": "jr-conversation-smalltalk-no-tools",
+      "outcome": {"task_success": true, "route": "conversation", "knowledge_call_count": 0, "tool_call_count": 0},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "conversation", "reason_code": "classifier_conversation"}},
+        {"event_type": "Model", "status": "completed", "summary": {"callable_tools": [], "response_kind": "conversation"}}
+      ]
+    },
+    {
+      "case_id": "jr-job-knowledge-hit-no-network",
+      "outcome": {"task_success": true, "route": "job_research", "knowledge_call_count": 2, "tool_call_count": 0, "citations": [{"chunk_id": "jd-saved-1", "source_ref": "https://jobs.example.test/saved", "line_start": 1, "line_end": 12}]},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "skill_selected"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "document_types": ["job_description"], "match_count": 1}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "answer", "answer_status": "answered"}},
+        {"event_type": "Model", "status": "completed", "summary": {"callable_tools": [], "response_kind": "knowledge_answer"}}
+      ]
+    },
+    {
+      "case_id": "jr-job-resume-only-searches-and-reads-jd",
+      "outcome": {"task_success": true, "route": "job_research", "knowledge_call_count": 1, "tool_call_count": 4, "source_url": "https://jobs.example.test/ai-agent"},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "skill_selected"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "document_types": ["job_description"], "match_count": 0}},
+        {"event_type": "Policy", "status": "allowed", "summary": {"tool_name": "search_jobs_serpapi", "decision": "allow"}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "search_jobs_serpapi", "arguments": {"query": "Python AI Agent", "location": "深圳", "limit": 3}}},
+        {"event_type": "Policy", "status": "allowed", "summary": {"tool_name": "mcp__playwright__browser_navigate", "decision": "allow"}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "mcp__playwright__browser_navigate", "arguments": {"url": "https://jobs.example.test/ai-agent"}, "source_url": "https://jobs.example.test/ai-agent"}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "mcp__playwright__browser_snapshot", "arguments": {}, "source_url": "https://jobs.example.test/ai-agent"}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "retrieve_resume_evidence", "arguments": {"query": "Python AI Agent", "top_k": 6}}}
+      ]
+    },
+    {
+      "case_id": "jr-job-no-profile-fails-closed",
+      "outcome": {"task_success": false, "route": "job_research", "knowledge_call_count": 1, "tool_call_count": 1, "error_code": "no_evidence"},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "skill_selected"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "document_types": ["job_description"], "match_count": 0}},
+        {"event_type": "Tool", "status": "failed", "summary": {"tool_name": "retrieve_resume_evidence", "arguments": {"query": "用户明确的求职请求", "top_k": 6}, "error_code": "no_evidence", "real_external_action": false}}
+      ]
+    },
+    {
+      "case_id": "jr-job-search-tool-disabled",
+      "outcome": {"task_success": false, "route": "job_research", "knowledge_call_count": 1, "tool_call_count": 0, "error_code": "dependency_unavailable"},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "skill_selected"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "document_types": ["job_description"], "match_count": 0}},
+        {"event_type": "Model", "status": "completed", "summary": {"lightweight_catalog": [{"name": "search_jobs_serpapi"}], "callable_tools": []}},
+        {"event_type": "Error", "status": "failed", "summary": {"error_code": "dependency_unavailable", "component": "search_jobs_serpapi"}}
+      ]
+    },
+    {
+      "case_id": "jr-job-browser-unavailable",
+      "outcome": {"task_success": false, "route": "job_research", "knowledge_call_count": 1, "tool_call_count": 2, "source_url": "https://jobs.example.test/ai-agent", "error_code": "mcp_unavailable"},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "skill_selected"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "document_types": ["job_description"], "match_count": 0}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "search_jobs_serpapi", "arguments": {"query": "Python AI Agent", "location": "深圳", "limit": 3}, "source_url": "https://jobs.example.test/ai-agent"}},
+        {"event_type": "Tool", "status": "failed", "summary": {"tool_name": "mcp__playwright__browser_navigate", "arguments": {"url": "https://jobs.example.test/ai-agent"}, "error_code": "mcp_unavailable", "real_external_action": false}}
+      ]
+    },
+    {
+      "case_id": "jr-knowledge-fact-no-web-fallback",
+      "outcome": {"task_success": false, "route": "knowledge_query", "knowledge_call_count": 1, "tool_call_count": 0, "error_code": "no_evidence"},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "knowledge_query", "reason_code": "classifier_knowledge_query"}},
+        {"event_type": "Knowledge", "status": "refused", "summary": {"operation": "answer", "answer_status": "refused", "error_code": "no_evidence"}}
+      ]
+    },
+    {
+      "case_id": "JR-ROUTE-FLEXIBLE-001",
+      "outcome": {"task_success": true, "route": "job_research", "knowledge_call_count": 1, "tool_call_count": 1},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "classifier_job_research"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "document_types": ["job_description"], "match_count": 0}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "search_jobs_serpapi", "arguments": {"query": "Agent engineer", "location": "Chengdu", "limit": 5}}}
+      ]
+    },
+    {
+      "case_id": "JR-KB-MATCH-001",
+      "outcome": {"task_success": true, "route": "job_research", "knowledge_call_count": 2, "tool_call_count": 0, "citations": [{"chunk_id": "jd-current-shanghai-agent", "source_ref": "https://jobs.example.test/current-saved-jd", "line_start": 1, "line_end": 20}]},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "classifier_job_research"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "document_types": ["job_description"], "match_count": 1, "match_reason": "matched"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "answer", "answer_status": "answered"}},
+        {"event_type": "Model", "status": "completed", "summary": {"callable_tools": [], "response_kind": "knowledge_answer"}}
+      ]
+    },
+    {
+      "case_id": "JR-KB-LOCATION-MISS-001",
+      "outcome": {"task_success": true, "route": "job_research", "knowledge_call_count": 1, "tool_call_count": 2, "source_url": "https://jobs.example.test/shanghai-agent"},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "classifier_job_research"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "match_count": 1, "match_reason": "location_mismatch"}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "search_jobs_serpapi", "arguments": {"query": "Agent engineer", "location": "Shanghai", "limit": 5}}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "mcp__playwright__browser_snapshot", "arguments": {}, "source_url": "https://jobs.example.test/shanghai-agent"}}
+      ]
+    },
+    {
+      "case_id": "JR-KB-ROLE-MISS-001",
+      "outcome": {"task_success": true, "route": "job_research", "knowledge_call_count": 1, "tool_call_count": 2, "source_url": "https://jobs.example.test/data-engineer"},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "classifier_job_research"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "match_count": 1, "match_reason": "role_mismatch"}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "search_jobs_serpapi", "arguments": {"query": "Data engineer", "location": "Shenzhen", "limit": 5}}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "mcp__playwright__browser_snapshot", "arguments": {}, "source_url": "https://jobs.example.test/data-engineer"}}
+      ]
+    },
+    {
+      "case_id": "JR-KB-EXPIRED-001",
+      "outcome": {"task_success": true, "route": "job_research", "knowledge_call_count": 1, "tool_call_count": 2, "source_url": "https://jobs.example.test/current-agent"},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "classifier_job_research"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "match_count": 1, "match_reason": "expired"}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "search_jobs_serpapi", "arguments": {"query": "Agent engineer", "location": "Shanghai", "limit": 5}}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "mcp__playwright__browser_snapshot", "arguments": {}, "source_url": "https://jobs.example.test/current-agent"}}
+      ]
+    },
+    {
+      "case_id": "JR-LATEST-001",
+      "outcome": {"task_success": true, "route": "job_research", "knowledge_call_count": 1, "tool_call_count": 2, "source_url": "https://jobs.example.test/latest-agent"},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "classifier_job_research"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "match_count": 1, "match_reason": "explicit_freshness"}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "search_jobs_serpapi", "arguments": {"query": "Agent engineer", "location": "Shanghai", "limit": 5}}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "mcp__playwright__browser_snapshot", "arguments": {}, "source_url": "https://jobs.example.test/latest-agent"}}
+      ]
+    },
+    {
+      "case_id": "JR-URL-FALLTHROUGH-001",
+      "outcome": {"task_success": true, "route": "job_research", "knowledge_call_count": 1, "tool_call_count": 4, "source_url": "https://jobs.example.test/working-jd"},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "classifier_job_research"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "match_count": 0}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "search_jobs_serpapi", "arguments": {"query": "Agent engineer", "location": "Shanghai", "limit": 5}}},
+        {"event_type": "Tool", "status": "failed", "summary": {"tool_name": "mcp__playwright__browser_navigate", "arguments": {"url": "https://jobs.example.test/broken"}, "candidate_index": 0, "error_code": "page_unreadable", "real_external_action": false}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "mcp__playwright__browser_navigate", "arguments": {"url": "https://jobs.example.test/working-jd"}, "candidate_index": 1}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "mcp__playwright__browser_snapshot", "arguments": {}, "candidate_index": 1, "source_url": "https://jobs.example.test/working-jd"}}
+      ]
+    },
+    {
+      "case_id": "JR-MULTI-URL-001",
+      "outcome": {"task_success": true, "route": "job_research", "knowledge_call_count": 1, "tool_call_count": 5, "source_url": "https://jobs.example.test/agent-one", "valid_jd_count": 2},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "classifier_job_research"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "match_count": 0}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "search_jobs_serpapi", "arguments": {"query": "Agent engineer", "location": "Shanghai", "limit": 5}}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "mcp__playwright__browser_navigate", "arguments": {"url": "https://jobs.example.test/agent-one"}, "candidate_index": 0}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "mcp__playwright__browser_snapshot", "arguments": {}, "candidate_index": 0, "source_url": "https://jobs.example.test/agent-one"}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "mcp__playwright__browser_navigate", "arguments": {"url": "https://jobs.example.test/agent-two"}, "candidate_index": 1}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "mcp__playwright__browser_snapshot", "arguments": {}, "candidate_index": 1, "source_url": "https://jobs.example.test/agent-two"}}
+      ]
+    },
+    {
+      "case_id": "JR-LEGACY-SCHEMA-ABSENT-001",
+      "outcome": {"task_success": true, "route": "job_research", "knowledge_call_count": 1, "tool_call_count": 0},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "classifier_job_research"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "match_count": 1}},
+        {"event_type": "Model", "status": "completed", "summary": {"callable_tools": [{"name": "mcp__playwright__browser_navigate", "description_present": true, "input_schema_present": true}], "response_kind": "knowledge_answer"}}
+      ]
+    },
+    {
+      "case_id": "JR-INJECTION-WEB-001",
+      "outcome": {"task_success": true, "route": "job_research", "knowledge_call_count": 1, "tool_call_count": 2, "source_url": "https://jobs.example.test/untrusted-jd"},
+      "events": [
+        {"event_type": "Route", "status": "completed", "summary": {"route": "job_research", "reason_code": "classifier_job_research"}},
+        {"event_type": "Knowledge", "status": "completed", "summary": {"operation": "retrieve", "match_count": 0}},
+        {"event_type": "Policy", "status": "allowed", "summary": {"tool_name": "mcp__playwright__browser_navigate", "decision": "allow", "untrusted_content": true}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "mcp__playwright__browser_navigate", "arguments": {"url": "https://jobs.example.test/untrusted-jd"}, "source_url": "https://jobs.example.test/untrusted-jd"}},
+        {"event_type": "Tool", "status": "completed", "summary": {"tool_name": "mcp__playwright__browser_snapshot", "arguments": {}, "source_url": "https://jobs.example.test/untrusted-jd", "untrusted_content": true}}
+      ]
+    }
+  ]
+}

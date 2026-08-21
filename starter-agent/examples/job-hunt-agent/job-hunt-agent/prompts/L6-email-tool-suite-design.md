@@ -16,8 +16,8 @@
 - 优先使用 mock fixture 验收；真实Gmail / QQ / IMAP-SMTP。
 
 请先阅读仓库结构：
-- `src/starter_agent/tools/`
-- `src/starter_agent/tools/registry.py`
+- `backend/src/starter_agent/tools/`
+- `backend/src/starter_agent/tools/registry.py`
 - `config/config.example.yaml`
 - `tests/`
 - 现有求职工具、context 工具、todo 工具实现

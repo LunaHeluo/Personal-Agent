@@ -1,0 +1,9 @@
+{
+  "tool_name": "mcp__playwright__browser_snapshot",
+  "status": "error",
+  "error": {
+    "code": "mcp_server_unavailable",
+    "message": "Playwright MCP server is unavailable in this fixture.",
+    "retryable": true
+  }
+}

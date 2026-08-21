@@ -1,0 +1,14 @@
+{
+  "source_url": "https://careers.example.test/jobs/agent-platform-engineer-43",
+  "title": "Agent Platform Engineer",
+  "company": "Example Labs",
+  "body_text": "Build reliable agent workflows. Production Python experience required.",
+  "json_ld": {
+    "@context": "https://schema.org",
+    "@type": "JobPosting",
+    "title": "Agent Platform Engineer",
+    "hiringOrganization": {"name": "Example Labs"},
+    "jobLocation": {"address": {"addressLocality": "Example City"}},
+    "description": "Build reliable agent workflows. Production Python experience required."
+  }
+}
